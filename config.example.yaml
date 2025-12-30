@@ -1,0 +1,86 @@
+# Pixiv XP Pusher 配置文件示例
+# 请复制此文件为 config.yaml 并填入您的真实信息
+
+pixiv:
+  # Pixiv 刷新令牌 (通过 get_token.py 获取，或手动填入)
+  refresh_token: "YOUR_REFRESH_TOKEN_HERE"
+  
+  # 您的 Pixiv 用户ID (自动获取，或手动指定)
+  user_id: 0
+
+profiler:
+  # AI 标签分析配置
+  ai:
+    enabled: true
+    # AI 提供商: openai / gemini / claude (目前主要支持 openai 格式)
+    provider: "openai"
+    # API 密钥
+    api_key: "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    # API 基础地址 (如果使用中转服务)
+    base_url: "https://api.openai.com/v1"
+    # 模型名称
+    model: "gpt-4o-mini"
+    # 并发请求数 (建议 5-20)
+    concurrency: 10
+
+  # 标签画像配置
+  scan_limit: 1000        # 扫描收藏数量上限
+  discovery_rate: 0.1     # 探索新 Tag 的概率 (0.1 = 10%)
+  
+  tags:
+    # 过滤无意义标签
+    filter_meaningless: true
+    # 合并同义标签
+    merge_synonyms: true
+    # 额外黑名单 (不仅限于自动分析的)
+    blacklist:
+      - "R-18"
+      - "R-18G"
+    # 画像生成时保留权重最高的 N 个标签
+    top_n: 20
+    # 是否包含私密收藏用于分析
+    include_private: true
+
+scheduler:
+  # 定时任务配置 (Cron 表达式: 分 时 日 月 周)
+  # 示例: 每天中午 12:00 执行
+  cron: "0 12 * * *"
+  # 是否合并错过的任务
+  coalesce: true
+
+filter:
+  daily_limit: 20         # 每日推送上限
+  exclude_ai: true        # 过滤 AI 生成作品
+  max_per_artist: 3       # 单画师最多推送数
+  artist_boost: 0.3       # 订阅画师加成
+  min_create_days: 30     # 过滤 N 天前的作品
+  r18_mode: false         # 是否允许 R18 (需 Token 权限)
+
+fetcher:
+  bookmark_threshold:
+    search: 1000          # 搜索结果的最低收藏数要求
+  subscribed_artists: []  # 额外关注的画师 ID 列表
+
+notifier:
+  # 启用的推送通道列表: telegram, onebot
+  types: [telegram]
+  
+  # Telegram Bot
+  telegram:
+    bot_token: "YOUR_BOT_TOKEN"
+    # 推送目标 Chat ID (支持列表)
+    chat_ids: 
+      - 123456789
+    # 话题 ID (可选，用于 Supergroup 话题)
+    thread_id: null
+    # 允许互动的用户 ID 列表 (安全设置)
+    allowed_users:
+      - 12345678
+      
+  # OneBot / QQ
+  onebot:
+    ws_url: "ws://127.0.0.1:3001"
+    private_id: 12345678      # 私聊目标 QQ
+    group_id: null            # 群聊目标群号
+    push_to_private: true
+    push_to_group: false

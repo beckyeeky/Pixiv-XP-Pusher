@@ -1,0 +1,767 @@
+"""
+XP 画像构建模块
+分析收藏Tag，构建用户XP权重
+"""
+import logging
+import math
+import itertools
+import json
+import asyncio
+import re
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta
+from typing import Optional
+
+try:
+    from openai import AsyncOpenAI
+    HAS_OPENAI = True
+except ImportError:
+    HAS_OPENAI = False
+
+from pixiv_client import Illust, PixivClient
+import database as db
+from utils import retry_async
+
+
+
+logger = logging.getLogger(__name__)
+
+
+# 常见别名映射表（可扩展）
+TAG_ALIASES = {
+    "白髪": "white_hair",
+    "silver hair": "white_hair",
+    "白髮": "white_hair",
+    "猫耳": "cat_ears",
+    "cat ears": "cat_ears",
+    "nekomimi": "cat_ears",
+    "ロリ": "loli",
+    "巨乳": "large_breasts",
+    "おっぱい": "breasts",
+    "黒髪": "black_hair",
+    "金髪": "blonde_hair",
+    "ツインテール": "twintails",
+    "twin tails": "twintails",
+    "メイド": "maid",
+    "水着": "swimsuit",
+    "制服": "uniform",
+    "ストッキング": "stockings",
+    "ニーソ": "thighhighs",
+    "眼鏡": "glasses",
+}
+
+
+class AITagProcessor:
+    """AI Tag 处理器 - 过滤无意义tag和归类同义tag"""
+    
+    def __init__(self, config: dict):
+        self.enabled = config.get("enabled", False) and HAS_OPENAI
+        self.filter_meaningless = config.get("filter_meaningless", True)
+        self.merge_synonyms = config.get("merge_synonyms", True)
+        self.model = config.get("model", "gpt-4o-mini")
+        self.batch_size = config.get("batch_size", 50)
+        self.concurrency = config.get("concurrency", 3)  # 并发数
+        self.pattern_users = re.compile(r"^(.*?)\d+users入り$") # 预编译正则
+        
+        if self.enabled:
+            self.client = AsyncOpenAI(
+                api_key=config.get("api_key", ""),
+                base_url=config.get("base_url") or None
+            )
+        else:
+            self.client = None
+        
+        # 缓存处理结果 (Tag -> CleanedTag/None)
+        self._cache: dict[str, str | None] = {}
+        self._cache_initialized = False
+        # 记录发生的错误
+        self.occurred_errors: list[int] = []
+    
+    def _preprocess_tags(self, tags: list[str]) -> list[str]:
+        """正则预处理：去除 users入り 后缀等"""
+        processed = []
+        for tag in tags:
+            # 1. 去除 users入り
+            match = self.pattern_users.match(tag)
+            if match:
+                prefix = match.group(1)
+                # 如果前缀非空，则使用前缀（例如 "鸣潮"）；否则保留原样
+                processed.append(prefix if prefix else tag)
+            else:
+                processed.append(tag)
+        return processed
+
+    async def process_tags(self, tags: list[str]) -> tuple[list[str], dict[str, str]]:
+        if not self.enabled or not tags:
+            return tags, {}
+            
+        # 0. 正则预处理
+        effective_tags = self._preprocess_tags(tags)
+        
+        # 1. 首次运行时加载 DB 缓存
+        if not self._cache_initialized:
+            try:
+                db_cache = await db.get_ai_cache_map()
+                self._cache.update(db_cache)
+                self._cache_initialized = True
+                logger.info(f"已加载 {len(db_cache)} 条 AI 标签缓存")
+            except Exception as e:
+                logger.error(f"加载 AI 缓存失败: {e}")
+        
+        # 2. 检查缺失 (使用预处理后的标签)
+        uncached = [t for t in effective_tags if t not in self._cache]
+        
+        if uncached:
+            # 去重
+            uncached = list(set(uncached))
+            logger.info(f"发现 {len(uncached)} 个新 Tag，开始 AI 处理 ({self.batch_size}/批)...")
+            await self._batch_process(uncached)
+        
+        # 3. 应用结果
+        valid_tags = []
+        synonym_map = {}
+        
+        for i, original_tag in enumerate(tags):
+            effective_tag = effective_tags[i]
+            
+            # 安全获取结果
+            result = self._cache.get(effective_tag, effective_tag)
+            
+            if result is None:
+                continue # meaningless
+            
+            # 只要结果与原始标签不同，就记录映射
+            if result != original_tag:
+                synonym_map[original_tag] = result
+            
+            valid_tags.append(result)
+        
+        # 去重保持顺序
+        valid_tags = list(dict.fromkeys(valid_tags))
+        
+        return valid_tags, synonym_map
+
+    @retry_async(max_retries=3, delay=2.0)
+    async def _call_api(self, prompt: str) -> str:
+        """调用AI API（流式，防止超时）"""
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": "你是一个Pixiv插画标签数据处理专家，只输出标准JSON。"},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+            stream=True  # 启用流式
+        )
+        
+        collected_content = []
+        async for chunk in response:
+            if chunk.choices and chunk.choices[0].delta.content:
+                collected_content.append(chunk.choices[0].delta.content)
+                
+        return "".join(collected_content)
+
+    async def _batch_process(self, tags: list[str]):
+        """并发批量处理Tag"""
+        if not tags:
+            return
+        
+        batches = []
+        for i in range(0, len(tags), self.batch_size):
+            batches.append(tags[i:i + self.batch_size])
+            
+        logger.info(f"队列共 {len(batches)} 个批次，并发数: {self.concurrency}")
+        
+        semaphore = asyncio.Semaphore(self.concurrency)
+        
+        async def _bounded_Process(batch):
+            async with semaphore:
+                await self._process_single_batch(batch)
+                
+        tasks = [_bounded_Process(b) for b in batches]
+        await asyncio.gather(*tasks)
+
+    async def _process_single_batch(self, tags: list[str]):
+        """处理单批次并持久化"""
+        prompt = self._build_prompt(tags)
+        
+        try:
+            logger.info("🤖 正在请求 AI清洗...")
+            content = await self._call_api(prompt)
+            
+            # 清洗 Markdown
+            content = content.strip()
+            if content.startswith("```json"): content = content[7:]
+            if content.startswith("```"): content = content[3:]
+            if content.endswith("```"): content = content[:-3]
+            
+            result = json.loads(content)
+            
+            meaningless = set(result.get("meaningless", []))
+            synonyms = result.get("synonyms", {})
+            
+            # 构造更新映射
+            cache_update = {}
+            mapping_update = {} # 仅用于 update_tag_mapping_stats (统计用)
+            
+            for tag in tags:
+                if tag in meaningless:
+                    cache_update[tag] = None
+                elif tag in synonyms:
+                    cleaned = synonyms[tag]
+                    cache_update[tag] = cleaned
+                    mapping_update[tag] = cleaned
+                else:
+                    # 未提及的默认为保留
+                    cache_update[tag] = tag
+            
+            # 更新内存缓存
+            self._cache.update(cache_update)
+            
+            # 持久化到 DB
+            await db.update_ai_cache(cache_update) # 关键：保存结果
+            if mapping_update:
+                await db.update_tag_mapping_stats(mapping_update)
+                
+            # 美化日志输出
+            logger.info(f"✨ AI Batch 完成 (本批 {len(tags)} 个)")
+            
+            if meaningless:
+                logger.info(f"   🗑️ 过滤 {len(meaningless)}:")
+                items = list(meaningless)
+                for i in range(0, len(items), 10):
+                    logger.info(f"      {', '.join(items[i:i+10])}")
+                
+            if synonyms:
+                logger.info(f"   🔄 归类 {len(synonyms)}:")
+                items = [f"{k}→{v}" for k, v in synonyms.items()]
+                for i in range(0, len(items), 5):
+                    logger.info(f"      {', '.join(items[i:i+5])}")
+            
+        except Exception as e:
+            
+            for tag in tags:
+                if tag in meaningless:
+                    self._cache[tag] = None
+                    filtered_log.append(tag)
+                elif tag in synonyms:
+                    canonical = synonyms[tag]
+                    self._cache[tag] = canonical
+                    if canonical not in synonym_groups:
+                        synonym_groups[canonical] = []
+                    synonym_groups[canonical].append(tag)
+                else:
+                    self._cache[tag] = tag
+                    kept_direct.append(tag)
+            
+            # 记录同义词映射频率到数据库，供搜索使用
+            if synonyms:
+                await db.update_tag_mapping_stats(synonyms)
+            
+            # 格式化日志输出
+            logger.info(f"AI处理 {len(tags)} 个Tag:")
+            if filtered_log:
+                # 截断过长列表
+                display = filtered_log[:10]
+                suffix = f"... (+{len(filtered_log)-10})" if len(filtered_log) > 10 else ""
+                logger.info(f"  ❌ 过滤 ({len(filtered_log)}): {', '.join(display)}{suffix}")
+            if synonym_groups:
+                # 格式化为: canonical <- [alias1, alias2]
+                mappings = [f"{c} <- [{', '.join(aliases)}]" for c, aliases in synonym_groups.items()]
+                logger.info(f"  🔗 归类 ({len(synonym_groups)}): {'; '.join(mappings[:5])}")
+            if kept_direct:
+                display = kept_direct[:10]
+                suffix = f"... (+{len(kept_direct)-10})" if len(kept_direct) > 10 else ""
+                logger.info(f"  ✅ 保留 ({len(kept_direct)}): {', '.join(display)}{suffix}")
+            
+        except Exception as e:
+            # 简化报错日志，避免刷屏
+            error_msg = str(e)
+            if "524" in error_msg:
+                logger.warning(f"AI API超时 (524)，跳过本次 Tag 优化")
+            else:
+                logger.error(f"AI处理Tag失败: {e}")
+                
+            # 记录错误到数据库 (仅非超时错误)
+            if "524" not in error_msg:
+                try:
+                    err_id = await db.add_ai_error(tags, str(e))
+                    self.occurred_errors.append(err_id)
+                except Exception as db_e:
+                    logger.error(f"记录错误日志失败: {db_e}")
+            
+            # 失败时保留所有tags
+            for tag in tags:
+                self._cache[tag] = tag
+    
+from utils import TAG_TRANSLATIONS
+
+
+def _build_ai_prompt(tags: list[str]) -> str:
+    """构建优化后的 AI 提示词"""
+    
+    # 构建完整的标准词库（供 AI 参考）
+    canonical_dict = {}
+    for canonical, query_str in TAG_TRANSLATIONS.items():
+        aliases = [p.strip().replace("(", "").replace(")", "") for p in query_str.split(" OR ")]
+        for alias in aliases:
+            if alias != canonical:
+                canonical_dict[alias] = canonical
+    
+    # 格式化词库为紧凑字符串
+    dict_entries = [f"{k} → {v}" for k, v in canonical_dict.items()]
+    dict_text = " | ".join(dict_entries)
+
+    return f"""# Pixiv Tag 清洗任务
+
+## 目标
+将原始 Pixiv 标签清洗为适合用户画像分析的标准化标签。
+
+## 已有标准词库（必须优先使用）
+以下是系统已定义的标准映射，如果输入包含这些标签，**必须**使用对应的标准形式：
+{dict_text}
+
+## 规则
+
+### 1. 过滤（放入 meaningless）
+删除以下类型的标签：
+- **平台/统计类**: original, pixiv, users入り, bookmark, 収藏, 仕事絵
+- **创作过程类**: 落書き, 練習, WIP, sketch, doodle
+- **宣传/请求类**: お仕事募集中, commission, request, follow me
+- **年份/日期类**: 2024, 2023, 新年, クリスマス
+- **纯数字或无意义字符** (⚠️注意：如果数字代表角色名如"37"或作品名如"1999"等，请**保留**，不要过滤)
+
+### 2. 归一化（放入 synonyms）
+将同义词映射到 **Danbooru 风格** 标准标签：
+- 格式: 全小写 + 下划线 (snake_case)
+- **多语言合并**: 必须将中文/日文的作品名、角色名合并为统一的英文/罗马音标签
+- **优先使用上方词库中的标准形式**，如果词库中没有，再自行判断
+
+### 3. 保留（不出现在输出中）
+仅保留无法归类或无需标准化的描述性标签（且不属于同义词）：
+- 独特的风格描述
+- 具体的场景细节
+- **注意**：如果一个标签可以被归一化（如作品名），必须归一化，**不要**保留原样！
+
+## 输入
+```json
+{json.dumps(tags, ensure_ascii=False)}
+```
+
+## 输出要求
+严格 JSON，无 Markdown 包裹：
+```json
+{{
+  "meaningless": ["tag1", "tag2"],
+  "synonyms": {{"原tag": "标准tag"}}
+}}
+```
+如果某类别为空，使用空数组/对象。"""
+
+
+# 将 _build_prompt 方法绑定到 AITagProcessor 类
+AITagProcessor._build_prompt = lambda self, tags: _build_ai_prompt(tags)
+
+
+class XPProfiler:
+    """XP画像构建器"""
+    
+    def __init__(
+        self,
+        client: PixivClient,
+        stop_words: Optional[list[str]] = None,
+        discovery_rate: float = 0.1,
+        time_decay_days: int = 180,
+        ai_config: Optional[dict] = None
+    ):
+        self.client = client
+        self.stop_words = set(stop_words or [])
+        self.discovery_rate = discovery_rate
+        self.time_decay_days = time_decay_days
+        self.ai_processor = AITagProcessor(ai_config or {})
+        
+        # 添加默认停用词（归一化为小写）
+        # Pixiv 常见无意义标签
+        default_stop_words = [
+            # 通用描述
+            "original", "オリジナル", "manga", "漫画", "pixiv",
+            "illustration", "イラスト", "練習", "practice",
+            "落書き", "doodle", "sketch", "スケッチ",
+            "drawing", "art", "artwork", "fanart", "ファンアート",
+            "digital", "デジタル", "アナログ", "analog",
+            
+            # 分级标签
+            "R-18", "R-18G", "R18", "NSFW", "SFW", "safe",
+            
+            # 数字/编号类
+            "1000users入り", "500users入り", "100users入り", "50users入り",
+            "5000users入り", "10000users入り", "users入り",
+            "1000bookmarks", "500bookmarks", "100bookmarks",
+            
+            # 活动/比赛标签
+            "コンテスト", "contest", "企画", "project",
+            "お題", "リクエスト", "request", "commission",
+            "落書き集", "まとめ", "詰め合わせ", "log",
+            
+            # 平台标签
+            "twitter", "fanbox", "patreon", "skeb",
+            "pixivfanbox", "fantia",
+            
+            # 通用形容词
+            "cute", "kawaii", "かわいい", "可愛い",
+            "beautiful", "綺麗", "pretty", "sexy",
+            "cool", "かっこいい", "カッコイイ",
+            
+            # 其他无意义
+            "girls", "girl", "boy", "boys", "woman", "man",
+            "female", "male", "solo", "1girl", "1boy",
+            "2girls", "2boys", "multiple_girls", "multiple_boys",
+            "背景", "background", "風景", "landscape",
+            "創作", "オリキャラ", "original_character", "oc",
+            "うちの子", "看板娘", "版権", "二次創作",
+            "仕事絵", "お仕事", "work",
+        ]
+        for word in default_stop_words:
+            self.stop_words.add(word.lower().replace(" ", "_"))
+            
+    async def load_blacklist(self):
+        """从数据库加载黑名单"""
+        try:
+            blacklisted = await db.get_blacklisted_tags()
+            for tag in blacklisted:
+                self.stop_words.add(self._normalize_tag(tag))
+            logger.info(f"已加载 {len(blacklisted)} 个黑名单Tag")
+        except Exception as e:
+            logger.error(f"加载黑名单失败: {e}")
+    
+    async def build_profile(
+        self,
+        user_id: int,
+        scan_limit: int = 500,
+        include_private: bool = False
+    ) -> dict[str, float]:
+        """
+        扫描收藏，构建XP权重字典
+        
+        Args:
+            user_id: 目标用户ID
+            scan_limit: 扫描收藏数量
+            include_private: 包含私密收藏
+        
+        Returns:
+            {tag: weight} 权重字典
+        """
+        # 获取收藏
+        await self.load_blacklist()  # 确保加载最新黑名单
+        
+        # 1. 加载本地缓存 ID
+        cached_rows = await db.get_xp_bookmarks(user_id)
+        cached_ids = {row['illust_id'] for row in cached_rows}
+        
+        # 2. 检查同步状态
+        sync_key = f"sync_completed_{user_id}"
+        is_completed = await db.get_state(sync_key) == "true"
+        
+        # 定义 Cursor Key 生成器
+        def get_cursor_key(is_private):
+            suffix = "private" if is_private else "public"
+            return f"resume_cursor_{user_id}_{suffix}"
+
+        # 通用获取逻辑封装
+        async def fetch_segment(is_private):
+            cursor_key = get_cursor_key(is_private)
+            saved_cursor = await db.get_state(cursor_key)
+            
+            # 策略判断
+            if is_completed:
+                mode = "update" # 增量更新
+                stop_ids = cached_ids
+                skip_ids = None
+                start_url = None
+                do_tail_resume = False
+            elif saved_cursor:
+                mode = "jump"   # 高效跳转
+                stop_ids = cached_ids
+                skip_ids = None
+                start_url = None
+                do_tail_resume = True
+            else:
+                mode = "slow"   # 慢速扫描 (首次或丢失游标)
+                stop_ids = None
+                skip_ids = cached_ids
+                start_url = None
+                do_tail_resume = False
+                
+            desc = "私密" if is_private else "公开"
+            logger.info(f"[{desc}] 模式: {mode}, 缓存: {len(cached_ids)}")
+
+            # 回调工厂: 区分 Head 更新还是 Tail 更新
+            def make_callback(update_cursor_key=None):
+                async def _cb(items, next_url):
+                    await db.save_xp_bookmarks(user_id, items)
+                    if update_cursor_key and next_url:
+                        await db.set_state(update_cursor_key, next_url)
+                return _cb
+
+            fetched = []
+            
+            # 1. 头部扫描 (填补最新的 Gap)
+            # 即使在 update 模式，也是跑这个。
+            # 如果是 jump 模式，这里负责只抓最新的，不要覆盖 saved_cursor
+            logger.info(f"[{desc}] 正在扫描头部...")
+            head_items = await self.client.get_bookmarks(
+                user_id,
+                limit=scan_limit,
+                private=is_private,
+                stop_ids=stop_ids,
+                skip_ids=skip_ids,
+                start_url=start_url,
+                on_batch=make_callback(update_cursor_key=cursor_key if mode == "slow" else None)
+            )
+            fetched.extend(head_items)
+            
+            # 2. 尾部跳转 (仅 Jump 模式)
+            if do_tail_resume:
+                logger.info(f"[{desc}] ⚡ 触发高效断点续传，直接跳转到: {saved_cursor[:60]}...")
+                # 这里必须从 saved_cursor 开始，并且要更新 cursor_key (推进进度)
+                # 依然传入 stop_ids=cached_ids，万一 хво巴也接上了呢
+                tail_items = await self.client.get_bookmarks(
+                    user_id,
+                    limit=scan_limit, # 剩余额度？暂不精确控制
+                    private=is_private,
+                    start_url=saved_cursor,
+                    stop_ids=cached_ids,
+                    on_batch=make_callback(update_cursor_key=cursor_key)
+                )
+                fetched.extend(tail_items)
+                
+            return fetched
+
+        # 4. 执行获取
+        bookmarks = await fetch_segment(False)
+        
+        if include_private and self.client._logged_in:
+            private_bookmarks = await fetch_segment(True)
+            bookmarks = bookmarks + private_bookmarks
+        
+        # 5. 标记同步完成
+        if not is_completed:
+            await db.set_state(sync_key, "true")
+            logger.info("✅ 全量同步完成，标记为 [已完成]")
+            # 清理游标？可选。留着也没事，下次 is_completed=True 会忽略它。
+        
+        # 6. 重新构建全量列表
+        cached_rows = await db.get_xp_bookmarks(user_id)
+        
+        analyzed_illusts = []
+        for row in cached_rows:
+            # 数据库里存的时间可能是字符串，需转换
+            cdate = row['illust_create_date']
+            if isinstance(cdate, str):
+                try:
+                    cdate = datetime.fromisoformat(cdate)
+                except:
+                    cdate = datetime.now()
+            
+            analyzed_illusts.append(Illust(
+                id=row['illust_id'],
+                title="Cached",
+                user_id=user_id,
+                user_name="",
+                tags=json.loads(row['tags']),
+                bookmark_count=0,
+                view_count=0,
+                page_count=1,
+                image_urls=[],
+                is_r18=False,
+                ai_type=0,
+                create_date=cdate
+            ))
+            
+        bookmarks = analyzed_illusts
+        logger.info(f"XP分析数据源: {len(bookmarks)} 个收藏作品 (含本地历史)")
+        
+        # 统计Tag出现次数和时间 (存储 illust_id 用于正确计算 DF)
+        # 支持权重系数 (liked items = 0.5x，因为 apply_feedback 已给过 1.0x)
+        tag_occurrences: dict[str, list[tuple[int, datetime, float]]] = defaultdict(list)
+        
+        # 获取已点赞的作品ID (避免双倍计分)
+        liked_ids = await db.get_liked_illusts()
+        
+        for illust in bookmarks:
+            # 已点赞的作品给 0.5x 权重 (与反馈的 1.0 合计 = 1.5x)
+            weight_mult = 0.5 if illust.id in liked_ids else 1.0
+            
+            for tag in illust.tags:
+                normalized = self._normalize_tag(tag)
+                if normalized and normalized not in self.stop_words:
+                    tag_occurrences[normalized].append((illust.id, illust.create_date, weight_mult))
+        
+        # AI 处理：过滤无意义tag和归类同义tag
+        if self.ai_processor.enabled:
+            all_tags = list(tag_occurrences.keys())
+            valid_tags, synonym_map = await self.ai_processor.process_tags(all_tags)
+            
+            # 合并同义tag的统计
+            new_occurrences = defaultdict(list)
+            for tag, occs in tag_occurrences.items():
+                if tag in synonym_map:
+                    # 映射到规范化tag
+                    new_occurrences[synonym_map[tag]].extend(occs)
+                elif tag in valid_tags:
+                    new_occurrences[tag].extend(occs)
+                # else: 被过滤的无意义tag，丢弃
+            
+            tag_occurrences = new_occurrences
+            logger.info(f"AI处理后剩余 {len(tag_occurrences)} 个有效Tag")
+        
+        # 计算权重
+        total_docs = len(bookmarks)
+        profile = {}
+        
+        for tag, occurrences in tag_occurrences.items():
+            # 正确计算 DF: 包含该 Tag 的不同作品数
+            unique_illusts = set(item[0] for item in occurrences)
+            dates = [item[1] for item in occurrences]
+            weights = [item[2] for item in occurrences]  # 权重系数
+            
+            weight = self._calculate_weight(
+                term_frequency=len(occurrences),
+                document_frequency=len(unique_illusts),
+                total_documents=total_docs,
+                occurrence_dates=dates,
+                weight_multipliers=weights  # 传入权重系数
+            )
+            profile[tag] = weight
+        
+        # 计算Tag组合权重 (Co-occurrence)
+        pair_counts = Counter()
+        for illust in bookmarks:
+            # 获取该作品所有有效的 normalized tags
+            valid_tags = []
+            for tag in illust.tags:
+                norm = self._normalize_tag(tag)
+                if norm and norm not in self.stop_words:
+                    valid_tags.append(norm)
+            
+            # 统计组合 (只统计高频Tag的组合以减少噪音)
+            if len(valid_tags) >= 2:
+                # 排序以保证 (A, B) 和 (B, A) 视为同一个组合
+                valid_tags.sort()
+                # 生成所有两两组合
+                for t1, t2 in itertools.combinations(valid_tags, 2):
+                    # 仅当两个Tag都在Profile中有一定权重时才统计（例如 Top 50）
+                    # 这里简化为：所有组合都统计，但后续根据频率筛选
+                    pair_counts[(t1, t2)] += 1
+        
+        # 保存热门组合
+        pairs_to_save = []
+        for (t1, t2), count in pair_counts.most_common(50):
+            # 组合权重 = 频率 * (Tag1权重 + Tag2权重)
+            weight = count * (profile.get(t1, 0) + profile.get(t2, 0))
+            pairs_to_save.append((t1, t2, weight))
+            
+        await db.update_xp_tag_pairs(pairs_to_save)
+        
+        # 保存到数据库 (现有代码)
+        await db.update_xp_profile(profile)
+        
+        logger.info(f"构建XP画像完成，共 {len(profile)} 个Tag，{len(pairs_to_save)} 个热门组合")
+        return profile
+    
+    def _normalize_tag(self, tag: str) -> str:
+        """
+        Tag归一化
+        1. 统一转小写
+        2. 去除空格
+        3. 别名映射
+        """
+        tag = tag.strip().lower()
+        
+        # 检查别名映射
+        for alias, canonical in TAG_ALIASES.items():
+            if tag == alias.lower():
+                return canonical
+        
+        # 替换空格为下划线
+        tag = tag.replace(" ", "_")
+        
+        return tag
+    
+    def _calculate_weight(
+        self,
+        term_frequency: int,
+        document_frequency: int,
+        total_documents: int,
+        occurrence_dates: list[datetime],
+        weight_multipliers: list[float] = None
+    ) -> float:
+        """
+        权重计算（优化后的 TF-IDF + 时间衰减）
+        
+        weight = weighted_TF × IDF
+        - weighted_TF = Σ(time_decay × weight_mult)
+        - IDF = log(N / (df + 1)) + 1  (带平滑的标准IDF)
+        """
+        now = datetime.now(occurrence_dates[0].tzinfo if occurrence_dates else None)
+        
+        # 如果没有提供权重系数，默认全部为 1.0
+        if weight_multipliers is None:
+            weight_multipliers = [1.0] * len(occurrence_dates)
+        
+        # 计算带时间衰减的 TF (含权重系数)
+        weighted_tf = 0
+        for i, date in enumerate(occurrence_dates):
+            days_ago = (now - date).days
+            # 确保 days_ago 不为负
+            days_ago = max(0, days_ago)
+            decay = math.exp(-days_ago / self.time_decay_days)
+            # 应用权重系数 (liked items = 0.5x)
+            weighted_tf += decay * weight_multipliers[i]
+        
+        # 标准 IDF (带平滑防止除零)
+        idf = math.log(total_documents / (document_frequency + 1)) + 1
+        
+        return weighted_tf * idf
+    
+    async def get_top_tags(self, n: int = 20) -> list[tuple[str, float]]:
+        """获取权重最高的N个Tag"""
+        profile = await db.get_xp_profile()
+        sorted_tags = sorted(profile.items(), key=lambda x: x[1], reverse=True)
+        return sorted_tags[:n]
+    
+    async def apply_feedback(self, illust: Illust, action: str, config: dict):
+        """
+        应用用户反馈调整权重
+        
+        Args:
+            illust: 作品对象
+            action: 'like' | 'dislike'
+            config: 反馈配置
+        """
+        like_boost = config.get("like_boost", 0.5)
+        dislike_penalty = config.get("dislike_penalty", 0.3)
+        dislike_threshold = config.get("dislike_threshold", 3)
+        
+        for tag in illust.tags:
+            normalized = self._normalize_tag(tag)
+            if not normalized or normalized in self.stop_words:
+                continue
+            
+            if action == "like":
+                await db.adjust_tag_weight(normalized, like_boost)
+                logger.debug(f"Tag '{normalized}' 权重 +{like_boost}")
+            
+            elif action == "dislike":
+                await db.adjust_tag_weight(normalized, -dislike_penalty)
+                count = await db.increment_tag_dislike(normalized)
+                
+                if count >= dislike_threshold:
+                    self.stop_words.add(normalized)
+                    logger.info(f"Tag '{normalized}' 累计否认 {count} 次，加入黑名单")
+                else:
+                    logger.debug(f"Tag '{normalized}' 权重 -{dislike_penalty}")
+        
+        # 记录反馈
+        await db.record_feedback(illust.id, action)
