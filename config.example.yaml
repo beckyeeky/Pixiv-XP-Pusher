@@ -3,7 +3,13 @@
 
 pixiv:
   # Pixiv 刷新令牌 (通过 get_token.py 获取，或手动填入)
+  # 此 Token 用于搜索、排行榜等操作
   refresh_token: "YOUR_REFRESH_TOKEN_HERE"
+  
+  # 可选：同步专用 Token (仅用于获取收藏和关注动态)
+  # 使用独立 Token 可降低主号因搜索等操作被封禁的风险
+  # 留空或删除此行则使用主 Token
+  sync_token: ""
   
   # 您的 Pixiv 用户ID (自动获取，或手动指定)
   user_id: 0
@@ -22,6 +28,12 @@ profiler:
     model: "gpt-4o-mini"
     # 并发请求数 (建议 5-20)
     concurrency: 10
+    # 批次大小
+    batch_size: 200
+    
+    # 标签清洗配置
+    filter_meaningless: true
+    merge_synonyms: true
 
   # 标签画像配置
   scan_limit: 1000        # 扫描收藏数量上限
@@ -29,19 +41,17 @@ profiler:
   time_decay_days: 180    # 时间衰减半衰期（天），权重随时间降低
   saturation_threshold: 0.5 # 高频 Tag 饱和度阈值 (0-1)，超过此比例自动过滤
   
-  tags:
-    # 过滤无意义标签
-    filter_meaningless: true
-    # 合并同义标签
-    merge_synonyms: true
-    # 额外黑名单 (不仅限于自动分析的)
-    blacklist:
-      - "R-18"
-      - "R-18G"
-    # 画像生成时保留权重最高的 N 个标签
-    top_n: 20
-    # 是否包含私密收藏用于分析
-    include_private: true
+  # 画像生成时保留权重最高的 N 个标签
+  top_n: 20
+  # 是否包含私密收藏用于分析
+  include_private: true
+  
+  # 停用词 (手动指定)
+  stop_words:
+    - original
+    - manga
+    - pixiv
+    - illustration
 
 scheduler:
   # 定时任务配置 (Cron 表达式: 分 时 日 月 周)
@@ -50,7 +60,7 @@ scheduler:
   # 是否合并错过的任务
   coalesce: true
   # 每日维护任务时间 (日报 + 清理)
-  daily_report_cron: "0 0 * * *"  # 默认每天 00:00
+  daily_report_cron: "0 0 * * *"
 
 filter:
   daily_limit: 20         # 每日推送上限
@@ -60,11 +70,28 @@ filter:
   min_create_days: 30     # 过滤 N 天前的作品
   r18_mode: false         # 是否允许 R18 (需 Token 权限)
 
+  # 黑名单标签
+  blacklist_tags:
+    - "R-18G"
+
 fetcher:
   bookmark_threshold:
     search: 1000          # 搜索结果的最低收藏数要求
+    subscription: 0
+  
   subscribed_artists: []  # 额外关注的画师 ID 列表
   
+  date_range_days: 7      # 获取最近 N 天的作品
+  
+  ranking:
+    enabled: true
+    modes: ["day", "week", "month"]
+    limit: 100
+    
+  match_score:
+    min_threshold: 0.4
+    weight_in_sort: 0.5
+
   # MAB 策略配额限制 (占比 0.0 - 1.0)
   mab_limits:
     # 至少保留 20% 给每个策略，防止饿死
@@ -77,24 +104,33 @@ notifier:
   types: [telegram]
   
   # 多图作品配置
-  max_pages: 10         # 打包发送的最大页数，超过此项将仅发送封面 + 链接提示
+  max_pages: 10         # 打包发送的最大页数
+  multi_page_mode: "cover_link" # 模式: cover_link / media_group
   
+  # 邮件配置
+  email:
+    smtp_host: ""
+    smtp_port: 465
+    to_address: ""
+    username: ""
+
   # Telegram Bot
   telegram:
-    bot_token: "YOUR_BOT_TOKEN"
+    bot_token: "YOUR_BOT_TOKEN_HERE"
     # 推送目标 Chat ID (支持列表)
     chat_ids: 
       - 123456789
-    # 话题 ID (可选，用于 Supergroup 话题)
-    thread_id: null
     # 允许互动的用户 ID 列表 (安全设置)
     allowed_users:
       - 12345678
-    # 代理地址 (可选，国内环境必需，如 http://127.0.0.1:7890)
+    # 话题 ID (可选，用于 Supergroup 话题)
+    thread_id: null
+    # 代理地址 (可选)
     proxy_url: null
+    
     # 图片压缩配置
-    image_quality: 85         # JPEG 压缩质量 (50-100)，越低越小但越模糊
-    max_image_size: 2000      # 图片最大边长 (px)，大于此值会缩放
+    image_quality: 85         # JPEG 压缩质量 (50-100)
+    max_image_size: 2000      # 图片最大边长 (px)
     
     # Topic 智能分流 (可选，用于 Supergroup 话题自动分类)
     # topic_rules:
@@ -103,7 +139,7 @@ notifier:
     #   wallpaper: 12346        # 风景作品发送到此 topic
     # topic_tag_mapping:        # 标签到分类的映射
     #   wallpaper: ["風景", "背景", "landscape", "scenery"]
-      
+
   # OneBot / QQ
   onebot:
     ws_url: "ws://127.0.0.1:3001"
@@ -111,7 +147,7 @@ notifier:
     group_id: null            # 群聊目标群号
     push_to_private: true
     push_to_group: false
-    master_id: 12345678       # 主人 QQ (只有主人能使用指令)
+    master_id: 12345678       # 主人 QQ
 
 # 反馈与权重配置
 feedback:
@@ -119,4 +155,14 @@ feedback:
   dislike_penalty: 0.3        # 不喜欢时权重减少量
   dislike_threshold: 3        # 累计不喜欢达到此次数时，提示建议屏蔽
   max_chain_depth: 3          # 连锁反应最大连击次数
-  related_push_limit: 1       # 每次反馈触发关联推送的数量 (默认 1)
+  related_push_limit: 1       # 每次反馈触发关联推送的数量
+
+network:
+  max_concurrency: 5
+  random_delay: [1.0, 3.0]
+  requests_per_minute: 60
+
+web:
+  enabled: false
+  password: "YOUR_PASSWORD_HERE"
+  port: 8000

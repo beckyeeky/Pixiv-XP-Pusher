@@ -22,6 +22,36 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+async def _retry_on_flood(coro_func, max_retries=3):
+    """
+    Retry a coroutine on Flood Control errors.
+    coro_func should be a callable that returns a coroutine (not the coroutine itself).
+    """
+    from telegram.error import RetryAfter
+    
+    for attempt in range(max_retries):
+        try:
+            return await coro_func()
+        except RetryAfter as e:
+            wait_time = e.retry_after + 1  # Add 1 second buffer
+            logger.warning(f"Flood control exceeded. Sleeping for {wait_time} seconds...")
+            await asyncio.sleep(wait_time)
+        except Exception as e:
+            error_msg = str(e)
+            if "Flood control exceeded" in error_msg:
+                # Parse retry time from error message
+                import re
+                match = re.search(r"Retry in (\d+)", error_msg)
+                wait_time = int(match.group(1)) + 1 if match else 10
+                logger.warning(f"Flood control exceeded. Sleeping for {wait_time} seconds...")
+                await asyncio.sleep(wait_time)
+            else:
+                raise  # Re-raise non-flood errors
+    
+    # Final attempt without catching
+    return await coro_func()
+
+
 class TelegramNotifier(BaseNotifier):
     """Telegram Bot 推送"""
     
@@ -42,12 +72,24 @@ class TelegramNotifier(BaseNotifier):
         topic_rules: dict | None = None,       # Topic 分流规则 {category: topic_id}
         topic_tag_mapping: dict | None = None  # 标签到分类的映射 {category: [tags]}
     ):
-        self.bot = Bot(token=bot_token)
-        # 支持单个或多个 chat_id
+        # Auto-detect proxy if not provided
+        if not proxy_url:
+            import urllib.request
+            sys_proxies = urllib.request.getproxies()
+            proxy_url = sys_proxies.get("https") or sys_proxies.get("http")
+            if proxy_url:
+                logger.info(f"TelegramNotifier using system proxy: {proxy_url}")
+
+        from telegram.request import HTTPXRequest
+        request = HTTPXRequest(proxy=proxy_url) if proxy_url else None
+        self.bot = Bot(token=bot_token, request=request)
+        
+        # 支持单个或多个 chat_id，并去重防止重复发送
         if isinstance(chat_ids, str):
             self.chat_ids = [chat_ids] if chat_ids else []
         else:
-            self.chat_ids = [str(c) for c in chat_ids if c]
+            # 去重：转换为 set 再转回 list
+            self.chat_ids = list(dict.fromkeys(str(c) for c in chat_ids if c))
         
         self.client = client
         self.multi_page_mode = multi_page_mode
@@ -195,9 +237,12 @@ class TelegramNotifier(BaseNotifier):
         from telegram.ext import MessageHandler, filters, CommandHandler
         from apscheduler.triggers.cron import CronTrigger
         
+        from telegram.request import HTTPXRequest
+        
         builder = Application.builder().token(self.bot.token)
         if self.proxy_url:
-            builder = builder.proxy_url(self.proxy_url)
+            request = HTTPXRequest(proxy=self.proxy_url)
+            builder = builder.request(request)
         
         self._app = builder.build()
         
@@ -666,7 +711,7 @@ class TelegramNotifier(BaseNotifier):
             sent_message = None
             try:
                 if image_data:
-                    sent_message = await self.bot.send_photo(
+                    sent_message = await _retry_on_flood(lambda: self.bot.send_photo(
                         chat_id=chat_id,
                         photo=BytesIO(image_data),
                         caption=caption,
@@ -675,11 +720,11 @@ class TelegramNotifier(BaseNotifier):
                         message_thread_id=topic_id,
                         read_timeout=60,
                         write_timeout=60
-                    )
+                    ))
                 else:
                     # Fallback: 使用反代链接
                     proxy_url = get_pixiv_cat_url(illust.id)
-                    sent_message = await self.bot.send_photo(
+                    sent_message = await _retry_on_flood(lambda: self.bot.send_photo(
                         chat_id=chat_id,
                         photo=proxy_url,
                         caption=caption,
@@ -688,7 +733,7 @@ class TelegramNotifier(BaseNotifier):
                         message_thread_id=self.thread_id,
                         read_timeout=60,
                         write_timeout=60
-                    )
+                    ))
                 
                 if sent_message:
                     self._message_illust_map[sent_message.message_id] = illust.id
@@ -833,24 +878,24 @@ class TelegramNotifier(BaseNotifier):
         if media:
             for chat_id in self.chat_ids:
                 try:
-                    await self.bot.send_media_group(
+                    await _retry_on_flood(lambda: self.bot.send_media_group(
                         chat_id=chat_id,
                         media=media,
                         message_thread_id=self.thread_id,
                         read_timeout=120,
                         write_timeout=120,
                         connect_timeout=60
-                    )
+                    ))
                     any_success = True  # 图片发送成功即视为成功
                     
                     # MediaGroup不支持按钮，单独发送 (允许失败)
                     try:
-                        await self.bot.send_message(
+                        await _retry_on_flood(lambda: self.bot.send_message(
                             chat_id=chat_id,
                             text=f"作品 #{illust.id} 的操作：",
                             reply_markup=keyboard,
                             message_thread_id=self.thread_id
-                        )
+                        ))
                     except Exception as e:
                         logger.warning(f"发送操作按钮到 {chat_id} 失败: {e}")
                         

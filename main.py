@@ -30,8 +30,11 @@ _task_lock = asyncio.Lock()
 # 全局链式反应追踪器 {user_id: {"count": 0, "last_time": timestamp}}
 _chain_tracker = {}
 
-async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfiler):
+async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfiler, sync_client: PixivClient = None):
     """创建并配置推送器（支持多推送渠道）"""
+    # sync_client 用于 on_action 回调中的 main_task 调用
+    if sync_client is None:
+        sync_client = client
     notifier_cfg = config.get("notifier", {})
     # 支持单个 type 字符串或 types 列表
     notifier_types = notifier_cfg.get("types") or [notifier_cfg.get("type", "telegram")]
@@ -254,7 +257,7 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
              # 确保 config, client, profiler, notifiers 可用
              # 这里是一个闭包，可以直接访问外部变量
              # 使用 create_task 异步执行，避免阻塞 Bot 响应
-             asyncio.create_task(main_task(config, client, profiler, notifiers))
+             asyncio.create_task(main_task(config, client, profiler, notifiers, sync_client))
              
         elif action == "update_schedule":
             # 更新调度计划 (支持多个时间)
@@ -281,7 +284,7 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                             sched.add_job(
                                 main_task, 
                                 CronTrigger.from_crontab(cron_expr),
-                                args=[config, client, profiler, notifiers],
+                                args=[config, client, profiler, notifiers, sync_client],
                                 id=f'push_job_{i}'
                             )
                         except Exception as e:
@@ -345,20 +348,42 @@ async def setup_services(config: dict):
     """初始化全局服务 (DB, Client, Profiler, Notifiers)"""
     await init_db()
     
-    # Init Client
+    # 公共网络配置
     network_cfg = config.get("network", {})
-    client = PixivClient(
-        refresh_token=config["pixiv"].get("refresh_token"),
-        requests_per_minute=network_cfg.get("requests_per_minute", 60),
-        random_delay=tuple(network_cfg.get("random_delay", [1.0, 3.0])),
-        max_concurrency=network_cfg.get("max_concurrency", 5)
+    pixiv_cfg = config.get("pixiv", {})
+    proxy_url = config.get("notifier", {}).get("telegram", {}).get("proxy_url")
+    
+    client_kwargs = {
+        "requests_per_minute": network_cfg.get("requests_per_minute", 60),
+        "random_delay": tuple(network_cfg.get("random_delay", [1.0, 3.0])),
+        "max_concurrency": network_cfg.get("max_concurrency", 5),
+        "proxy_url": proxy_url
+    }
+    
+    # 主客户端 (用于搜索、排行榜等高风险操作)
+    main_client = PixivClient(
+        refresh_token=pixiv_cfg.get("refresh_token"),
+        **client_kwargs
     )
-    await client.login()
+    await main_client.login()
+    
+    # 同步客户端 (用于获取收藏、关注动态等低风险操作)
+    sync_token = pixiv_cfg.get("sync_token")
+    if sync_token:
+        sync_client = PixivClient(
+            refresh_token=sync_token,
+            **client_kwargs
+        )
+        await sync_client.login()
+        logger.info("✅ 已启用同步专用 Token (sync_token)")
+    else:
+        sync_client = main_client  # 回退到主客户端
+        logger.info("未配置 sync_token，收藏同步将使用主 Token")
 
-    # Init Profiler
+    # Init Profiler (使用 sync_client，只读操作)
     profiler_cfg = config.get("profiler", {})
     profiler = XPProfiler(
-        client=client,
+        client=sync_client,  # 使用同步客户端获取收藏
         stop_words=profiler_cfg.get("stop_words"),
         discovery_rate=profiler_cfg.get("discovery_rate", 0.1),
         time_decay_days=profiler_cfg.get("time_decay_days", 180),
@@ -366,16 +391,25 @@ async def setup_services(config: dict):
         saturation_threshold=profiler_cfg.get("saturation_threshold", 0.5)
     )
     
-    # Init Notifiers
-    notifiers = await setup_notifiers(config, client, profiler)
+    # Init Notifiers (使用 main_client 用于下载图片等，sync_client 用于 on_action 回调)
+    notifiers = await setup_notifiers(config, main_client, profiler, sync_client)
     
-    return client, profiler, notifiers
+    # 返回双客户端
+    return main_client, sync_client, profiler, notifiers
 
 
-async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, notifiers: list):
+async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, notifiers: list, sync_client: PixivClient = None):
     """
     执行一次完整的推送任务 (依赖外部服务)
+    
+    Args:
+        client: 主客户端 (用于搜索、排行榜、下载)
+        sync_client: 同步客户端 (用于获取关注动态，可选)
     """
+    # 如果未传入 sync_client，使用 main_client
+    if sync_client is None:
+        sync_client = client
+        
     if _task_lock.locked():
         logger.info("⏳ 推送任务正在运行中，本次触发已跳过或排队")
     
@@ -405,12 +439,12 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
         # 2. 获取内容
         fetcher_cfg = config.get("fetcher", {})
         
-        # 1.5 获取关注列表（用于加权和订阅检查）
+        # 1.5 获取关注列表（使用 sync_client，低风险操作）
         following_ids = set()
         pixiv_uid = config.get("pixiv", {}).get("user_id", 0)
         if pixiv_uid:
             try:
-                following_ids = await client.fetch_following(user_id=pixiv_uid)
+                following_ids = await sync_client.fetch_following(user_id=pixiv_uid)
             except Exception as e:
                 logger.warning(f"获取关注列表失败: {e}")
         
@@ -418,8 +452,10 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
         all_subs = list(following_ids | manual_subs)
         logger.info(f"有效关注画师数: {len(all_subs)} (API获取: {len(following_ids)}, 手动: {len(manual_subs)})")
 
+        # ContentFetcher: 搜索/排行榜用 client，订阅检查用 sync_client
         fetcher = ContentFetcher(
             client=client,
+            sync_client=sync_client,  # 新增：同步客户端
             bookmark_threshold=fetcher_cfg.get("bookmark_threshold", {"search": 1000, "subscription": 0}),
             date_range_days=fetcher_cfg.get("date_range_days", 7),
             subscribed_artists=list(manual_subs),
@@ -521,7 +557,7 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
 
 async def run_once(config: dict):
     """立即执行一次"""
-    client, profiler, notifiers = await setup_services(config)
+    main_client, sync_client, profiler, notifiers = await setup_services(config)
     
     # 即使是 Run Once，如果用于测试，可能也需要 Feedback?
     # 但 cli --once 通常是脚本调用，跑完即走。
@@ -532,9 +568,12 @@ async def run_once(config: dict):
     # 所以 --once 真的就是 "Fire and Forget".
     
     try:
-        await main_task(config, client, profiler, notifiers)
+        await main_task(config, main_client, profiler, notifiers, sync_client)
     finally:
-        await client.close()
+        await main_client.close()
+        # 如果 sync_client 是独立实例，也需要关闭
+        if sync_client is not main_client:
+            await sync_client.close()
         for n in (notifiers or []):
             if hasattr(n, 'close'): 
                 try: 
@@ -629,7 +668,7 @@ async def daily_report_task(config: dict, notifiers: list, profiler=None):
 
 async def run_scheduler(config: dict, run_immediately: bool = False):
     """启动调度器 (Daemon Mode)"""
-    client, profiler, notifiers = await setup_services(config)
+    main_client, sync_client, profiler, notifiers = await setup_services(config)
     
     # Start Listeners (Background)
     if notifiers:
@@ -647,7 +686,7 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
         # Or await it? Since it's "Now", usually await is fine, or create task to allow listener to process concurrently?
         # If we await, listener logic (OneBot) runs in background task ok.
         # BUT if main_task crashes, we still want scheduler.
-        asyncio.create_task(main_task(config, client, profiler, notifiers))
+        asyncio.create_task(main_task(config, main_client, profiler, notifiers, sync_client))
 
     scheduler = AsyncIOScheduler()
     scheduler_cfg = config.get("scheduler", {})
@@ -698,7 +737,7 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
             scheduler.add_job(
                 main_task, 
                 CronTrigger.from_crontab(cron_expr),
-                args=[config, client, profiler, notifiers],
+                args=[config, main_client, profiler, notifiers, sync_client],
                 id=f'push_job_{i}',
                 coalesce=coalesce,
                 misfire_grace_time=3600
@@ -731,7 +770,10 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
     finally:
-        await client.close()
+        await main_client.close()
+        # 如果 sync_client 是独立实例，也需要关闭
+        if sync_client is not main_client:
+            await sync_client.close()
         for n in (notifiers or []):
             if hasattr(n, 'close'): 
                 try:

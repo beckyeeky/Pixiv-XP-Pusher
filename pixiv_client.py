@@ -44,14 +44,31 @@ class PixivClient:
         refresh_token: Optional[str] = None,
         requests_per_minute: int = 60,
         random_delay: tuple[float, float] = (1.0, 3.0),
-        max_concurrency: int = 5
+        max_concurrency: int = 5,
+        proxy_url: Optional[str] = None
     ):
         self.refresh_token = refresh_token
-        self.api = AppPixivAPI()
+        
+        # Auto-detect proxy if not provided
+        if not proxy_url:
+            import urllib.request
+            sys_proxies = urllib.request.getproxies()
+            # Prioritize https, then http
+            proxy_url = sys_proxies.get("https") or sys_proxies.get("http")
+            if proxy_url:
+                logger.info(f"Using system proxy: {proxy_url}")
+                # Ensure scheme if missing (though getproxies usually includes it)
+                if not proxy_url.startswith("http"):
+                    proxy_url = f"http://{proxy_url}"
+
+        # 传递代理给 AppPixivAPI (注意: pixivpy 可能需要特定的代理传参方式，通常是在 login 或 api 调用时)
+        # 但 AppPixivAPI 构造函数可以直接接收 env 覆盖，或者我们在 login 时传递 proxy
+        self.api = AppPixivAPI(proxy=proxy_url) 
         self.rate_limiter = AsyncRateLimiter(requests_per_minute, random_delay)
         self.download_semaphore = asyncio.Semaphore(max_concurrency)
         self._session: Optional[aiohttp.ClientSession] = None
         self._logged_in = False
+        self.proxy_url = proxy_url
     
     async def login(self) -> bool:
         """

@@ -39,7 +39,7 @@ def oauth_pkce(transform):
     code_challenge = transform(code_verifier.encode("ascii"))
     return code_verifier, code_challenge
 
-def save_to_config(access_token, refresh_token, user_id, expires_in):
+def save_to_config(access_token, refresh_token, user_id, expires_in, target_key="refresh_token"):
     """Save the obtained tokens to config.yaml."""
     print(f"\n[INFO] Saving tokens to config.yaml...")
     try:
@@ -59,8 +59,8 @@ def save_to_config(access_token, refresh_token, user_id, expires_in):
         else:
              print(f"[INFO] Preserving existing user_id in config: {config['pixiv']['user_id']} (Login User: {user_id})")
         
-        config["pixiv"]["refresh_token"] = refresh_token
-        # Optional: save access token if needed, but refresh token is key
+        config["pixiv"][target_key] = refresh_token
+        # Optional: save access token if needed (only for main token usually, but simpler to skip)
         # config["pixiv"]["access_token"] = access_token 
         
         with open(config_path, "w", encoding="utf-8") as f:
@@ -178,8 +178,25 @@ def login():
         print(f"User ID: {user_id}")
         print(f"Refresh Token: {refresh_token}")
         
+        print(f"Refresh Token: {refresh_token}")
+        
         if refresh_token:
-            save_to_config(access_token, refresh_token, user_id, expires_in)
+            print("\n" + "="*50)
+            print("💾 Token 保存选项")
+            print("1. 保存为主 Token (refresh_token) - 用于搜索/推荐 [覆盖]")
+            print("2. 保存为同步 Token (sync_token) - 仅用于收藏/关注")
+            print("3. 仅显示，不保存")
+            
+            save_choice = input("\n请选择保存位置 (1/2/3) [默认1]: ").strip()
+            
+            target_key = "refresh_token"
+            if save_choice == "2":
+                target_key = "sync_token"
+            elif save_choice == "3":
+                print("已跳过保存。请手动复制上面的 Refresh Token。")
+                return
+
+            save_to_config(access_token, refresh_token, user_id, expires_in, target_key)
 
     except Exception as e:
         print(f"❌ Error during token request: {e}")
@@ -200,7 +217,13 @@ def manual_input():
     
     user_id = input("请输入 Pixiv User ID (留空自动获取): ").strip()
     
-    save_to_config(None, token, user_id or None, None)
+    print("\n保存位置:")
+    print("1. refresh_token (主)")
+    print("2. sync_token (同步)")
+    pk_choice = input("选择 (1/2) [默认1]: ").strip()
+    target_key = "sync_token" if pk_choice == "2" else "refresh_token"
+
+    save_to_config(None, token, user_id or None, None, target_key)
     print("✅ Token 已保存!")
 
 if __name__ == "__main__":

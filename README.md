@@ -113,7 +113,11 @@ python main.py --now
 ```yaml
 pixiv:
   user_id: 12345678       # 你的 Pixiv 用户 ID（用于分析 XP）
-  refresh_token: "..."    # 必填，用于访问 API
+  refresh_token: "..."    # 必填，用于搜索/排行榜等操作
+
+  # [New!] 可选：同步专用 Token (仅用于获取收藏和关注动态)
+  # 使用独立 Token 可降低主号因搜索等操作被封禁的风险
+  sync_token: ""          # 留空则使用主 Token
 
 profiler:
   ai:

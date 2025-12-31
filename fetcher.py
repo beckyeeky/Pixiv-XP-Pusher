@@ -26,9 +26,11 @@ class ContentFetcher:
         subscribed_artists: Optional[list[int]] = None,
         discovery_rate: float = 0.1,
         ranking_config: Optional[dict] = None,
-        mab_limits: Optional[dict] = None
+        mab_limits: Optional[dict] = None,
+        sync_client: PixivClient = None  # 新增：同步专用客户端
     ):
-        self.client = client
+        self.client = client  # 主客户端 (搜索、排行榜)
+        self.sync_client = sync_client or client  # 同步客户端 (订阅、关注)
         self.bookmark_threshold = bookmark_threshold or {"search": 1000, "subscription": 0}
         self.date_range_days = date_range_days
         self.subscribed_artists = subscribed_artists or []
@@ -214,13 +216,14 @@ class ContentFetcher:
     async def check_subscriptions(self) -> list[Illust]:
         """
         策略B：检查订阅画师更新 + 关注者新作
+        使用 sync_client 进行低风险操作
         """
         all_illusts = []
         seen_ids = set()
         
-        # 1. 获取关注者时间轴 (高效)
+        # 1. 获取关注者时间轴 (高效) - 使用 sync_client
         try:
-            feed_illusts = await self.client.fetch_follow_latest(limit=100)
+            feed_illusts = await self.sync_client.fetch_follow_latest(limit=100)
             for illust in feed_illusts:
                 if illust.id not in seen_ids:
                     all_illusts.append(illust)
@@ -228,7 +231,7 @@ class ContentFetcher:
         except Exception as e:
             logger.error(f"获取关注时间轴失败: {e}")
             
-        # 2. 检查配置中的特定订阅 (补充)
+        # 2. 检查配置中的特定订阅 (补充) - 使用 sync_client
         # 如果订阅列表只有几个，检查一下也无妨；如果是空的则跳过
         if self.subscribed_artists:
             since = datetime.now().astimezone() - timedelta(days=self.date_range_days)
@@ -236,7 +239,7 @@ class ContentFetcher:
                 # 如果刚才的 feed 里已经有了很多该画师的图，或许可以跳过？
                 # 简单起见，还是查一下，但限制数量
                 try:
-                    illusts = await self.client.get_user_illusts(
+                    illusts = await self.sync_client.get_user_illusts(
                         user_id=artist_id,
                         since=since,
                         limit=5
@@ -522,21 +525,26 @@ class ContentFetcher:
         # 执行获取
         results = await asyncio.gather(*tasks)
         
-        # 展平结果
-        # results: [search_list, sub_list, rank_list, related_list] -> 按顺序
+        # 展平并按顺序解析结果
+        idx = 0
+        search_res = []
+        if quotas['xp_search'] > 0:
+            search_res = results[idx] if isinstance(results[idx], list) else []
+            idx += 1
+            
+        sub_res = results[idx] if isinstance(results[idx], list) else []
+        idx += 1
         
-        search_res = results[0] if isinstance(results[0], list) else []
-        sub_res = results[1] if isinstance(results[1], list) else []
-        rank_res = results[2] if isinstance(results[2], list) else []
-        related_res = results[3] if isinstance(results[3], list) else [] # New
+        rank_res = results[idx] if isinstance(results[idx], list) else []
+        idx += 1
+        
+        related_res = results[idx] if isinstance(results[idx], list) else []
         
         # 记录来源 (Strategy Attribution)
-        # 我们给 illust 对象打标，或者返回 dict
-        # 这里直接修改 illust 对象属性 (Hack)
-        for ill in search_res: ill.strategy = "xp_search"
-        for ill in sub_res: ill.strategy = "subscription"
-        for ill in rank_res: ill.strategy = "ranking"
-        for ill in related_res: ill.strategy = "related"
+        for ill in search_res: ill.source = "xp_search"
+        for ill in sub_res: ill.source = "subscription"
+        for ill in rank_res: ill.source = "ranking"
+        for ill in related_res: ill.source = "related"
         
         # 合并并去重
         all_illusts = search_res + sub_res + rank_res + related_res
