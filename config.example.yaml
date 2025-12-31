@@ -70,7 +70,13 @@ scheduler:
   daily_report_cron: "0 0 * * *"
 
 filter:
-  daily_limit: 20         # 每日推送上限
+  match_score:
+    min_threshold: 0.1    # 匹配度低于此分数的作品会被丢弃
+    weight_in_sort: 0.6   # 排序时匹配度占的权重 (0.6表示匹配度占60%, 收藏数占40%)
+
+  daily_limit: 20         # 单次任务推送上限 (Per-Run Limit)
+                          # 注意：此参数控制每次脚本运行时最多推送多少张
+                          # 如果您每小时运行一次，全天总量 = 24 * daily_limit
   exclude_ai: false        # 过滤 AI 生成作品
   max_per_artist: 3       # 单画师最多推送数
   artist_boost: 0.3       # 订阅画师加成
