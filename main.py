@@ -24,6 +24,37 @@ from utils import setup_logging
 logger = logging.getLogger(__name__)
 
 
+async def retry_async(coro_func, *args, max_retries: int = 3, delay: float = 5.0, backoff: float = 2.0, **kwargs):
+    """
+    通用异步重试函数
+    
+    Args:
+        coro_func: 要执行的异步函数
+        max_retries: 最大重试次数
+        delay: 初始延迟秒数
+        backoff: 延迟倍增系数
+    
+    Returns:
+        函数返回值，或在所有重试失败后返回 None
+    """
+    last_error = None
+    current_delay = delay
+    
+    for attempt in range(max_retries + 1):
+        try:
+            return await coro_func(*args, **kwargs)
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries:
+                logger.warning(f"操作失败 (尝试 {attempt + 1}/{max_retries + 1}): {e}，{current_delay:.1f}s 后重试...")
+                await asyncio.sleep(current_delay)
+                current_delay *= backoff
+            else:
+                logger.error(f"操作最终失败 (已重试 {max_retries} 次): {e}")
+    
+    return None
+
+
 # 全局运行锁，防止任务并发
 _task_lock = asyncio.Lock()
 
@@ -632,22 +663,23 @@ async def run_once(config: dict):
                     pass
 
 async def daily_report_task(config: dict, notifiers: list, profiler=None):
-    """每日维护任务：生成日报 + 数据清理 + AI 标签刷新"""
+    """每日维护任务：生成日报 + 数据清理 + AI 标签刷新
+    
+    设计原则：
+    - 每个步骤独立 try/except，即使某一步失败，其他步骤仍可继续
+    - 网络相关操作（AI、发送）使用 retry_async 自动重试
+    """
     logger.info("📊 开始执行每日维护任务...")
     
     maintenance_summary = []
+    lines = ["📊 **每日 XP 日报**\n"]
     
+    # ========== 1. 生成日报 (Top Tags + MAB Stats) ==========
     try:
-        from database import (
-            get_top_xp_tags, get_all_strategy_stats, 
-            sync_blocked_tags_to_xp, get_uncached_tags, cleanup_old_sent_history
-        )
+        from database import get_top_xp_tags, get_all_strategy_stats
         
-        # ========== 1. 生成日报 ==========
         top_tags = await get_top_xp_tags(10)
         stats = await get_all_strategy_stats()
-        
-        lines = ["📊 **每日 XP 日报**\n"]
         
         if top_tags:
             lines.append("🎯 **Top 10 XP 标签**")
@@ -662,58 +694,87 @@ async def daily_report_task(config: dict, notifiers: list, profiler=None):
                 name = strategy_names.get(strategy, strategy)
                 rate_pct = data["rate"] * 100
                 lines.append(f"  • {name}: {data['success']}/{data['total']} ({rate_pct:.1f}%)")
-        
-        # ========== 2. 同步屏蔽标签到 XP 画像 ==========
+    except Exception as e:
+        logger.error(f"生成日报统计失败: {e}")
+        maintenance_summary.append(f"⚠️ 日报统计失败: {e}")
+    
+    # ========== 2. 同步屏蔽标签到 XP 画像 ==========
+    try:
+        from database import sync_blocked_tags_to_xp
         blocked_removed = await sync_blocked_tags_to_xp()
         if blocked_removed > 0:
             maintenance_summary.append(f"🚫 从画像中移除 {blocked_removed} 个已屏蔽标签")
             logger.info(f"已从 XP 画像中移除 {blocked_removed} 个屏蔽标签")
-        
-        # ========== 3. AI 标签增量处理 ==========
-        if profiler and hasattr(profiler, 'ai_processor') and profiler.ai_processor.enabled:
+    except Exception as e:
+        logger.error(f"同步屏蔽标签失败: {e}")
+        maintenance_summary.append(f"⚠️ 同步屏蔽标签失败: {e}")
+    
+    # ========== 3. AI 标签增量处理 (带重试) ==========
+    if profiler and hasattr(profiler, 'ai_processor') and profiler.ai_processor.enabled:
+        try:
+            from database import get_uncached_tags
             uncached_tags = await get_uncached_tags(limit=200)
             if uncached_tags:
                 logger.info(f"发现 {len(uncached_tags)} 个未处理标签，启动 AI 清洗...")
-                try:
-                    valid_tags, mapping = await profiler.ai_processor.process_tags(uncached_tags)
+                
+                async def _ai_process():
+                    return await profiler.ai_processor.process_tags(uncached_tags)
+                
+                result = await retry_async(_ai_process, max_retries=3, delay=10.0)
+                if result:
+                    valid_tags, mapping = result
                     maintenance_summary.append(f"🤖 AI 清洗 {len(uncached_tags)} 个标签 → {len(valid_tags)} 个有效")
                     logger.info(f"AI 清洗完成: {len(valid_tags)}/{len(uncached_tags)} 有效")
-                except Exception as e:
-                    logger.error(f"AI 清洗失败: {e}")
-                    maintenance_summary.append(f"⚠️ AI 清洗失败: {e}")
-        
-        # ========== 4. 清理旧数据 ==========
+                else:
+                    maintenance_summary.append(f"⚠️ AI 清洗失败 (已重试)")
+        except Exception as e:
+            logger.error(f"AI 清洗失败: {e}")
+            maintenance_summary.append(f"⚠️ AI 清洗失败: {e}")
+    
+    # ========== 4. 清理旧推送历史 ==========
+    try:
+        from database import cleanup_old_sent_history
         old_removed = await cleanup_old_sent_history(days=30)
         if old_removed > 0:
             maintenance_summary.append(f"🗑️ 清理 {old_removed} 条过期推送记录")
             logger.info(f"已清理 {old_removed} 条 30 天前的推送历史")
-        
-        # 清理旧作品缓存
+    except Exception as e:
+        logger.error(f"清理推送历史失败: {e}")
+        maintenance_summary.append(f"⚠️ 清理推送历史失败: {e}")
+    
+    # ========== 5. 清理旧作品缓存 ==========
+    try:
         from database import cleanup_old_illust_cache
         cache_removed = await cleanup_old_illust_cache(days=60)
         if cache_removed > 0:
             maintenance_summary.append(f"🗑️ 清理 {cache_removed} 条过期作品缓存")
             logger.info(f"已清理 {cache_removed} 条 60 天前的作品缓存")
-        
-        # ========== 5. 添加维护摘要到日报 ==========
-        if maintenance_summary:
-            lines.append("")
-            lines.append("🛠️ **维护记录**")
-            for item in maintenance_summary:
-                lines.append(f"  {item}")
-        
-        report_msg = "\n".join(lines)
-        
-        # ========== 6. 发送日报 ==========
+    except Exception as e:
+        logger.error(f"清理作品缓存失败: {e}")
+        maintenance_summary.append(f"⚠️ 清理作品缓存失败: {e}")
+    
+    # ========== 6. 添加维护摘要到日报 ==========
+    if maintenance_summary:
+        lines.append("")
+        lines.append("🛠️ **维护记录**")
+        for item in maintenance_summary:
+            lines.append(f"  {item}")
+    
+    report_msg = "\n".join(lines)
+    
+    # ========== 7. 发送日报 (带重试) ==========
+    async def _send_report():
         for n in notifiers:
             if hasattr(n, 'send_text'):
                 await n.send_text(report_msg)
-                break
-        
-        logger.info("✅ 每日维护任务完成")
-        
-    except Exception as e:
-        logger.error(f"每日维护任务失败: {e}")
+                return True
+        return False
+    
+    result = await retry_async(_send_report, max_retries=5, delay=30.0, backoff=2.0)
+    if not result:
+        logger.error("发送日报最终失败")
+    
+    logger.info("✅ 每日维护任务完成")
 
 
 async def run_scheduler(config: dict, run_immediately: bool = False):

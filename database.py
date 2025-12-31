@@ -1016,8 +1016,8 @@ async def cleanup_old_sent_history(days: int = 30) -> int:
     """清理 N 天前的推送历史记录，返回删除数量"""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
-            DELETE FROM sent_history 
-            WHERE sent_at < datetime('now', ?)
+            DELETE FROM push_history 
+            WHERE pushed_at < datetime('now', ?)
         """, (f'-{days} days',))
         await db.commit()
         return cursor.rowcount
