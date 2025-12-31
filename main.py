@@ -176,7 +176,7 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
         # 如果是"喜欢"，同步添加到 Pixiv 收藏
         if action in ("like", "1"):
              try:
-                 await client.add_bookmark(illust_id)
+                 await sync_client.add_bookmark(illust_id)
                  
                  # 更新 MAB 策略反馈
                  from database import get_push_source, update_strategy_stats
