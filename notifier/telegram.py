@@ -34,7 +34,7 @@ async def _retry_on_flood(coro_func, max_retries=3):
             return await coro_func()
         except RetryAfter as e:
             wait_time = e.retry_after + 1  # Add 1 second buffer
-            logger.warning(f"Flood control exceeded. Sleeping for {wait_time} seconds...")
+            logger.info(f"Flood control: Sleeping for {wait_time}s to avoid conflict...")
             await asyncio.sleep(wait_time)
         except Exception as e:
             error_msg = str(e)
@@ -43,7 +43,7 @@ async def _retry_on_flood(coro_func, max_retries=3):
                 import re
                 match = re.search(r"Retry in (\d+)", error_msg)
                 wait_time = int(match.group(1)) + 1 if match else 10
-                logger.warning(f"Flood control exceeded. Sleeping for {wait_time} seconds...")
+                logger.info(f"Flood control: Sleeping for {wait_time}s to avoid conflict...")
                 await asyncio.sleep(wait_time)
             else:
                 raise  # Re-raise non-flood errors
@@ -856,7 +856,7 @@ class TelegramNotifier(BaseNotifier):
                     video_file = BytesIO(local_mp4_bytes)
                     video_file.name = f"{illust.id}.mp4"
                     
-                    await self.bot.send_animation(
+                    await _retry_on_flood(lambda: self.bot.send_animation(
                         chat_id=chat_id,
                         animation=video_file,
                         caption=caption,
@@ -865,13 +865,13 @@ class TelegramNotifier(BaseNotifier):
                         message_thread_id=topic_id,
                         read_timeout=60,
                         write_timeout=60
-                    )
+                    ))
                     any_success = True
                     continue
 
                 # 2. 尝试反代 URL
                 try:
-                    sent = await self.bot.send_animation(
+                    sent = await _retry_on_flood(lambda: self.bot.send_animation(
                         chat_id=chat_id,
                         animation=video_url,
                         caption=caption,
@@ -880,7 +880,7 @@ class TelegramNotifier(BaseNotifier):
                         message_thread_id=topic_id,
                         read_timeout=60,
                         write_timeout=60
-                    )
+                    ))
                     if sent:
                         self._message_illust_map[sent.message_id] = illust.id
                         any_success = True
@@ -913,7 +913,7 @@ class TelegramNotifier(BaseNotifier):
                     video_file = BytesIO(local_mp4_bytes)
                     video_file.name = f"{illust.id}.mp4"
                     
-                    sent = await self.bot.send_animation(
+                    sent = await _retry_on_flood(lambda: self.bot.send_animation(
                         chat_id=chat_id,
                         animation=video_file,
                         caption=caption,
@@ -922,7 +922,7 @@ class TelegramNotifier(BaseNotifier):
                         message_thread_id=topic_id,
                         read_timeout=120,
                         write_timeout=120
-                    )
+                    ))
                     if sent:
                         self._message_illust_map[sent.message_id] = illust.id
                         any_success = True

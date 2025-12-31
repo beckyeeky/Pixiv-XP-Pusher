@@ -326,9 +326,17 @@ def convert_ugoira_to_mp4(zip_data: bytes, frames: list[dict]) -> bytes:
                 tmp_path = tmp_file.name
             
             try:
-                # 显式指定 pixelformat 避免部分播放器黑屏
-                # macro_block_size=None 避免尺寸不是16倍数报错
-                imageio.mimwrite(tmp_path, images, fps=fps, codec='libx264', pixelformat='yuv420p', macro_block_size=None)
+                # fix: libx264 要求宽高必须是偶数，添加 pad filter
+                # scale=trunc(iw/2)*2:trunc(ih/2)*2 也可以，但 pad 不会变形
+                imageio.mimwrite(
+                    tmp_path, 
+                    images, 
+                    fps=fps, 
+                    codec='libx264', 
+                    pixelformat='yuv420p', 
+                    macro_block_size=None,
+                    ffmpeg_params=['-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2']
+                )
                 
                 with open(tmp_path, "rb") as f:
                     mp4_bytes = f.read()
