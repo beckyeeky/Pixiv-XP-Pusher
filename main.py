@@ -391,7 +391,12 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                 image_quality=tg_cfg.get("image_quality", 85),
                 max_image_size=tg_cfg.get("max_image_size", 2000),
                 topic_rules=tg_cfg.get("topic_rules"),
-                topic_tag_mapping=tg_cfg.get("topic_tag_mapping")
+                topic_tag_mapping=tg_cfg.get("topic_tag_mapping"),
+                # 批量模式配置
+                batch_mode=tg_cfg.get("batch_mode", "single"),
+                batch_show_title=tg_cfg.get("batch_show_title", True),
+                batch_show_artist=tg_cfg.get("batch_show_artist", True),
+                batch_show_tags=tg_cfg.get("batch_show_tags", True),
             ))
             logger.info("已启用 Telegram 推送")
     
@@ -877,7 +882,34 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
     
     try:
         while True:
-            await asyncio.sleep(3600)
+            await asyncio.sleep(1800)  # 每 30 分钟检查一次
+            
+            # Telegram 连接健康检查
+            for n in notifiers:
+                if isinstance(n, TelegramNotifier):
+                    need_restart = False
+                    
+                    # 检查 _app 是否存在且 updater 是否在运行
+                    if not n._app or not n._app.updater or not n._app.updater.running:
+                        logger.warning("Telegram updater 未运行，需要重启...")
+                        need_restart = True
+                    else:
+                        # updater 在运行，检查实际连接
+                        try:
+                            await n._app.bot.get_me()
+                            logger.debug("Telegram 连接健康检查通过")
+                        except Exception as e:
+                            logger.warning(f"Telegram 健康检查失败: {e}，需要重启轮询...")
+                            need_restart = True
+                    
+                    if need_restart:
+                        try:
+                            await n.stop_polling()
+                            await asyncio.sleep(5)
+                            await n.start_polling()
+                            logger.info("✅ Telegram 轮询已重启")
+                        except Exception as restart_err:
+                            logger.error(f"重启 Telegram 轮询失败: {restart_err}")
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
     finally:

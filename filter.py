@@ -11,7 +11,11 @@ import database as db
 logger = logging.getLogger(__name__)
 
 
-def calculate_match_score(illust: Illust, xp_profile: dict[str, float]) -> float:
+def calculate_match_score(
+    illust: Illust, 
+    xp_profile: dict[str, float],
+    negative_profile: dict[str, float] = None  # 负向画像
+) -> float:
     """
     计算作品与 XP 画像的匹配度（改进版）
     
@@ -20,6 +24,7 @@ def calculate_match_score(illust: Illust, xp_profile: dict[str, float]) -> float
     2. 按最高权重归一化
     3. 奖励高权重匹配（Top 20% 的 tag 匹配额外 +20%）
     4. 使用对数平滑匹配数量影响
+    5. 负向画像惩罚（匹配到不喜欢的 Tag 时扣分）
     
     Returns:
         0.0 ~ 1.0 归一化分数
@@ -37,12 +42,14 @@ def calculate_match_score(illust: Illust, xp_profile: dict[str, float]) -> float
     total_score = 0.0
     matched_count = 0
     high_weight_matches = 0
+    negative_penalty = 0.0  # 负向惩罚累计
     
     for tag in illust.tags:
         # 使用统一的归一化逻辑
         from utils import normalize_tag
         normalized_tag = normalize_tag(tag)
         
+        # 正向匹配
         weight = None
         if normalized_tag in xp_profile:
             weight = xp_profile[normalized_tag]
@@ -55,8 +62,18 @@ def calculate_match_score(illust: Illust, xp_profile: dict[str, float]) -> float
             matched_count += 1
             if weight >= top_threshold:
                 high_weight_matches += 1
+        
+        # 负向匹配（匹配到不喜欢的 Tag）
+        if negative_profile:
+            neg_weight = negative_profile.get(normalized_tag, 0)
+            if neg_weight > 0:
+                # 惩罚系数 0.5，避免过度惩罚
+                negative_penalty += neg_weight * 0.5
     
     if matched_count == 0:
+        # 即使没有正向匹配，如果有负向匹配也要惩罚
+        if negative_penalty > 0:
+            return max(-negative_penalty / (max_weight + 1), -0.5)  # 最多负 -0.5
         return 0.0
     
     # 基础分：权重总和 / (匹配数 × 最大权重)
@@ -68,7 +85,11 @@ def calculate_match_score(illust: Illust, xp_profile: dict[str, float]) -> float
     # 高权重匹配奖励：每匹配一个 Top 20% 的 tag +5%，最多 +20%
     quality_bonus = min(high_weight_matches * 0.05, 0.2)
     
-    return min(base_score + quantity_bonus + quality_bonus, 1.0)
+    # 负向惩罚（归一化后扣除）
+    penalty_normalized = negative_penalty / (max_weight + 1) if max_weight > 0 else 0
+    
+    final_score = base_score + quantity_bonus + quality_bonus - penalty_normalized
+    return max(min(final_score, 1.0), 0.0)  # 限制在 0~1
 
 
 class ContentFilter:
@@ -178,11 +199,13 @@ class ContentFilter:
                 seen_ids.add(illust.id)
                 unique_result.append(illust)
         
-        # 5. 计算匹配度并过滤 + 画师权重加成
+        # 5. 计算匹配度并过滤 + 画师权重加成 + 负向画像惩罚
+        negative_profile = await db.get_negative_profile()  # 加载负向画像
+        
         scored_result = []
         for illust in unique_result:
             if xp_profile:
-                score = calculate_match_score(illust, xp_profile)
+                score = calculate_match_score(illust, xp_profile, negative_profile)
                 
                 # 画师权重加成：关注画师的作品额外加成
                 if illust.user_id in self.subscribed_artists:

@@ -170,15 +170,33 @@ class OneBotNotifier(BaseNotifier):
                     from PIL import Image
                     
                     with Image.open(io.BytesIO(image_data)) as img:
-                        if img.mode != "RGB":
-                            img = img.convert("RGB")
+                        # 修复透明度警告和转换问题
+                        if img.mode == 'P':
+                            img = img.convert('RGBA')
                         
-                        max_size = 1920
-                        if max(img.size) > max_size:
-                            img.thumbnail((max_size, max_size))
+                        if img.mode in ('RGBA', 'LA'):
+                            # 透明背景填充白色
+                            bg = Image.new('RGB', img.size, (255, 255, 255))
+                            bg.paste(img, mask=img.split()[-1])
+                            img = bg
+                        elif img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        
+                        # 激进压缩以确保合并转发不超时
+                        max_dim = 1080  # 限制最大边长 1080p
+                        if max(img.size) > max_dim:
+                            img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
                         
                         output = io.BytesIO()
-                        img.save(output, format="JPEG", quality=85)
+                        # 降低质量，且不包含 metadata
+                        img.save(output, format="JPEG", quality=75, optimize=True)
+                        
+                        # 检查大小，如果还是太大(>500KB)，继续压缩
+                        if output.tell() > 500 * 1024:
+                            output.seek(0)
+                            output.truncate()
+                            img.save(output, format="JPEG", quality=60, optimize=True)
+                            
                         b64 = base64.b64encode(output.getvalue()).decode()
                         return f"[CQ:image,file=base64://{b64}]"
                 except Exception as e:

@@ -161,6 +161,23 @@ async def init_db():
                 score FLOAT DEFAULT 0,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            
+            -- 负向画像 (用于记录负反馈，主动排斥相似作品)
+            CREATE TABLE IF NOT EXISTS negative_profile (
+                tag TEXT PRIMARY KEY,
+                weight REAL DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            -- 批量消息与作品映射 (用于 Telegraph 批量模式)
+            CREATE TABLE IF NOT EXISTS batch_message_map (
+                message_id INTEGER,
+                chat_id TEXT,
+                illust_index INTEGER,  -- 作品在批次中的编号 (1-based)
+                illust_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (message_id, chat_id, illust_index)
+            );
         """)
         await db.commit()
 
@@ -981,6 +998,8 @@ async def get_all_strategy_stats() -> dict[str, dict]:
         rows = await cursor.fetchall()
         result = {}
         for strategy, success, total in rows:
+            success = int(success or 0)
+            total = int(total or 0)
             rate = success / total if total > 0 else 0.0
             result[strategy] = {"success": success, "total": total, "rate": rate}
         return result
@@ -1019,5 +1038,150 @@ async def cleanup_old_sent_history(days: int = 30) -> int:
             DELETE FROM push_history 
             WHERE pushed_at < datetime('now', ?)
         """, (f'-{days} days',))
+        await db.commit()
+        return cursor.rowcount
+
+
+# ============ 负向画像 (负反馈记录) ============
+async def get_negative_profile() -> dict[str, float]:
+    """获取负向画像"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT tag, weight FROM negative_profile ORDER BY weight DESC")
+        rows = await cursor.fetchall()
+        return {tag: weight for tag, weight in rows}
+
+
+async def adjust_negative_weight(tag: str, delta: float):
+    """调整负向画像权重"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO negative_profile (tag, weight, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(tag) DO UPDATE SET 
+                weight = weight + excluded.weight,
+                updated_at = excluded.updated_at
+        """, (tag, delta, datetime.now()))
+        await db.commit()
+
+
+async def get_top_negative_tags(limit: int = 20) -> list[tuple[str, float]]:
+    """获取权重最高的负向 Tag"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT tag, weight FROM negative_profile ORDER BY weight DESC LIMIT ?",
+            (limit,)
+        )
+        rows = await cursor.fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+
+# ============ 冷启动支持 ============
+async def get_popular_tags(limit: int = 20) -> list[tuple[str, float]]:
+    """
+    获取热门 Tag（基于收藏频率）
+    用于冷启动时注入先验权重
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 从 xp_bookmarks 统计标签出现频率
+        cursor = await db.execute("""
+            SELECT tag, COUNT(*) as freq
+            FROM (
+                SELECT json_each.value as tag 
+                FROM xp_bookmarks, json_each(xp_bookmarks.tags)
+            )
+            GROUP BY tag
+            ORDER BY freq DESC
+            LIMIT ?
+        """, (limit,))
+        rows = await cursor.fetchall()
+        if rows:
+            return [(row[0], row[1]) for row in rows]
+        
+        # Fallback: 如果 xp_bookmarks 为空，从现有画像中取 top tags
+        cursor = await db.execute(
+            "SELECT tag, weight FROM xp_profile ORDER BY weight DESC LIMIT ?",
+            (limit,)
+        )
+        rows = await cursor.fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+
+async def get_bookmark_count(user_id: int = None) -> int:
+    """获取收藏数量（用于检测冷启动）"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        if user_id:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM xp_bookmarks WHERE user_id = ?",
+                (user_id,)
+            )
+        else:
+            cursor = await db.execute("SELECT COUNT(*) FROM xp_bookmarks")
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+
+# ============ 批量消息映射 (Telegraph 模式) ============
+async def save_batch_mapping(message_id: int, chat_id: str, illusts: list):
+    """
+    保存批量消息与作品的映射关系
+    
+    Args:
+        message_id: Telegram 消息 ID
+        chat_id: 聊天 ID
+        illusts: 作品列表 (需要有 .id 属性)
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        data = [(message_id, str(chat_id), i + 1, illust.id) 
+                for i, illust in enumerate(illusts)]
+        await db.executemany(
+            """INSERT OR REPLACE INTO batch_message_map 
+               (message_id, chat_id, illust_index, illust_id) VALUES (?, ?, ?, ?)""",
+            data
+        )
+        await db.commit()
+
+
+async def get_batch_illust_id(message_id: int, chat_id: str, index: int) -> int | None:
+    """
+    根据消息 ID 和编号获取作品 ID
+    
+    Args:
+        message_id: Telegram 消息 ID
+        chat_id: 聊天 ID
+        index: 作品编号 (1-based)
+    
+    Returns:
+        作品 ID，不存在时返回 None
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """SELECT illust_id FROM batch_message_map 
+               WHERE message_id = ? AND chat_id = ? AND illust_index = ?""",
+            (message_id, str(chat_id), index)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+
+async def get_batch_all_illust_ids(message_id: int, chat_id: str) -> list[int]:
+    """获取批量消息中所有作品 ID"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """SELECT illust_id FROM batch_message_map 
+               WHERE message_id = ? AND chat_id = ? 
+               ORDER BY illust_index""",
+            (message_id, str(chat_id))
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+
+
+async def cleanup_old_batch_mappings(days: int = 7) -> int:
+    """清理旧的批量消息映射"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """DELETE FROM batch_message_map 
+               WHERE created_at < datetime('now', ?)""",
+            (f'-{days} days',)
+        )
         await db.commit()
         return cursor.rowcount

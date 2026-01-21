@@ -691,6 +691,25 @@ class XPProfiler:
             
         await db.update_xp_tag_pairs(pairs_to_save)
         
+        # ============ 冷启动处理：收藏少时注入热门 Tag 弱先验 ============
+        cold_start_threshold = 50  # 收藏少于此数时触发冷启动
+        if len(bookmarks) < cold_start_threshold:
+            logger.info(f"🧊 检测到冷启动场景 (收藏: {len(bookmarks)} < {cold_start_threshold})")
+            try:
+                popular_tags = await db.get_popular_tags(20)
+                injected_count = 0
+                for tag, freq in popular_tags:
+                    normalized_tag = self._normalize_tag(tag)
+                    if normalized_tag and normalized_tag not in profile and normalized_tag not in self.stop_words:
+                        # 弱先验权重：频率 * 0.1（不会压过真实收藏）
+                        prior_weight = freq * 0.1
+                        profile[normalized_tag] = prior_weight
+                        injected_count += 1
+                if injected_count > 0:
+                    logger.info(f"   注入 {injected_count} 个热门 Tag 作为弱先验")
+            except Exception as e:
+                logger.warning(f"冷启动注入失败: {e}")
+        
         # 保存到数据库 (现有代码)
         await db.update_xp_profile(profile)
         
@@ -814,6 +833,10 @@ class XPProfiler:
                 adjusted_penalty = dislike_penalty * (1 - weight_ratio * 0.5)
                 
                 await db.adjust_tag_weight(normalized, -adjusted_penalty)
+                
+                # 同时更新负向画像（用于主动排斥相似作品）
+                await db.adjust_negative_weight(normalized, adjusted_penalty)
+                
                 count = await db.increment_tag_dislike(normalized)
                 
                 # 用户要求：仅确认一次，没确认就算了

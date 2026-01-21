@@ -24,10 +24,16 @@ logger = logging.getLogger(__name__)
 
 async def _retry_on_flood(coro_func, max_retries=3):
     """
-    Retry a coroutine on Flood Control errors.
+    Retry a coroutine on Flood Control errors and network errors.
     coro_func should be a callable that returns a coroutine (not the coroutine itself).
     """
-    from telegram.error import RetryAfter
+    from telegram.error import RetryAfter, NetworkError, TimedOut
+    
+    # 网络错误关键词（httpx 错误）
+    network_error_keywords = [
+        "ConnectError", "RemoteProtocolError", "disconnected",
+        "TimeoutException", "ConnectionResetError", "ConnectionRefusedError"
+    ]
     
     for attempt in range(max_retries):
         try:
@@ -36,17 +42,27 @@ async def _retry_on_flood(coro_func, max_retries=3):
             wait_time = e.retry_after + 1  # Add 1 second buffer
             logger.info(f"Flood control: Sleeping for {wait_time}s to avoid conflict...")
             await asyncio.sleep(wait_time)
+        except (NetworkError, TimedOut) as e:
+            # Telegram 库的网络错误
+            wait_time = 3 * (attempt + 1)  # 递增等待：3s, 6s, 9s
+            logger.warning(f"网络错误 (尝试 {attempt+1}/{max_retries}): {e}，{wait_time}s 后重试...")
+            await asyncio.sleep(wait_time)
         except Exception as e:
             error_msg = str(e)
+            # 检查是否为 Flood Control
             if "Flood control exceeded" in error_msg:
-                # Parse retry time from error message
                 import re
                 match = re.search(r"Retry in (\d+)", error_msg)
                 wait_time = int(match.group(1)) + 1 if match else 10
                 logger.info(f"Flood control: Sleeping for {wait_time}s to avoid conflict...")
                 await asyncio.sleep(wait_time)
+            # 检查是否为网络错误
+            elif any(kw in error_msg for kw in network_error_keywords):
+                wait_time = 3 * (attempt + 1)
+                logger.warning(f"网络错误 (尝试 {attempt+1}/{max_retries}): {type(e).__name__}，{wait_time}s 后重试...")
+                await asyncio.sleep(wait_time)
             else:
-                raise  # Re-raise non-flood errors
+                raise  # Re-raise non-retryable errors
     
     # Final attempt without catching
     return await coro_func()
@@ -70,7 +86,12 @@ class TelegramNotifier(BaseNotifier):
         image_quality: int = 85,               # JPEG 压缩质量 (默认 85)
         max_image_size: int = 2000,            # 最大边长 (默认 2000px)
         topic_rules: dict | None = None,       # Topic 分流规则 {category: topic_id}
-        topic_tag_mapping: dict | None = None  # 标签到分类的映射 {category: [tags]}
+        topic_tag_mapping: dict | None = None, # 标签到分类的映射 {category: [tags]}
+        # 批量模式配置
+        batch_mode: str = "single",            # single / telegraph
+        batch_show_title: bool = True,
+        batch_show_artist: bool = True,
+        batch_show_tags: bool = True,
     ):
         # Auto-detect proxy if not provided
         if not proxy_url:
@@ -110,12 +131,22 @@ class TelegramNotifier(BaseNotifier):
         self.topic_rules = topic_rules or {}
         self.topic_tag_mapping = topic_tag_mapping or {}
         
+        # 批量模式
+        self.batch_mode = batch_mode
+        self.batch_show_title = batch_show_title
+        self.batch_show_artist = batch_show_artist
+        self.batch_show_tags = batch_show_tags
+        self._telegraph = None  # Telegraph 客户端（延迟初始化）
+        self._pending_input = None  # 等待用户输入的状态
+        
         # 日志
         logger.info(f"Telegram 推送目标: {', '.join(self.chat_ids) or '无'}")
         if self.allowed_users:
             logger.info(f"允许反馈的用户: {self.allowed_users}")
         if self.topic_rules:
             logger.info(f"Topic 分流规则: {list(self.topic_rules.keys())}")
+        if self.batch_mode == "telegraph":
+            logger.info("批量模式: Telegraph")
 
     def _resolve_topic_id(self, illust: Illust) -> int | None:
         """根据作品标签匹配 Topic ID"""
@@ -138,13 +169,312 @@ class TelegramNotifier(BaseNotifier):
         # 返回默认 topic
         return self.topic_rules.get("default", self.thread_id)
 
+    def _build_main_menu(self) -> InlineKeyboardMarkup:
+        """构建主菜单"""
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🚀 推送", callback_data="menu:push"),
+                InlineKeyboardButton("📊 统计", callback_data="menu:stats"),
+            ],
+            [
+                InlineKeyboardButton("🎯 XP画像", callback_data="menu:xp"),
+                InlineKeyboardButton("📦 批量", callback_data="menu:batch"),
+            ],
+            [
+                InlineKeyboardButton("🚫 屏蔽", callback_data="menu:block"),
+                InlineKeyboardButton("⚙️ 设置", callback_data="menu:settings"),
+            ],
+        ])
+    
+    def _build_batch_menu(self) -> InlineKeyboardMarkup:
+        """构建批量设置菜单"""
+        mode_text = "📦 批量" if self.batch_mode == "telegraph" else "📄 逐条"
+        title_icon = "✅" if self.batch_show_title else "❌"
+        artist_icon = "✅" if self.batch_show_artist else "❌"
+        tags_icon = "✅" if self.batch_show_tags else "❌"
+        
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"📄 逐条", callback_data="menu:batch:single"),
+                InlineKeyboardButton(f"📦 批量", callback_data="menu:batch:telegraph"),
+            ],
+            [
+                InlineKeyboardButton(f"标题{title_icon}", callback_data="menu:batch:title"),
+                InlineKeyboardButton(f"画师{artist_icon}", callback_data="menu:batch:artist"),
+                InlineKeyboardButton(f"标签{tags_icon}", callback_data="menu:batch:tags"),
+            ],
+            [InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")],
+        ])
+    
+    def _build_settings_menu(self, config: dict) -> InlineKeyboardMarkup:
+        """构建设置菜单"""
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🤖 AI过滤", callback_data="menu:set:ai"),
+                InlineKeyboardButton("🔞 R18模式", callback_data="menu:set:r18"),
+            ],
+            [
+                InlineKeyboardButton("📊 每日上限", callback_data="menu:set:limit"),
+                InlineKeyboardButton("📅 推送时间", callback_data="menu:set:schedule"),
+            ],
+            [InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")],
+        ])
+    
+    def _build_block_menu(self) -> InlineKeyboardMarkup:
+        """构建屏蔽管理菜单"""
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 查看屏蔽列表", callback_data="menu:block:list")],
+            [
+                InlineKeyboardButton("🏷️ 标签屏蔽", callback_data="menu:block:tag"),
+                InlineKeyboardButton("🎨 画师屏蔽", callback_data="menu:block:artist"),
+            ],
+            [InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")],
+        ])
+
+    def _read_config(self) -> dict:
+        """读取配置文件"""
+        import yaml
+        import os
+        config_path = "config.yaml"
+        if not os.path.exists(config_path): return {}
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        except:
+            return {}
+
+    def _save_config_value(self, *args):
+        """保存配置值 _save_config_value("filter", "daily_limit", 30)"""
+        import yaml
+        import os
+        
+        if len(args) < 2: return
+        keys = args[:-1]
+        value = args[-1]
+        
+        config_path = "config.yaml"
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+            
+            # Navigate to leaf
+            current = config
+            for key in keys[:-1]:
+                if key not in current: current[key] = {}
+                current = current[key]
+            current[keys[-1]] = value
+            
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.dump(config, f, allow_unicode=True, sort_keys=False)
+            logger.info(f"配置已更新: {keys} = {value}")
+        except Exception as e:
+            logger.error(f"保存配置失败: {e}")
+
+    def _save_batch_config(self):
+        """保存批量配置"""
+        self._save_config_value("notifier", "telegram", "batch_mode", self.batch_mode)
+        self._save_config_value("notifier", "telegram", "batch_show_title", self.batch_show_title)
+        self._save_config_value("notifier", "telegram", "batch_show_artist", self.batch_show_artist)
+        self._save_config_value("notifier", "telegram", "batch_show_tags", self.batch_show_tags)
+
+    async def _handle_menu_callback(self, query, data: str):
+        """处理菜单回调"""
+        import database as db
+        
+        parts = data.split(":")
+        action = parts[1] if len(parts) > 1 else ""
+        sub_action = parts[2] if len(parts) > 2 else ""
+        
+        # 主菜单
+        if action == "main":
+            await query.edit_message_text(
+                "🤖 *XP Pusher 控制面板*",
+                reply_markup=self._build_main_menu(),
+                parse_mode="Markdown"
+            )
+        
+        # 立即推送
+        elif action == "push":
+            if self.on_action:
+                await query.edit_message_text("🚀 正在推送...", reply_markup=None)
+                await self.on_action("push", None)
+            else:
+                await query.edit_message_text("❌ 未配置动作处理")
+        
+        # 统计
+        elif action == "stats":
+            stats = await db.get_all_strategy_stats()
+            lines = ["📊 *策略表现*\n"]
+            for strategy, data in stats.items():
+                rate = f"{data['rate']:.1%}" if data['total'] > 0 else "N/A"
+                lines.append(f"• {strategy}: {data['success']}/{data['total']} ({rate})")
+            
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")
+            ]])
+            await query.edit_message_text("\n".join(lines), reply_markup=keyboard, parse_mode="Markdown")
+        
+        # XP画像
+        elif action == "xp":
+            top_tags = await db.get_top_xp_tags(15)
+            lines = ["🎯 *XP 画像 Top 15*\n"]
+            for i, (tag, weight) in enumerate(top_tags, 1):
+                lines.append(f"{i}. `{tag}` ({weight:.2f})")
+            
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")
+            ]])
+            await query.edit_message_text("\n".join(lines), reply_markup=keyboard, parse_mode="Markdown")
+        
+        # 批量设置
+        elif action == "batch":
+            if not sub_action:
+                mode_icon = "📦" if self.batch_mode == "telegraph" else "📄"
+                text = f"📦 *批量模式设置*\n\n当前模式: {mode_icon} `{self.batch_mode}`"
+                await query.edit_message_text(text, reply_markup=self._build_batch_menu(), parse_mode="Markdown")
+            elif sub_action == "single":
+                self.batch_mode = "single"
+                self._save_batch_config()
+                await query.edit_message_text("✅ 已切换为逐条发送模式 (已保存)", reply_markup=self._build_batch_menu())
+            elif sub_action == "telegraph":
+                self.batch_mode = "telegraph"
+                self._save_batch_config()
+                await query.edit_message_text("✅ 已切换为批量模式 (已保存)", reply_markup=self._build_batch_menu())
+            elif sub_action == "title":
+                self.batch_show_title = not self.batch_show_title
+                self._save_batch_config()
+                await query.edit_message_reply_markup(reply_markup=self._build_batch_menu())
+            elif sub_action == "artist":
+                self.batch_show_artist = not self.batch_show_artist
+                self._save_batch_config()
+                await query.edit_message_reply_markup(reply_markup=self._build_batch_menu())
+            elif sub_action == "tags":
+                self.batch_show_tags = not self.batch_show_tags
+                self._save_batch_config()
+                await query.edit_message_reply_markup(reply_markup=self._build_batch_menu())
+        
+        # 屏蔽管理
+        elif action == "block":
+            if not sub_action:
+                await query.edit_message_text(
+                    "🚫 *屏蔽管理*",
+                    reply_markup=self._build_block_menu(),
+                    parse_mode="Markdown"
+                )
+            elif sub_action == "list":
+                blocked_tags = await db.get_blocked_tags()
+                blocked_artists = await db.get_blocked_artists()
+                
+                lines = ["📋 *屏蔽列表*\n"]
+                if blocked_tags:
+                    lines.append("🏷️ 标签:")
+                    for tag in blocked_tags[:10]:
+                        lines.append(f"  • `{tag}`")
+                if blocked_artists:
+                    lines.append("\n🎨 画师:")
+                    for artist_id, name in blocked_artists[:10]:
+                        lines.append(f"  • {name} (`{artist_id}`)")
+                if not blocked_tags and not blocked_artists:
+                    lines.append("_暂无屏蔽_")
+                
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⬅️ 返回", callback_data="menu:block")
+                ]])
+                await query.edit_message_text("\n".join(lines), reply_markup=keyboard, parse_mode="Markdown")
+            elif sub_action == "tag":
+                await query.edit_message_text(
+                    "🏷️ 请回复要屏蔽的标签名称\n\n_直接发送标签名即可_",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("⬅️ 取消", callback_data="menu:block")
+                    ]]),
+                    parse_mode="Markdown"
+                )
+                # 设置状态等待输入
+                self._pending_input = {"type": "block_tag", "chat_id": query.message.chat_id}
+            elif sub_action == "artist":
+                await query.edit_message_text(
+                    "🎨 请回复要屏蔽的画师ID\n\n_发送画师ID (数字)_",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("⬅️ 取消", callback_data="menu:block")
+                    ]]),
+                    parse_mode="Markdown"
+                )
+                self._pending_input = {"type": "block_artist", "chat_id": query.message.chat_id}
+        
+        # 设置
+        elif action == "settings" or action == "set":
+            config = self._read_config()
+            
+            if not sub_action:
+                await query.edit_message_text(
+                    "⚙️ *设置*\n\n_部分设置修改后需重启生效_",
+                    reply_markup=self._build_settings_menu(config),
+                    parse_mode="Markdown"
+                )
+            elif sub_action == "ai":
+                # 切换 AI 过滤 (filter.exclude_ai)
+                current = config.get("filter", {}).get("exclude_ai", False)
+                new_val = not current
+                self._save_config_value("filter", "exclude_ai", new_val)
+                # 刷新并重新读取
+                config = self._read_config()
+                await query.edit_message_text(
+                    f"✅ AI 过滤已 {'开启' if new_val else '关闭'}",
+                    reply_markup=self._build_settings_menu(config)
+                )
+            elif sub_action == "r18":
+                # 循环切换 mixed -> r18_only -> safe
+                current = config.get("filter", {}).get("r18_mode", "mixed")
+                modes = ["mixed", "r18_only", "safe"]
+                try:
+                    next_mode = modes[(modes.index(current) + 1) % len(modes)]
+                except:
+                    next_mode = "mixed"
+                
+                self._save_config_value("filter", "r18_mode", next_mode)
+                config = self._read_config()
+                await query.edit_message_text(
+                    f"✅ R18 模式已切换为: `{next_mode}`",
+                    reply_markup=self._build_settings_menu(config),
+                    parse_mode="Markdown"
+                )
+            elif sub_action == "limit":
+                await query.edit_message_text(
+                    "📊 请回复每日推送上限 (数字)\n\n_例如: 30_",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("⬅️ 取消", callback_data="menu:settings")
+                    ]]),
+                    parse_mode="Markdown"
+                )
+                self._pending_input = {"type": "set_limit", "chat_id": query.message.chat_id}
+            elif sub_action == "schedule":
+                if self.on_action:
+                    await self.on_action("show_schedule", None)
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⬅️ 返回", callback_data="menu:settings")
+                ]])
+                await query.edit_message_text(
+                    "📅 推送时间设置请使用 `/schedule` 命令",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+
+
 
     async def stop_polling(self):
         """停止Bot轮询"""
         if self._app:
-            await self._app.updater.stop()
-            await self._app.stop()
-            await self._app.shutdown()
+            try:
+                if self._app.updater and self._app.updater.running:
+                    await self._app.updater.stop()
+                if self._app.running:
+                    await self._app.stop()
+                await self._app.shutdown()
+                self._app = None  # 清理引用，允许重新初始化
+                logger.info("Telegram Bot 轮询已停止")
+            except Exception as e:
+                logger.error(f"停止 Telegram 轮询时出错: {e}")
+                self._app = None  # 即使出错也清理引用
 
     def _compress_image(self, image_data: bytes, max_size: int = 9 * 1024 * 1024) -> bytes:
         """智能压缩图片到指定大小以下 (默认 9MB)"""
@@ -240,10 +570,12 @@ class TelegramNotifier(BaseNotifier):
         from telegram.request import HTTPXRequest
         
         # 增加超时以减少 "Server disconnected" 错误
+        # 长轮询需要更长的 read_timeout（Telegram 服务端默认最多等待 50 秒）
         request_kwargs = {
-            "read_timeout": 30,
+            "read_timeout": 60,
             "write_timeout": 30,
             "connect_timeout": 30,
+            "pool_timeout": 30,
         }
         if self.proxy_url:
             request_kwargs["proxy"] = self.proxy_url
@@ -281,23 +613,113 @@ class TelegramNotifier(BaseNotifier):
                 else:
                     await query.message.reply_text("❌ 未配置动作处理")
                 return
+            
+            # ===== 菜单回调处理 =====
+            if data.startswith("menu:"):
+                await self._handle_menu_callback(query, data)
+                return
+            
+            if data == "batch_like":
+                # 显示作品选择按钮
+                import database as db
+                illust_ids = await db.get_batch_all_illust_ids(
+                    query.message.message_id, 
+                    str(query.message.chat_id)
+                )
+                if illust_ids:
+                    keyboard = self._build_batch_select_keyboard("like", len(illust_ids))
+                    await query.edit_message_reply_markup(reply_markup=keyboard)
+                return
+            
+            if data == "batch_dislike":
+                import database as db
+                illust_ids = await db.get_batch_all_illust_ids(
+                    query.message.message_id, 
+                    str(query.message.chat_id)
+                )
+                if illust_ids:
+                    keyboard = self._build_batch_select_keyboard("dislike", len(illust_ids))
+                    await query.edit_message_reply_markup(reply_markup=keyboard)
+                return
+            
+            if data.startswith("batch_select:"):
+                # 格式: batch_select:like:3
+                import database as db
+                parts = data.split(":")
+                action = parts[1]  # like or dislike
+                index = int(parts[2])  # 1-based
+                
+                illust_id = await db.get_batch_illust_id(
+                    query.message.message_id,
+                    str(query.message.chat_id),
+                    index
+                )
+                if illust_id:
+                    await self.handle_feedback(illust_id, action)
+                    emoji = "❤️" if action == "like" else "👎"
+                    await query.message.reply_text(f"{emoji} 已记录 #{index} 的反馈")
+                
+                # 恢复原始按钮
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("❤️ 喜欢", callback_data="batch_like"),
+                        InlineKeyboardButton("👎 不喜欢", callback_data="batch_dislike"),
+                    ]
+                ])
+                await query.edit_message_reply_markup(reply_markup=keyboard)
+                return
+            
+            if data.startswith("batch_all:"):
+                # 格式: batch_all:like
+                import database as db
+                action = data.split(":")[1]
+                
+                illust_ids = await db.get_batch_all_illust_ids(
+                    query.message.message_id,
+                    str(query.message.chat_id)
+                )
+                for illust_id in illust_ids:
+                    await self.handle_feedback(illust_id, action)
+                
+                emoji = "❤️" if action == "like" else "👎"
+                await query.message.reply_text(f"{emoji} 已对全部 {len(illust_ids)} 个作品记录反馈")
+                await query.edit_message_reply_markup(reply_markup=None)
+                return
+            
+            if data == "batch_cancel":
+                # 恢复原始按钮
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("❤️ 喜欢", callback_data="batch_like"),
+                        InlineKeyboardButton("👎 不喜欢", callback_data="batch_dislike"),
+                    ]
+                ])
+                await query.edit_message_reply_markup(reply_markup=keyboard)
+                return
 
             if ":" in data:
                 action, illust_id = data.split(":")
                 if action in ("like", "dislike"):
-                    await self.handle_feedback(int(illust_id), action)
-                    
-                    emoji = "❤️" if action == "like" else "👎"
                     try:
-                        await query.edit_message_reply_markup(reply_markup=None)
-                        await query.message.reply_text(f"{emoji} 已记录反馈")
-                    except Exception:
-                        pass
+                        await self.handle_feedback(int(illust_id), action)
+                        
+                        emoji = "❤️" if action == "like" else "👎"
+                        try:
+                            await query.edit_message_reply_markup(reply_markup=None)
+                            await query.message.reply_text(f"{emoji} 已记录反馈")
+                        except Exception as e:
+                            logger.debug(f"更新消息失败 (可忽略): {e}")
+                    except Exception as e:
+                        logger.error(f"处理反馈失败 ({action} {illust_id}): {e}")
+                        try:
+                            await query.message.reply_text(f"❌ 处理失败: {e}")
+                        except:
+                            pass
         
-        # 处理回复消息（1=喜欢, 2=不喜欢）
+        # 处理回复消息（1=喜欢, 2=不喜欢, 或输入内容）
         async def reply_handler(update, context):
             message = update.message
-            if not message or not message.reply_to_message:
+            if not message:
                 return
             
             user_id = message.from_user.id
@@ -307,6 +729,43 @@ class TelegramNotifier(BaseNotifier):
                 return
             
             text = message.text.strip()
+            
+            # ===== 处理等待输入 =====
+            if self._pending_input and self._pending_input.get("chat_id") == message.chat_id:
+                input_type = self._pending_input.get("type")
+                self._pending_input = None  # 清除状态，避免死循环
+                
+                try:
+                    if input_type == "block_tag":
+                        from database import block_tag
+                        await block_tag(text)
+                        await message.reply_text(f"✅ 已屏蔽标签: `{text}`", parse_mode="Markdown")
+                        
+                    elif input_type == "block_artist":
+                        if not text.isdigit():
+                            await message.reply_text("❌ 画师ID必须是数字")
+                            return
+                        from database import block_artist
+                        await block_artist(int(text))
+                        await message.reply_text(f"✅ 已屏蔽画师: `{text}`", parse_mode="Markdown")
+                        
+                    elif input_type == "set_limit":
+                        if not text.isdigit():
+                            await message.reply_text("❌ 必须输入数字")
+                            return
+                        limit = int(text)
+                        # 更新配置
+                        self._save_config_value("filter", "daily_limit", limit)
+                        await message.reply_text(f"✅ 每日推送上限已设置为: `{limit}`", parse_mode="Markdown")
+                        
+                except Exception as e:
+                    await message.reply_text(f"❌ 操作失败: {e}")
+                
+                return
+
+            if not message.reply_to_message:
+                return
+            
             reply_msg_id = message.reply_to_message.message_id
             
             # 查找对应的 illust_id
@@ -530,6 +989,7 @@ class TelegramNotifier(BaseNotifier):
         async def cmd_help(update, context):
             help_text = (
                 "*🤖 Bot 指令帮助*\n\n"
+                "`/menu` - 📋 打开控制面板\n"
                 "`/push` - 🚀 立即触发推送\n"
                 "`/xp` - 🎯 查看 XP 画像 (Top Tags)\n"
                 "`/stats` - 📈 查看策略成功率\n"
@@ -538,12 +998,75 @@ class TelegramNotifier(BaseNotifier):
                 "`/unblock <tag>` - ✅ 取消屏蔽标签\n"
                 "`/block_artist <id>` - 🚫 屏蔽画师\n"
                 "`/unblock_artist <id>` - ✅ 取消屏蔽画师\n"
+                "`/batch` - 📦 批量模式设置\n"
                 "`/help` - ℹ️ 显示此帮助\n\n"
-                "*💡 Tips:*\n"
-                "• 回复作品消息发送 `1` = 喜欢\n"
-                "• 回复作品消息发送 `2` = 不喜欢"
+                "*💡 推荐使用 /menu 菜单操作*"
             )
             await update.message.reply_text(help_text, parse_mode="Markdown")
+        
+        # /menu 和 /start 指令 - 打开控制面板
+        async def cmd_menu(update, context):
+            user_id = update.message.from_user.id
+            if self.allowed_users and user_id not in self.allowed_users:
+                await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
+                return
+            
+            await update.message.reply_text(
+                "🤖 *XP Pusher 控制面板*",
+                reply_markup=self._build_main_menu(),
+                parse_mode="Markdown"
+            )
+        
+        # /batch 指令 - 批量模式设置
+        async def cmd_batch(update, context):
+            user_id = update.message.from_user.id
+            if self.allowed_users and user_id not in self.allowed_users:
+                await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
+                return
+            
+            args = context.args
+            
+            if not args:
+                # 显示当前状态
+                mode_emoji = "📦" if self.batch_mode == "telegraph" else "📄"
+                status = (
+                    f"*📦 批量模式设置*\n\n"
+                    f"{mode_emoji} 当前模式: `{self.batch_mode}`\n"
+                    f"📝 显示标题: `{'✅' if self.batch_show_title else '❌'}`\n"
+                    f"🎨 显示画师: `{'✅' if self.batch_show_artist else '❌'}`\n"
+                    f"🏷️ 显示标签: `{'✅' if self.batch_show_tags else '❌'}`\n\n"
+                    "*用法:*\n"
+                    "`/batch on` - 开启 Telegraph 批量模式\n"
+                    "`/batch off` - 关闭批量模式\n"
+                    "`/batch title on|off` - 开关标题\n"
+                    "`/batch artist on|off` - 开关画师\n"
+                    "`/batch tags on|off` - 开关标签"
+                )
+                await update.message.reply_text(status, parse_mode="Markdown")
+                return
+            
+            cmd = args[0].lower()
+            
+            if cmd == "on":
+                self.batch_mode = "telegraph"
+                await update.message.reply_text("✅ 批量模式已开启 (Telegraph)")
+            elif cmd == "off":
+                self.batch_mode = "single"
+                await update.message.reply_text("✅ 批量模式已关闭 (逐条发送)")
+            elif cmd in ("title", "artist", "tags"):
+                if len(args) < 2:
+                    await update.message.reply_text(f"❌ 用法: `/batch {cmd} on|off`", parse_mode="Markdown")
+                    return
+                value = args[1].lower() in ("on", "true", "1", "yes")
+                if cmd == "title":
+                    self.batch_show_title = value
+                elif cmd == "artist":
+                    self.batch_show_artist = value
+                elif cmd == "tags":
+                    self.batch_show_tags = value
+                await update.message.reply_text(f"✅ {cmd} 显示已{'开启' if value else '关闭'}")
+            else:
+                await update.message.reply_text("❌ 未知参数，使用 `/batch` 查看帮助", parse_mode="Markdown")
         
         # /block_artist 指令 - 屏蔽画师
         async def cmd_block_artist(update, context):
@@ -612,9 +1135,20 @@ class TelegramNotifier(BaseNotifier):
         self._app.add_handler(CommandHandler("unblock", cmd_unblock))
         self._app.add_handler(CommandHandler("block_artist", cmd_block_artist))
         self._app.add_handler(CommandHandler("unblock_artist", cmd_unblock_artist))
+        self._app.add_handler(CommandHandler("batch", cmd_batch))
+        self._app.add_handler(CommandHandler("menu", cmd_menu))
+        self._app.add_handler(CommandHandler("start", cmd_menu))  # /start 也打开菜单
         self._app.add_handler(CommandHandler("help", cmd_help))
         self._app.add_handler(CallbackQueryHandler(callback_handler))
         self._app.add_handler(MessageHandler(filters.REPLY & filters.TEXT, reply_handler))
+        
+        # 添加错误处理器，捕获轮询过程中的错误
+        async def error_handler(update, context):
+            """处理 Bot 轮询过程中的错误"""
+            logger.error(f"Telegram 轮询错误: {context.error}")
+            # 对于网络错误，updater 会自动重试，这里只做记录
+            
+        self._app.add_error_handler(error_handler)
         
         # 真正启动 Bot (非阻塞模式)
         await self._app.initialize()
@@ -624,27 +1158,63 @@ class TelegramNotifier(BaseNotifier):
         try:
             from telegram import BotCommand
             commands = [
+                BotCommand("menu", "📋 控制面板"),
                 BotCommand("push", "🚀 立即推送"),
                 BotCommand("xp", "🎯 查看XP画像"),
                 BotCommand("stats", "📈 策略表现"),
-                BotCommand("schedule", "⏰ 调整时间"),
-                BotCommand("block", "🚫 屏蔽标签"),
-                BotCommand("unblock", "✅ 取消屏蔽"),
+                BotCommand("batch", "📦 批量模式"),
                 BotCommand("help", "ℹ️ 帮助信息"),
             ]
             await self._app.bot.set_my_commands(commands)
             logger.info("✅ Telegram 指令菜单已注册")
         except Exception as e:
             logger.error(f"注册指令菜单失败: {e}")
-            
-        await self._app.updater.start_polling()
-        logger.info("Telegram Bot 轮询已启动")
+        
+        # 轮询级别的错误回调（非异步）
+        def polling_error_callback(error):
+            """处理轮询过程中的网络错误（updater 会自动重试）"""
+            logger.warning(f"Telegram 轮询网络错误 (将自动重试): {error}")
+        
+        # 启动轮询，配置更健壮的参数
+        await self._app.updater.start_polling(
+            poll_interval=1.0,           # 轮询间隔（秒）
+            timeout=30,                  # 长轮询超时（秒）
+            drop_pending_updates=True,   # 启动时丢弃旧的待处理更新，避免处理过期消息
+            error_callback=polling_error_callback,  # 轮询错误回调
+        )
+        logger.info("Telegram Bot 轮询已启动（已配置自动重连）")
+    
+    async def stop_polling(self):
+        """停止 Bot 轮询（用于健康检查重启）"""
+        try:
+            if self._app:
+                if self._app.updater and self._app.updater.running:
+                    await self._app.updater.stop()
+                    logger.info("Telegram updater 已停止")
+                
+                # 停止 application
+                if self._app.running:
+                    await self._app.stop()
+                    logger.info("Telegram application 已停止")
+                
+                # 关闭 application
+                await self._app.shutdown()
+                logger.info("Telegram application 已关闭")
+                
+                self._app = None
+        except Exception as e:
+            logger.error(f"停止 Telegram 轮询时出错: {e}")
     
     async def send(self, illusts: list[Illust]) -> list[int]:
         """发送推送"""
         if not illusts:
             return []
         
+        # Telegraph 批量模式
+        if self.batch_mode == "telegraph" and len(illusts) > 1:
+            return await self._send_batch_telegraph(illusts)
+        
+        # 逐条发送模式
         success_ids = []
         
         for illust in illusts:
@@ -657,6 +1227,233 @@ class TelegramNotifier(BaseNotifier):
                 logger.error(f"发送作品 {illust.id} 失败: {e}")
         
         return success_ids
+    
+    async def _init_telegraph(self):
+        """延迟初始化 Telegraph 客户端"""
+        if self._telegraph is None:
+            try:
+                from telegraph import Telegraph
+                self._telegraph = Telegraph()
+                self._telegraph.create_account(short_name='PixivXP')
+                logger.info("Telegraph 客户端初始化成功")
+            except Exception as e:
+                logger.error(f"Telegraph 初始化失败: {e}")
+                self._telegraph = False  # 标记为失败，避免重复尝试
+    
+    async def _send_batch_telegraph(self, illusts: list[Illust]) -> list[int]:
+        """Telegraph 批量发送模式"""
+        import database as db
+        
+        # 初始化 Telegraph
+        await self._init_telegraph()
+        if not self._telegraph:
+            logger.warning("Telegraph 不可用，降级为逐条发送")
+            return await self._send_batch_fallback(illusts)
+        
+        lines = [f"📚 今日推送 ({len(illusts)}张)\n"]
+        import html
+        
+        lines = [f"📚 今日推送 ({len(illusts)}张)\n"]
+        import html
+        
+        # 用户要求：无论设置如何，都不在 Telegram 消息正文中显示列表
+        # 列表内容仅在 Telegraph 网页中展示
+        
+        # 创建 Telegraph 页面
+        
+        # 创建 Telegraph 页面
+        telegraph_url = None
+        try:
+            content = await self._build_telegraph_content(illusts)
+            response = self._telegraph.create_page(
+                title=f"Pixiv 推送 - {len(illusts)}张",
+                html_content=content
+            )
+            telegraph_url = f"https://telegra.ph/{response['path']}"
+            lines.append(f"\n🔗 <a href='{telegraph_url}'>查看详情</a>")
+        except Exception as e:
+            logger.warning(f"创建 Telegraph 页面失败: {e}")
+            lines.append(f"\n🔗 <i>(详情页创建失败)</i>")
+        
+        text = "\n".join(lines)
+        
+        # 构建反馈按钮
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("❤️ 喜欢", callback_data="batch_like"),
+                InlineKeyboardButton("👎 不喜欢", callback_data="batch_dislike"),
+            ]
+        ])
+        
+        # 发送消息
+        success_ids = []
+        for chat_id in self.chat_ids:
+            try:
+                msg = await _retry_on_flood(lambda: self.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML",
+                    message_thread_id=self.thread_id,
+                    disable_web_page_preview=False
+                ))
+                if msg:
+                    # 保存映射
+                    await db.save_batch_mapping(msg.message_id, chat_id, illusts)
+                    success_ids = [i.id for i in illusts]  # 批量模式视为全部成功
+                    logger.info(f"Telegraph 批量消息已发送: {len(illusts)} 个作品")
+            except Exception as e:
+                logger.error(f"发送批量消息到 {chat_id} 失败: {e}")
+        
+        return success_ids
+    
+    async def _upload_image(self, session, url: str) -> str | None:
+        """下载并上传图片到 Telegraph"""
+        try:
+            from utils import download_image_with_referer
+            import aiohttp
+            from PIL import Image
+            import io
+            
+            # 1. 下载
+            image_data = await download_image_with_referer(session, url)
+            if not image_data:
+                logger.warning(f"下载失败: {url}")
+                return None
+            
+            # 2. 转换与压缩 (Telegraph 限制 5MB，且要求格式正确)
+            # 我们统一转换为 JPEG 以避免 PNG/WebP 兼容问题
+            try:
+                with Image.open(io.BytesIO(image_data)) as img:
+                    # 修复透明度
+                    if img.mode == 'P':
+                        img = img.convert('RGBA')
+                    if img.mode in ('RGBA', 'LA'):
+                        bg = Image.new('RGB', img.size, (255, 255, 255))
+                        bg.paste(img, mask=img.split()[-1])
+                        img = bg
+                    elif img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    # 尺寸限制 (Telegraph 虽无明确尺寸限制但过大会失败)
+                    if max(img.size) > 2560: # 2K
+                         img.thumbnail((2560, 2560), Image.Resampling.LANCZOS)
+                    
+                    output = io.BytesIO()
+                    img.save(output, format="JPEG", quality=90, optimize=True)
+                    
+                    # 再次检查大小，确保 < 5MB
+                    if output.tell() > 5 * 1024 * 1024:
+                         output.seek(0)
+                         output.truncate()
+                         img.save(output, format="JPEG", quality=75, optimize=True)
+                    
+                    image_data = output.getvalue()
+            except Exception as e:
+                logger.warning(f"图片转换失败 {url}: {e}，尝试直接上传")
+            
+            # 3. 上传
+            data = aiohttp.FormData()
+            data.add_field('file', image_data, filename='image.jpeg', content_type='image/jpeg')
+            
+            async with session.post('https://telegra.ph/upload', data=data) as resp:
+                if resp.status == 200:
+                    json_resp = await resp.json()
+                    if isinstance(json_resp, list) and len(json_resp) > 0:
+                        src = json_resp[0].get('src')
+                        # logger.info(f"Telegraph 上传成功: {src}")
+                        return src
+                    else:
+                        logger.warning(f"Telegraph 响应格式异常: {json_resp}")
+                else:
+                    logger.warning(f"Telegraph 上传失败 {resp.status}: {await resp.text()}")
+        except Exception as e:
+            logger.warning(f"Telegraph 处理异常 {url}: {e}")
+        return None
+
+    async def _build_telegraph_content(self, illusts: list[Illust]) -> str:
+        """构建 Telegraph 页面内容 (并发上传图片)"""
+        import aiohttp
+        import asyncio
+        import html
+        
+        # 准备结果容器 (为了保持顺序)
+        results = [None] * len(illusts)
+        
+        async def process_one(idx, illust, sem, session):
+            async with sem:
+                img_src = None
+                # 尝试上传图片
+                if illust.image_urls:
+                    # 优先使用 medium 以减小体积和加快速度 (Telegraph 也不需要原图)
+                    target_url = illust.image_urls[0].replace("original", "medium") if "original" in illust.image_urls[0] else illust.image_urls[0]
+                    # 如果原图太大，Telegraph 也会拒收 (限制 5MB)
+                    # 这里的 target_url 是 pixiv 的 url
+                    
+                    src_path = await self._upload_image(session, target_url)
+                    if src_path:
+                        img_src = f"https://telegra.ph{src_path}"
+                    else:
+                        # 失败回退到反代
+                        img_src = get_pixiv_cat_url(illust.id)
+                
+                # 构建 HTML 片段
+                parts = []
+                if img_src:
+                    parts.append(f'<img src="{img_src}"/>')
+                
+                safe_title = html.escape(illust.title)
+                safe_user = html.escape(illust.user_name)
+                
+                parts.append(f'<h4>#{idx} {safe_title}</h4>')
+                parts.append(f'<p>画师: <a href="https://pixiv.net/users/{illust.user_id}">{safe_user}</a></p>')
+                parts.append(f'<p>❤️ {illust.bookmark_count} | 👁 {illust.view_count}</p>')
+                parts.append(f'<p><a href="https://pixiv.net/i/{illust.id}">Pixiv 原图</a></p>')
+                parts.append('<hr/>')
+                
+                results[idx-1] = "".join(parts)
+        
+        # 限制并发
+        sem = asyncio.Semaphore(5)
+        async with aiohttp.ClientSession() as session:
+            tasks = [process_one(i, ill, sem, session) for i, ill in enumerate(illusts, 1)]
+            await asyncio.gather(*tasks)
+        
+        return "".join([r for r in results if r])
+    
+    async def _send_batch_fallback(self, illusts: list[Illust]) -> list[int]:
+        """批量模式降级：逐条发送"""
+        success_ids = []
+        for illust in illusts:
+            try:
+                if await self._send_single(illust):
+                    success_ids.append(illust.id)
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"发送作品 {illust.id} 失败: {e}")
+        return success_ids
+    
+    def _build_batch_select_keyboard(self, action: str, count: int) -> InlineKeyboardMarkup:
+        """构建作品选择按钮"""
+        rows = []
+        # 每行最多 5 个按钮
+        for i in range(0, count, 5):
+            row = []
+            for j in range(i, min(i + 5, count)):
+                row.append(InlineKeyboardButton(
+                    str(j + 1),
+                    callback_data=f"batch_select:{action}:{j + 1}"
+                ))
+            rows.append(row)
+        
+        # 添加全选和取消按钮
+        rows.append([
+            InlineKeyboardButton("✅ 全部" + ("喜欢" if action == "like" else "不喜欢"), 
+                               callback_data=f"batch_all:{action}"),
+            InlineKeyboardButton("❌ 取消", callback_data="batch_cancel"),
+        ])
+        
+        return InlineKeyboardMarkup(rows)
         
     async def send_text(self, text: str, buttons: list[tuple[str, str]] | None = None) -> bool:
         """发送文本消息到所有目标"""
