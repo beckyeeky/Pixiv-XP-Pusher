@@ -816,6 +816,8 @@ class XPProfiler:
         profile = await db.get_xp_profile()
         max_weight = max(profile.values()) if profile else 1
         
+        suggested_block_tag = None  # 记录建议屏蔽的 Tag
+        
         for tag in illust.tags:
             normalized = self._normalize_tag(tag)
             if not normalized or normalized in self.stop_words:
@@ -841,29 +843,16 @@ class XPProfiler:
                 
                 # 用户要求：仅确认一次，没确认就算了
                 if count == dislike_threshold:
-                    # self.stop_words.add(normalized) # <--- 移除自动屏蔽
                     logger.info(f"Tag '{normalized}' 累计否认 {count} 次，建议加入黑名单")
-                    # 返回建议屏蔽的 Tag (仅返回第一个)
-                    # 3. 画师权重关联 (Artist Weight)
-                    if illust.user_id:
-                        try:
-                            artist_delta = 1.0 if action == "like" else -1.0
-                            await db.update_artist_score(illust.user_id, artist_delta)
-                            logger.debug(f"画师 {illust.user_id} ({illust.user_name}) 权重 {artist_delta:+.1f}")
-                        except Exception as e:
-                            logger.error(f"更新画师权重失败: {e}")
-
-                    # 记录反馈
-                    await db.record_feedback(illust.id, action)
-                    
-                    return normalized
+                    # 只记录第一个达到阈值的 Tag
+                    if suggested_block_tag is None:
+                        suggested_block_tag = normalized
+                elif count > dislike_threshold:
+                    logger.debug(f"Tag '{normalized}' 累计否认 {count} 次 (已提示过)")
                 else:
-                    if count > dislike_threshold:
-                         logger.debug(f"Tag '{normalized}' 累计否认 {count} 次 (已提示过)")
-                    else:
-                         logger.debug(f"Tag '{normalized}' 权重 -{adjusted_penalty:.2f} (分级惩罚)")
+                    logger.debug(f"Tag '{normalized}' 权重 -{adjusted_penalty:.2f} (分级惩罚)")
         
-        # 3. 画师权重关联 (Artist Weight)
+        # 画师权重关联 (Artist Weight) - 只执行一次
         if illust.user_id:
             try:
                 artist_delta = 1.0 if action == "like" else -1.0
@@ -872,6 +861,7 @@ class XPProfiler:
             except Exception as e:
                 logger.error(f"更新画师权重失败: {e}")
 
-        # 记录反馈
+        # 记录反馈 - 只执行一次
         await db.record_feedback(illust.id, action)
-        return None
+        
+        return suggested_block_tag

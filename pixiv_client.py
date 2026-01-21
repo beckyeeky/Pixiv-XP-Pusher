@@ -341,7 +341,10 @@ class PixivClient:
         while len(illusts) < limit and page < max_pages:
             async with self.rate_limiter:
                 if next_qs:
-                    result = await self.api.illust_related(**next_qs)
+                    # 过滤掉不支持的参数 (如 viewed)
+                    supported_keys = {'illust_id', 'filter', 'offset'}
+                    filtered_qs = {k: v for k, v in next_qs.items() if k in supported_keys}
+                    result = await self.api.illust_related(**filtered_qs)
                 else:
                     result = await self.api.illust_related(illust_id=illust_id)
             
@@ -508,7 +511,8 @@ class PixivClient:
         return await download_image_with_referer(
             self._session,
             url,
-            self.download_semaphore
+            self.download_semaphore,
+            proxy=self.proxy_url
         )
     
     async def close(self):

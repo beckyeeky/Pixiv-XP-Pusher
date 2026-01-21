@@ -49,3 +49,4 @@ geckodriver.log
 .DS_Store
 
 test_*.py
+x-algorithm-main/

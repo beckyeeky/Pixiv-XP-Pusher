@@ -106,7 +106,11 @@ class ContentFilter:
         subscribed_artists: Optional[list[int]] = None,  # 关注的画师 ID
         artist_boost: float = 0.3,  # 关注画师的匹配度加成
         min_create_days: int = 0,  # 过滤 N 天前的老图 (0=不过滤)
-        r18_mode: bool = False  # 涩涩模式：只推送 R-18
+        r18_mode: bool = False,  # 涩涩模式：只推送 R-18
+        # === 新增：借鉴 X 算法的增强选项 ===
+        author_diversity: Optional[dict] = None,  # 画师多样性衰减配置
+        source_boost: Optional[dict] = None,  # 来源加成配置
+        embedder = None  # 可选的 Embedder 实例 (用于语义匹配)
     ):
         self.blacklist_tags = set(t.lower() for t in (blacklist_tags or []))
         self.daily_limit = daily_limit
@@ -119,13 +123,32 @@ class ContentFilter:
         self.min_create_days = min_create_days
         self.r18_mode = r18_mode
         
+        # 画师多样性衰减 (借鉴 X 算法 AuthorDiversityScorer)
+        # 公式: multiplier(position) = (1.0 - floor) × decay^position + floor
+        diversity_cfg = author_diversity or {}
+        self.diversity_enabled = diversity_cfg.get("enabled", False)
+        self.diversity_decay = diversity_cfg.get("decay_factor", 0.7)
+        self.diversity_floor = diversity_cfg.get("floor", 0.1)
+        
+        # 来源加成 (借鉴 X 算法 OON Scorer)
+        self.source_boost = source_boost or {
+            "xp_search": 1.0,
+            "subscription": 1.1,
+            "ranking": 0.9,
+            "related": 1.15
+        }
+        
+        # AI Embedding 语义匹配 (可选)
+        self.embedder = embedder
+        
         # 硬性过滤Tag
         self.blacklist_tags.update({"r-18g", "guro", "gore"})
     
     async def filter(
         self,
         illusts: list[Illust],
-        xp_profile: Optional[dict[str, float]] = None
+        xp_profile: Optional[dict[str, float]] = None,
+        user_id: int = 0  # 用于 Embedding 缓存
     ) -> list[Illust]:
         """
         过滤管道
@@ -134,7 +157,7 @@ class ContentFilter:
         2. 时间过滤（老图片）
         3. 硬性过滤（R-18G、AI）
         4. 黑名单Tag
-        5. 匹配度过滤 + 画师权重加成
+        5. 匹配度过滤 + 画师权重加成 + 语义匹配(可选)
         6. 综合排序
         7. 多样性控制
         8. 每日上限
@@ -199,10 +222,45 @@ class ContentFilter:
                 seen_ids.add(illust.id)
                 unique_result.append(illust)
         
-        # 5. 计算匹配度并过滤 + 画师权重加成 + 负向画像惩罚
+        # 5. 计算匹配度并过滤 + 画师权重加成 + 负向画像惩罚 + 语义匹配(可选)
         negative_profile = await db.get_negative_profile()  # 加载负向画像
         
+        # 准备语义匹配 (如果启用)
+        user_embedding = None
+        illust_embeddings_cache = {}
+        
+        if self.embedder and self.embedder.enabled and xp_profile and user_id > 0:
+            try:
+                import hashlib
+                # 计算 XP Profile 哈希，判断是否需要更新用户 Embedding
+                profile_str = str(sorted(list(xp_profile.items())[:20]))  # 只取 Top 20
+                profile_hash = hashlib.md5(profile_str.encode()).hexdigest()[:16]
+                
+                # 获取或更新用户 Embedding
+                cached = await db.get_user_embedding(user_id)
+                if cached and cached[1] == profile_hash:
+                    user_embedding = cached[0]
+                    logger.debug("使用缓存的用户 Embedding")
+                else:
+                    # 重新计算
+                    top_tags = [t for t, _ in sorted(xp_profile.items(), key=lambda x: x[1], reverse=True)[:15]]
+                    user_embedding = await self.embedder.embed_tags(top_tags)
+                    if user_embedding:
+                        await db.save_user_embedding(user_id, user_embedding, self.embedder.model, profile_hash)
+                        logger.info("已更新用户画像 Embedding")
+                
+                # 批量获取作品 Embedding 缓存
+                illust_ids = [ill.id for ill in unique_result]
+                illust_embeddings_cache = await db.get_illust_embeddings_batch(illust_ids)
+                logger.debug(f"Embedding 缓存命中: {len(illust_embeddings_cache)}/{len(illust_ids)}")
+                
+            except Exception as e:
+                logger.warning(f"语义匹配初始化失败: {e}")
+                user_embedding = None
+        
         scored_result = []
+        uncached_embeddings = []  # 待计算的作品 Embedding
+        
         for illust in unique_result:
             if xp_profile:
                 score = calculate_match_score(illust, xp_profile, negative_profile)
@@ -219,7 +277,67 @@ class ContentFilter:
                 if illust.user_id in self.subscribed_artists:
                     score = self.artist_boost
             
+            # 语义匹配加成 (可选)
+            semantic_score = 0.0
+            if user_embedding and self.embedder:
+                illust_emb = illust_embeddings_cache.get(illust.id)
+                if illust_emb:
+                    # 使用缓存
+                    similarity = self.embedder.cosine_similarity(user_embedding, illust_emb)
+                    semantic_score = self.embedder.normalize_similarity(similarity)
+                else:
+                    # 记录需要计算的作品
+                    uncached_embeddings.append((illust, score))
+                    continue  # 跳过，后面批量处理
+                
+                # 加权组合: (1-semantic_weight)*tag_score + semantic_weight*semantic_score
+                semantic_weight = self.embedder.semantic_weight
+                score = (1 - semantic_weight) * score + semantic_weight * semantic_score
+            
+            # 来源加成 (借鉴 X 算法 OON Scorer)
+            source = getattr(illust, 'source', 'xp_search')
+            source_multiplier = self.source_boost.get(source, 1.0)
+            score *= source_multiplier
+            
             scored_result.append((illust, score))
+        
+        # 批量计算未缓存的作品 Embedding
+        if uncached_embeddings and user_embedding and self.embedder:
+            try:
+                texts = [", ".join(ill.tags[:10]) for ill, _ in uncached_embeddings]
+                embeddings = await self.embedder.embed_batch(texts)
+                
+                to_save = []
+                for i, (illust, tag_score) in enumerate(uncached_embeddings):
+                    emb = embeddings[i]
+                    if emb:
+                        to_save.append((illust.id, emb, self.embedder.model))
+                        similarity = self.embedder.cosine_similarity(user_embedding, emb)
+                        semantic_score = self.embedder.normalize_similarity(similarity)
+                        semantic_weight = self.embedder.semantic_weight
+                        score = (1 - semantic_weight) * tag_score + semantic_weight * semantic_score
+                    else:
+                        score = tag_score
+                    
+                    # 来源加成
+                    source = getattr(illust, 'source', 'xp_search')
+                    source_multiplier = self.source_boost.get(source, 1.0)
+                    score *= source_multiplier
+                    
+                    scored_result.append((illust, score))
+                
+                # 保存新计算的 Embedding
+                if to_save:
+                    await db.save_illust_embeddings_batch(to_save)
+                    logger.info(f"已缓存 {len(to_save)} 个作品 Embedding")
+                    
+            except Exception as e:
+                logger.error(f"批量 Embedding 计算失败: {e}")
+                # Fallback: 只用 Tag 分数
+                for illust, tag_score in uncached_embeddings:
+                    source = getattr(illust, 'source', 'xp_search')
+                    source_multiplier = self.source_boost.get(source, 1.0)
+                    scored_result.append((illust, tag_score * source_multiplier))
         
         # 6. 综合排序：match_score * weight + normalized_bookmark * (1-weight)
         if scored_result:
@@ -236,7 +354,25 @@ class ContentFilter:
         score_map = {item[0].id: item[1] for item in scored_result}
         sorted_illusts = [item[0] for item in scored_result]
         
-        # 6. 多样性控制：限制每个画师的作品数
+        # 6. 多样性控制：画师多样性衰减 + 硬性限制
+        # 借鉴 X 算法 AuthorDiversityScorer: 同一画师后续作品分数递减
+        if self.diversity_enabled:
+            # 应用画师多样性衰减
+            artist_position = {}  # 记录每个画师已出现的位置
+            for illust, score in scored_result:
+                pos = artist_position.get(illust.user_id, 0)
+                # 衰减公式: (1.0 - floor) × decay^position + floor
+                multiplier = (1.0 - self.diversity_floor) * (self.diversity_decay ** pos) + self.diversity_floor
+                new_score = score * multiplier
+                score_map[illust.id] = new_score
+                artist_position[illust.user_id] = pos + 1
+            
+            # 重新排序
+            scored_result = [(ill, score_map[ill.id]) for ill, _ in scored_result]
+            scored_result.sort(key=lambda x: x[1], reverse=True)
+            sorted_illusts = [item[0] for item in scored_result]
+        
+        # 硬性限制每个画师的作品数
         artist_count = {}
         diverse_result = []
         for illust in sorted_illusts:

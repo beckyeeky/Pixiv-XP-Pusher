@@ -178,6 +178,23 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (message_id, chat_id, illust_index)
             );
+            
+            -- 作品 Embedding 缓存 (用于语义匹配)
+            CREATE TABLE IF NOT EXISTS illust_embeddings (
+                illust_id INTEGER PRIMARY KEY,
+                embedding TEXT,  -- JSON 序列化的向量
+                model TEXT,      -- 使用的模型名
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            -- 用户画像 Embedding (低频更新)
+            CREATE TABLE IF NOT EXISTS user_embedding (
+                user_id INTEGER PRIMARY KEY,
+                embedding TEXT,  -- JSON 序列化的向量
+                model TEXT,
+                profile_hash TEXT,  -- XP Profile 的哈希，用于判断是否需要更新
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         await db.commit()
 
@@ -983,6 +1000,144 @@ async def get_top_xp_tags(limit: int = 15) -> list[tuple[str, float]]:
         )
         rows = await cursor.fetchall()
         return [(row[0], row[1]) for row in rows]
+
+
+# ============ 互动画师发现 (策略E) ============
+async def get_top_engaged_artists(limit: int = 10) -> list[tuple[int, str, int]]:
+    """
+    获取用户互动最多的画师列表 (用于 Engagement-Based Discovery 策略)
+    
+    通过 feedback + illust_cache 联表查询，统计各画师被点赞的次数。
+    
+    Returns: [(artist_id, artist_name, like_count), ...]
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT ic.user_id, ic.user_name, COUNT(*) as like_count
+            FROM feedback f
+            JOIN illust_cache ic ON f.illust_id = ic.illust_id
+            WHERE f.action = 'like' AND ic.user_id IS NOT NULL AND ic.user_id > 0
+            GROUP BY ic.user_id
+            ORDER BY like_count DESC
+            LIMIT ?
+        """, (limit,))
+        rows = await cursor.fetchall()
+        return [(row[0], row[1] or "", row[2]) for row in rows]
+
+
+async def get_recent_engagement_sequence(limit: int = 50) -> list[tuple[int, str, str]]:
+    """
+    获取最近的用户互动序列 (用于历史序列建模)
+    
+    Returns: [(illust_id, action, timestamp), ...]
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT illust_id, action, created_at
+            FROM feedback
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, (limit,))
+        rows = await cursor.fetchall()
+        return [(row[0], row[1], row[2]) for row in rows]
+
+
+# ============ Embedding 缓存 ============
+async def get_illust_embedding(illust_id: int) -> Optional[list[float]]:
+    """获取作品的缓存 Embedding"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT embedding FROM illust_embeddings WHERE illust_id = ?",
+            (illust_id,)
+        )
+        row = await cursor.fetchone()
+        if row and row[0]:
+            return json.loads(row[0])
+        return None
+
+
+async def save_illust_embedding(illust_id: int, embedding: list[float], model: str):
+    """保存作品的 Embedding"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT OR REPLACE INTO illust_embeddings (illust_id, embedding, model, created_at)
+            VALUES (?, ?, ?, ?)
+        """, (illust_id, json.dumps(embedding), model, datetime.now()))
+        await db.commit()
+
+
+async def get_illust_embeddings_batch(illust_ids: list[int]) -> dict[int, list[float]]:
+    """批量获取作品的缓存 Embedding"""
+    if not illust_ids:
+        return {}
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        placeholders = ",".join("?" * len(illust_ids))
+        cursor = await db.execute(
+            f"SELECT illust_id, embedding FROM illust_embeddings WHERE illust_id IN ({placeholders})",
+            illust_ids
+        )
+        rows = await cursor.fetchall()
+        return {row[0]: json.loads(row[1]) for row in rows if row[1]}
+
+
+async def save_illust_embeddings_batch(items: list[tuple[int, list[float], str]]):
+    """
+    批量保存作品 Embedding
+    
+    Args:
+        items: [(illust_id, embedding, model), ...]
+    """
+    if not items:
+        return
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        now = datetime.now()
+        data = [(iid, json.dumps(emb), model, now) for iid, emb, model in items]
+        await db.executemany("""
+            INSERT OR REPLACE INTO illust_embeddings (illust_id, embedding, model, created_at)
+            VALUES (?, ?, ?, ?)
+        """, data)
+        await db.commit()
+
+
+async def get_user_embedding(user_id: int) -> Optional[tuple[list[float], str]]:
+    """
+    获取用户画像 Embedding
+    
+    Returns: (embedding, profile_hash) or None
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT embedding, profile_hash FROM user_embedding WHERE user_id = ?",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        if row and row[0]:
+            return (json.loads(row[0]), row[1])
+        return None
+
+
+async def save_user_embedding(user_id: int, embedding: list[float], model: str, profile_hash: str):
+    """保存用户画像 Embedding"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT OR REPLACE INTO user_embedding (user_id, embedding, model, profile_hash, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, json.dumps(embedding), model, profile_hash, datetime.now()))
+        await db.commit()
+
+
+async def cleanup_old_embeddings(days: int = 60) -> int:
+    """清理过期的作品 Embedding 缓存"""
+    cutoff = datetime.now() - timedelta(days=days)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM illust_embeddings WHERE created_at < ?",
+            (cutoff,)
+        )
+        await db.commit()
+        return cursor.rowcount
 
 
 # ============ MAB 策略统计汇总 (/stats) ============

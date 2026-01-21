@@ -149,7 +149,7 @@ class ContentFetcher:
                 if tag in [t for pair in used_tags for t in pair]:
                     continue
                 
-                fallback_tasks.append(self._search_single(tag, remaining // 2))
+                fallback_tasks.append(self._search_single(tag, max(10, remaining // 2)))
                 
             if fallback_tasks:
                 logger.info(f"启动 {len(fallback_tasks)} 个单Tag补充任务...")
@@ -366,11 +366,13 @@ class ContentFetcher:
         MAB 策略调度 (Thompson Sampling)
         
         基于历史反馈动态分配配额：
-        - XP搜索 (search)
+        - XP搜索 (xp_search)
         - 订阅 (subscription)
         - 排行榜 (ranking)
+        - 关联发现 (related)
+        - 互动画师发现 (engagement_artists) - 新增
         """
-        strategies = ['xp_search', 'subscription', 'ranking']
+        strategies = ['xp_search', 'subscription', 'ranking', 'related', 'engagement_artists']
         scores = {}
         
         for strategy in strategies:
@@ -490,7 +492,7 @@ class ContentFetcher:
                     score += xp_dict[norm]
             
             # 画师分 (Artist Boost)
-            artist_score = await db.get_artist_score(illust.user.id)
+            artist_score = await db.get_artist_score(illust.user_id)
             score += artist_score
             
             scored_candidates.append((illust, score))
@@ -504,63 +506,142 @@ class ContentFetcher:
         
         return [x[0] for x in scored_candidates[:limit]]
 
-
+    async def discover_from_engaged_artists(
+        self, 
+        xp_tags: list[tuple[str, float]], 
+        limit: int = 30
+    ) -> list[Illust]:
+        """
+        策略E：基于互动画师的发现 (Engagement-Based Discovery)
+        
+        借鉴 X 算法的 Thunder (关注者内容流) + Two-Tower (用户偏好匹配)
+        
+        1. 从用户点赞历史中，统计互动最多的画师
+        2. 获取这些画师的最新作品
+        3. 结合 XP Profile 进行匹配度评分
+        """
+        try:
+            # 1. 获取互动最多的画师
+            top_artists = await db.get_top_engaged_artists(limit=10)
+            if not top_artists:
+                logger.debug("无互动画师数据，跳过策略E")
+                return []
+            
+            logger.info(f"策略E: 发现 {len(top_artists)} 个互动画师")
+            
+            # 2. 并发获取画师最新作品
+            from datetime import datetime, timedelta
+            since = datetime.now().astimezone() - timedelta(days=self.date_range_days * 2)  # 扩大时间范围
+            
+            async def fetch_artist_works(artist_id: int, artist_name: str):
+                try:
+                    illusts = await self.sync_client.get_user_illusts(
+                        user_id=artist_id,
+                        since=since,
+                        limit=5  # 每个画师取 5 个
+                    )
+                    return illusts
+                except Exception as e:
+                    logger.debug(f"获取画师 {artist_name}({artist_id}) 作品失败: {e}")
+                    return []
+            
+            tasks = [fetch_artist_works(aid, aname) for aid, aname, _ in top_artists]
+            results = await asyncio.gather(*tasks)
+            
+            # 3. 扁平化并评分
+            all_illusts = []
+            xp_dict = dict(xp_tags)
+            
+            for illusts in results:
+                for illust in illusts:
+                    # 计算匹配分
+                    score = 0.0
+                    for tag in illust.tags:
+                        norm = tag.lower().replace(" ", "_")
+                        if norm in xp_dict:
+                            score += xp_dict[norm]
+                    
+                    # 画师好感度加成
+                    artist_score = await db.get_artist_score(illust.user_id)
+                    score += artist_score * 0.5  # 衰减因子避免过度依赖
+                    
+                    all_illusts.append((illust, score))
+            
+            # 4. 排序并返回
+            all_illusts.sort(key=lambda x: x[1], reverse=True)
+            
+            result = [x[0] for x in all_illusts[:limit]]
+            logger.info(f"策略E: 获取 {len(result)} 个作品 (来自 {len(top_artists)} 个互动画师)")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"策略E执行失败: {e}")
+            return []
 
     async def fetch_content(self, xp_tags: list[tuple[str, float]], total_limit: int = 200) -> list[Illust]:
         """
         统一内容获取入口 (MAB 调度)
+        
+        策略:
+        - xp_search: XP 画像搜索
+        - subscription: 订阅/关注更新
+        - ranking: 排行榜
+        - related: 关联作品发现
+        - engagement_artists: 互动画师发现 (策略E, 新增)
         """
         quotas = await self.select_strategies(total_limit)
         
         tasks = []
+        task_names = []  # 记录任务顺序，用于解析结果
         
         # 1. XP 搜索
-        if quotas['xp_search'] > 0:
+        if quotas.get('xp_search', 0) > 0:
             tasks.append(self.discover(xp_tags, limit=quotas['xp_search']))
+            task_names.append('xp_search')
             
         # 2. 订阅
         tasks.append(self.check_subscriptions())
+        task_names.append('subscription')
         
         # 3. 排行榜
-        if quotas['ranking'] > 0 and self.ranking_enabled:
+        if quotas.get('ranking', 0) > 0 and self.ranking_enabled:
             tasks.append(self.fetch_ranking_with_limit(quotas['ranking']))
-        else:
-            tasks.append(asyncio.sleep(0))
+            task_names.append('ranking')
             
-        # 4. 关联推荐 (New)
+        # 4. 关联推荐
         if quotas.get('related', 0) > 0:
             tasks.append(self.discover_related(xp_tags, limit=quotas['related']))
-        else:
-            tasks.append(asyncio.sleep(0)) # Placeholder
+            task_names.append('related')
+        
+        # 5. 互动画师发现 (策略E, 新增)
+        if quotas.get('engagement_artists', 0) > 0:
+            tasks.append(self.discover_from_engaged_artists(xp_tags, limit=quotas['engagement_artists']))
+            task_names.append('engagement_artists')
             
         # 执行获取
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # 展平并按顺序解析结果
-        idx = 0
-        search_res = []
-        if quotas['xp_search'] > 0:
-            search_res = results[idx] if isinstance(results[idx], list) else []
-            idx += 1
+        # 解析结果并标记来源
+        all_illusts = []
+        result_counts = {}
+        
+        for i, result in enumerate(results):
+            name = task_names[i]
+            if isinstance(result, Exception):
+                logger.error(f"策略 {name} 执行异常: {result}")
+                result_counts[name] = 0
+                continue
             
-        sub_res = results[idx] if isinstance(results[idx], list) else []
-        idx += 1
+            illusts = result if isinstance(result, list) else []
+            for ill in illusts:
+                ill.source = name
+            all_illusts.extend(illusts)
+            result_counts[name] = len(illusts)
         
-        rank_res = results[idx] if isinstance(results[idx], list) else []
-        idx += 1
-        
-        related_res = results[idx] if isinstance(results[idx], list) else []
-        
-        # 记录来源 (Strategy Attribution)
-        for ill in search_res: ill.source = "xp_search"
-        for ill in sub_res: ill.source = "subscription"
-        for ill in rank_res: ill.source = "ranking"
-        for ill in related_res: ill.source = "related"
-        
-        # 合并并去重
-        all_illusts = search_res + sub_res + rank_res + related_res
-        
-        logger.info(f"策略获取汇总: Search={len(search_res)}, Sub={len(sub_res)}, Rank={len(rank_res)}, Related={len(related_res)}")
+        # 日志汇总
+        counts_str = ", ".join(f"{k}={v}" for k, v in result_counts.items())
+        logger.info(f"策略获取汇总: {counts_str}")
         
         return all_illusts
 

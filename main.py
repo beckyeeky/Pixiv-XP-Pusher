@@ -564,6 +564,20 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
         # 3. 过滤
         filter_cfg = config.get("filter", {})
         match_cfg = fetcher_cfg.get("match_score", {})
+        
+        # 初始化可选的 Embedder (AI 语义匹配)
+        embedder = None
+        ai_cfg = config.get("ai", {})
+        embedding_cfg = ai_cfg.get("embedding", {})
+        if embedding_cfg.get("enabled", False):
+            try:
+                from embedder import Embedder
+                embedder = Embedder(embedding_cfg)
+                if embedder.enabled:
+                    logger.info(f"已启用 AI 语义匹配 (model={embedder.model})")
+            except Exception as e:
+                logger.warning(f"Embedder 初始化失败: {e}")
+        
         content_filter = ContentFilter(
             blacklist_tags=filter_cfg.get("blacklist_tags"),
             daily_limit=filter_cfg.get("daily_limit", 20),
@@ -574,10 +588,15 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
             subscribed_artists=all_subs,
             artist_boost=filter_cfg.get("artist_boost", 0.3),
             min_create_days=filter_cfg.get("min_create_days", 0),
-            r18_mode=filter_cfg.get("r18_mode", False)
+            r18_mode=filter_cfg.get("r18_mode", False),
+            # 新增：借鉴 X 算法的增强选项
+            author_diversity=filter_cfg.get("author_diversity"),
+            source_boost=filter_cfg.get("source_boost"),
+            embedder=embedder  # 可选的语义匹配
         )
         
-        filtered = await content_filter.filter(all_illusts, xp_profile=xp_profile)
+        pixiv_uid = config.get("pixiv", {}).get("user_id", 0)
+        filtered = await content_filter.filter(all_illusts, xp_profile=xp_profile, user_id=pixiv_uid)
         logger.info(f"过滤后 {len(filtered)} 个作品")
         
         # 4. 推送
@@ -606,7 +625,7 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
                             await mark_pushed(pid, source)
                             
                             # 更新 MAB 策略统计 (Total Count)
-                            if source in ['xp_search', 'subscription', 'ranking']:
+                            if source in ['xp_search', 'subscription', 'ranking', 'related', 'engagement_artists']:
                                 await db_module.update_strategy_stats(source, is_success=False)
                             
                     logger.info(f"推送完成: {len(all_sent_ids)}/{len(filtered)} 个作品成功")

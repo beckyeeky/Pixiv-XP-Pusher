@@ -122,6 +122,7 @@ def setup_logging(log_dir: Path = Path("logs")):
     logging.getLogger("asyncio").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("pixivpy_async").setLevel(logging.ERROR)  # 屏蔽重试警告
     
     return root_logger
 
@@ -209,7 +210,8 @@ def get_pixiv_cat_url(illust_id: int, page: int = 0) -> str:
 async def download_image_with_referer(
     session: aiohttp.ClientSession,
     url: str,
-    semaphore: asyncio.Semaphore | None = None
+    semaphore: asyncio.Semaphore | None = None,
+    proxy: str | None = None
 ) -> bytes:
     """
     带Referer下载Pixiv图片
@@ -220,7 +222,7 @@ async def download_image_with_referer(
     }
     
     async def _download():
-        async with session.get(url, headers=headers) as resp:
+        async with session.get(url, headers=headers, proxy=proxy) as resp:
             resp.raise_for_status()
             return await resp.read()
     

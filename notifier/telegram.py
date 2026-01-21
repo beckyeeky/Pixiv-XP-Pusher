@@ -1316,7 +1316,7 @@ class TelegramNotifier(BaseNotifier):
             import io
             
             # 1. 下载
-            image_data = await download_image_with_referer(session, url)
+            image_data = await download_image_with_referer(session, url, proxy=self.proxy_url)
             if not image_data:
                 logger.warning(f"下载失败: {url}")
                 return None
