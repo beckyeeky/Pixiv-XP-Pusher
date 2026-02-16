@@ -1911,13 +1911,13 @@ class TelegramNotifier(BaseNotifier):
         if self.client:
             try:
                 if action == "like":
-                    await self.client.add_bookmark(illust_id, restrict='public')
+                    await self.client.add_bookmark(illust_id, private=False)
                     logger.info(f"[Pixiv] 公开收藏: {illust_id}")
                 elif action == "follow":
                     # 获取作品详情以取得user_id
                     illust = await self.client.get_illust_detail(illust_id)
                     if illust:
-                        await self.client.follow_user(illust.user_id)
+                        await self.client.api.user_follow_add(illust.user_id)
                         logger.info(f"[Pixiv] 关注画师: {illust.user_id}")
             except Exception as e:
                 logger.error(f"[Pixiv] 操作失败: {e}")
