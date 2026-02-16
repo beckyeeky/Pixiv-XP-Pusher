@@ -742,9 +742,8 @@ class TelegramNotifier(BaseNotifier):
                         
                         emoji = "❤️" if action == "like" else ("👤" if action == "follow" else "👎")
                         msg = "已收藏" if action == "like" else ("已关注" if action == "follow" else "已标记不喜欢")
-                        # 发送反馈确认消息
-                        # 发送反馈确认消息（按钮不消失，方便连续操作）
-                        await query.message.reply_text(f"{emoji} {msg}")
+                        # 按钮已更新文字显示状态，不再单独发送确认消息
+                        # await query.message.reply_text(f"{emoji} {msg}")
                     except Exception as e:
                         logger.error(f"处理反馈失败 ({action} {illust_id}): {e}")
                         try:
