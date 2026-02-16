@@ -712,22 +712,8 @@ class TelegramNotifier(BaseNotifier):
                         emoji = "❤️" if action == "like" else ("👤" if action == "follow" else "👎")
                         msg = "已收藏" if action == "like" else ("已关注" if action == "follow" else "已标记不喜欢")
                         # 发送反馈确认消息
-                        try:
-                            # 只有回调未过期时才尝试编辑消息按钮
-                            if not is_query_expired:
-                                await query.edit_message_reply_markup(reply_markup=None)
-                            # 无论回调是否过期都发送确认消息
-                            await query.message.reply_text(f"{emoji} {msg}")
-                        except Exception as e:
-                            # 编辑消息失败时，尝试直接发送消息确认
-                            logger.debug(f"更新消息失败: {e}")
-                            try:
-                                await self.bot.send_message(
-                                    chat_id=query.message.chat_id,
-                                    text=f"{emoji} 已记录反馈"
-                                )
-                            except Exception as e2:
-                                logger.warning(f"发送确认消息失败: {e2}")
+                        # 发送反馈确认消息（按钮不消失，方便连续操作）
+                        await query.message.reply_text(f"{emoji} {msg}")
                     except Exception as e:
                         logger.error(f"处理反馈失败 ({action} {illust_id}): {e}")
                         try:
