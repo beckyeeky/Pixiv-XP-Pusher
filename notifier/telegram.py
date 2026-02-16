@@ -717,19 +717,28 @@ class TelegramNotifier(BaseNotifier):
                                 for row in current_markup.inline_keyboard:
                                     new_row = []
                                     for btn in row:
+                                        # 创建新按钮对象，更新文字
+                                        new_text = btn.text
                                         if action == "like" and "收藏" in btn.text:
-                                            btn.text = "✅ 已收藏"
+                                            new_text = "✅ 已收藏"
                                         elif action == "follow" and "关注" in btn.text:
-                                            btn.text = "✅ 已关注"
+                                            new_text = "✅ 已关注"
                                         elif action == "dislike" and "不喜欢" in btn.text:
-                                            btn.text = "✅ 已屏蔽"
-                                        new_row.append(btn)
+                                            new_text = "✅ 已屏蔽"
+                                        # 使用 callback_data 或 url 创建新按钮
+                                        if btn.callback_data:
+                                            new_btn = InlineKeyboardButton(new_text, callback_data=btn.callback_data)
+                                        else:
+                                            new_btn = InlineKeyboardButton(new_text, url=btn.url)
+                                        new_row.append(new_btn)
                                     new_keyboard.append(new_row)
                                 await query.edit_message_reply_markup(
                                     reply_markup=InlineKeyboardMarkup(new_keyboard)
                                 )
                         except Exception as e:
-                            logger.debug(f"更新按钮文字失败: {e}")
+                            logger.error(f"更新按钮文字失败: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
                         
                         emoji = "❤️" if action == "like" else ("👤" if action == "follow" else "👎")
                         msg = "已收藏" if action == "like" else ("已关注" if action == "follow" else "已标记不喜欢")
