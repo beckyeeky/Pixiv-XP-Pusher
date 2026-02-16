@@ -1917,8 +1917,18 @@ class TelegramNotifier(BaseNotifier):
                     # 获取作品详情以取得user_id
                     illust = await self.client.get_illust_detail(illust_id)
                     if illust:
-                        await self.client.api.user_follow_add(illust.user_id)
-                        logger.info(f"[Pixiv] 关注画师: {illust.user_id}")
+                        try:
+                            # Pixiv API: user_follow_add(user_id, restrict='public')
+                            await self.client.api.user_follow_add(illust.user_id, restrict='public')
+                            logger.info(f"[Pixiv] 关注画师成功: {illust.user_id}")
+                        except Exception as e:
+                            logger.error(f"[Pixiv] 关注画师失败: {e}")
+                            # 尝试备用方法名
+                            try:
+                                await self.client.api.follow_user(illust.user_id)
+                                logger.info(f"[Pixiv] 关注画师成功(备用): {illust.user_id}")
+                            except Exception as e2:
+                                logger.error(f"[Pixiv] 备用方法也失败: {e2}")
             except Exception as e:
                 logger.error(f"[Pixiv] 操作失败: {e}")
         
