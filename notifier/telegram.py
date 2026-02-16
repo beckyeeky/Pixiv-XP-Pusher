@@ -705,18 +705,19 @@ class TelegramNotifier(BaseNotifier):
 
             if ":" in data:
                 action, illust_id = data.split(":")
-                if action in ("like", "dislike"):
+                if action in ("like", "dislike", "follow"):
                     try:
                         await self.handle_feedback(int(illust_id), action)
                         
-                        emoji = "❤️" if action == "like" else "👎"
+                        emoji = "❤️" if action == "like" else ("👤" if action == "follow" else "👎")
+                        msg = "已收藏" if action == "like" else ("已关注" if action == "follow" else "已标记不喜欢")
                         # 发送反馈确认消息
                         try:
                             # 只有回调未过期时才尝试编辑消息按钮
                             if not is_query_expired:
                                 await query.edit_message_reply_markup(reply_markup=None)
                             # 无论回调是否过期都发送确认消息
-                            await query.message.reply_text(f"{emoji} 已记录反馈")
+                            await query.message.reply_text(f"{emoji} {msg}")
                         except Exception as e:
                             # 编辑消息失败时，尝试直接发送消息确认
                             logger.debug(f"更新消息失败: {e}")
