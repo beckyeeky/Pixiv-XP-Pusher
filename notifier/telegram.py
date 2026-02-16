@@ -709,6 +709,28 @@ class TelegramNotifier(BaseNotifier):
                     try:
                         await self.handle_feedback(int(illust_id), action)
                         
+                        # 更新按钮文字显示状态
+                        try:
+                            current_markup = query.message.reply_markup
+                            if current_markup and current_markup.inline_keyboard:
+                                new_keyboard = []
+                                for row in current_markup.inline_keyboard:
+                                    new_row = []
+                                    for btn in row:
+                                        if action == "like" and "收藏" in btn.text:
+                                            btn.text = "✅ 已收藏"
+                                        elif action == "follow" and "关注" in btn.text:
+                                            btn.text = "✅ 已关注"
+                                        elif action == "dislike" and "不喜欢" in btn.text:
+                                            btn.text = "✅ 已屏蔽"
+                                        new_row.append(btn)
+                                    new_keyboard.append(new_row)
+                                await query.edit_message_reply_markup(
+                                    reply_markup=InlineKeyboardMarkup(new_keyboard)
+                                )
+                        except Exception as e:
+                            logger.debug(f"更新按钮文字失败: {e}")
+                        
                         emoji = "❤️" if action == "like" else ("👤" if action == "follow" else "👎")
                         msg = "已收藏" if action == "like" else ("已关注" if action == "follow" else "已标记不喜欢")
                         # 发送反馈确认消息
