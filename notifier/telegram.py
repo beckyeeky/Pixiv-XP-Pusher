@@ -1918,16 +1918,23 @@ class TelegramNotifier(BaseNotifier):
                     # 对于 follow，illust_id 参数实际上是 user_id（从 callback_data 传递过来的）
                     user_id = illust_id
                     try:
-                        await self.client.api.user_follow_add(user_id, restrict='public')
-                        logger.info(f"[Pixiv] 关注画师成功: {user_id}")
+                        result = await self.client.api.user_follow_add(user_id, restrict='public')
+                        # 检查返回值，pixivpy 通常返回 None 或包含 error 的 dict
+                        if result is None or (isinstance(result, dict) and 'error' not in result):
+                            logger.info(f"[Pixiv] 关注画师成功: {user_id}")
+                        else:
+                            logger.error(f"[Pixiv] 关注画师失败，API返回: {result}")
                     except Exception as e:
-                        logger.error(f"[Pixiv] 关注画师失败: {e}")
+                        logger.error(f"[Pixiv] 关注画师异常: {e}")
                         # 尝试备用方法名
                         try:
-                            await self.client.api.follow_user(user_id)
-                            logger.info(f"[Pixiv] 关注画师成功(备用): {user_id}")
+                            result = await self.client.api.follow_user(user_id)
+                            if result is None or (isinstance(result, dict) and 'error' not in result):
+                                logger.info(f"[Pixiv] 关注画师成功(备用): {user_id}")
+                            else:
+                                logger.error(f"[Pixiv] 备用方法失败，API返回: {result}")
                         except Exception as e2:
-                            logger.error(f"[Pixiv] 备用方法也失败: {e2}")
+                            logger.error(f"[Pixiv] 备用方法也异常: {e2}")
             except Exception as e:
                 logger.error(f"[Pixiv] 操作失败: {e}")
         
