@@ -1570,7 +1570,7 @@ class TelegramNotifier(BaseNotifier):
                 if message_prefix:
                     caption = f"{message_prefix}\n\n{caption}"
                 
-                keyboard = self._build_keyboard(illust.id)
+                keyboard = self._build_keyboard(illust)
                 topic_id = self._resolve_topic_id(illust)
                 
                 # 下载图片
@@ -1636,7 +1636,7 @@ class TelegramNotifier(BaseNotifier):
     async def _send_single(self, illust: Illust) -> bool:
         """发送单个作品"""
         caption = self.format_message(illust)
-        keyboard = self._build_keyboard(illust.id)
+        keyboard = self._build_keyboard(illust)
         
         # 动态 Topic ID
         topic_id = self._resolve_topic_id(illust)
@@ -1888,22 +1888,40 @@ class TelegramNotifier(BaseNotifier):
             f"🔗 <a href=\"https://pixiv.net/i/{illust.id}\">原图链接</a>"
         )
     
-    def _build_keyboard(self, illust_id: int) -> InlineKeyboardMarkup:
-        """构建反馈按钮"""
+    def _build_keyboard(self, illust: Illust) -> InlineKeyboardMarkup:
+        """构建反馈按钮 (Vivi增强版)"""
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("❤️ 喜欢", callback_data=f"like:{illust_id}"),
-                InlineKeyboardButton("👎 不喜欢", callback_data=f"dislike:{illust_id}"),
+                InlineKeyboardButton("❤️ 收藏(公开)", callback_data=f"like:{illust.id}"),
+                InlineKeyboardButton("👤 关注画师", callback_data=f"follow:{illust.user_id}")
             ],
             [
-                InlineKeyboardButton("🔗 查看原图", url=f"https://pixiv.net/i/{illust_id}"),
+                InlineKeyboardButton("👎 不喜欢", callback_data=f"dislike:{illust.id}"),
+                InlineKeyboardButton("🔗 Pixiv", url=f"https://www.pixiv.net/artworks/{illust.id}")
             ]
         ])
     
     async def handle_feedback(self, illust_id: int, action: str) -> bool:
-        """处理反馈回调"""
+        """处理反馈回调 (Vivi增强版: 同步Pixiv操作)"""
+        # 1. 调用原有的XP更新逻辑
         if self.on_feedback:
             await self.on_feedback(illust_id, action)
+        
+        # 2. 同步到Pixiv API
+        if self.client:
+            try:
+                if action == "like":
+                    await self.client.add_bookmark(illust_id, restrict='public')
+                    logger.info(f"[Pixiv] 公开收藏: {illust_id}")
+                elif action == "follow":
+                    # 获取作品详情以取得user_id
+                    illust = await self.client.get_illust_detail(illust_id)
+                    if illust:
+                        await self.client.follow_user(illust.user_id)
+                        logger.info(f"[Pixiv] 关注画师: {illust.user_id}")
+            except Exception as e:
+                logger.error(f"[Pixiv] 操作失败: {e}")
+        
         return True
     
 
