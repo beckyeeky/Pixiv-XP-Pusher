@@ -1919,22 +1919,22 @@ class TelegramNotifier(BaseNotifier):
                     user_id = illust_id
                     try:
                         result = await self.client.api.user_follow_add(user_id, restrict='public')
-                        # 检查返回值，pixivpy 通常返回 None 或包含 error 的 dict
-                        if result is None or (isinstance(result, dict) and 'error' not in result):
-                            logger.info(f"[Pixiv] 关注画师成功: {user_id}")
+                        logger.info(f"[Pixiv] user_follow_add API调用完成，user_id={user_id}, result={result}")
+                        
+                        # 验证是否真的关注了
+                        await asyncio.sleep(1)  # 等待API同步
+                        user_detail = await self.client.api.user_detail(user_id)
+                        is_followed = user_detail.get('user', {}).get('is_followed', False)
+                        logger.info(f"[Pixiv] 验证关注状态: user_id={user_id}, is_followed={is_followed}")
+                        
+                        if is_followed:
+                            logger.info(f"[Pixiv] 关注画师成功(已验证): {user_id}")
                         else:
-                            logger.error(f"[Pixiv] 关注画师失败，API返回: {result}")
+                            logger.error(f"[Pixiv] 关注画师失败: API调用后is_followed仍为False")
                     except Exception as e:
                         logger.error(f"[Pixiv] 关注画师异常: {e}")
-                        # 尝试备用方法名
-                        try:
-                            result = await self.client.api.follow_user(user_id)
-                            if result is None or (isinstance(result, dict) and 'error' not in result):
-                                logger.info(f"[Pixiv] 关注画师成功(备用): {user_id}")
-                            else:
-                                logger.error(f"[Pixiv] 备用方法失败，API返回: {result}")
-                        except Exception as e2:
-                            logger.error(f"[Pixiv] 备用方法也异常: {e2}")
+                        import traceback
+                        logger.error(traceback.format_exc())
             except Exception as e:
                 logger.error(f"[Pixiv] 操作失败: {e}")
         
