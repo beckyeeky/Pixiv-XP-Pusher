@@ -358,6 +358,30 @@ class XPProfiler:
         self.saturation_threshold = saturation_threshold  # 高频 Tag 饱和度阈值
         self._blocked_artist_ids: set[int] = set()  # 初始化，由 load_blacklist 填充
         
+        # IP 标签降权配置
+        self.ip_tags = {
+            # 游戏
+            "blue_archive", "honkai_star_rail", "nikke", "arknights",
+            "arknights_endfield", "zenless_zone_zero", "wuthering_waves",
+            "honkai_impact_3rd", "uma_musume", "uma_musume_pretty_derby",
+            "genshin_impact", "starrail", "zenless_zone_zero", "zzz",
+            "azur_lane", "fate_grand_order", "fgo", "princess_connect",
+            "priconne", "re_dive", "idolmaster", "idolmaster_cinderella_girls",
+            "idolmaster_shiny_colors", "idolmaster_million_live",
+            "bang_dream", "bandori", "lovelive", "lovelive_sunshine",
+            "lovelive_nijigasaki", "lovelive_superstar", "project_sekai",
+            "proseka", "vocaloid", "touhou", "kantai_collection", "kancolle",
+            # 动画
+            "spy_x_family", "chainsaw_man", "jujutsu_kaisen", "kimetsu_no_yaiba",
+            "attack_on_titan", "shingeki_no_kyojin", "one_piece", "naruto",
+            "pokemon", "digimon", "dragon_ball", "evangelion", "eva",
+            "sword_art_online", "sao", "re_zero", "re_kara_hajimeru_isekai_seikatsu",
+            "mushoku_tensei", "overlord", "slime", "tensei_shitara_slime_datta_ken",
+            # 通用
+            "original", "copyright", "game", "anime", "manga", "comic",
+        }
+        self.ip_weight_discount = 0.3  # IP 标签权重打 3 折，可配置
+        
         # 添加默认停用词（归一化为小写）
         # Pixiv 常见无意义标签
         default_stop_words = [
@@ -709,6 +733,17 @@ class XPProfiler:
                     logger.info(f"   注入 {injected_count} 个热门 Tag 作为弱先验")
             except Exception as e:
                 logger.warning(f"冷启动注入失败: {e}")
+        
+        # IP 标签降权处理
+        discounted_count = 0
+        for tag in list(profile.keys()):
+            if tag in self.ip_tags:
+                old_weight = profile[tag]
+                profile[tag] = old_weight * self.ip_weight_discount
+                discounted_count += 1
+        
+        if discounted_count > 0:
+            logger.info(f"🎮 IP 标签降权完成: {discounted_count} 个标签 ×{self.ip_weight_discount}")
         
         # 保存到数据库 (现有代码)
         await db.update_xp_profile(profile)
