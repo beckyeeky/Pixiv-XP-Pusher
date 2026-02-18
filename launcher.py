@@ -226,7 +226,7 @@ def main_menu():
             
         elif choice == '4':
             print("\n   启动网页管理 (http://localhost:8000)")
-            run_command("uvicorn web.app:app --host 0.0.0.0 --port 8000")
+            run_command(f"{sys.executable} -m uvicorn web.app:app --host 0.0.0.0 --port 8000")
             input("\n   按回车键继续...")
             
         elif choice == '5':
