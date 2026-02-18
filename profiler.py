@@ -338,6 +338,35 @@ def _build_ai_prompt(tags: list[str]) -> str:
 AITagProcessor._build_prompt = lambda self, tags: _build_ai_prompt(tags)
 
 
+from typing import Optional, Union
+from pathlib import Path
+import json
+
+# ... existing imports ...
+
+# 默认 IP 列表 (作为 Fallback)
+DEFAULT_IP_TAGS = {
+    # 游戏
+    "blue_archive", "honkai_star_rail", "nikke", "arknights",
+    "arknights_endfield", "zenless_zone_zero", "wuthering_waves",
+    "honkai_impact_3rd", "uma_musume", "uma_musume_pretty_derby",
+    "genshin_impact", "starrail", "zenless_zone_zero", "zzz",
+    "azur_lane", "fate_grand_order", "fgo", "princess_connect",
+    "priconne", "re_dive", "idolmaster", "idolmaster_cinderella_girls",
+    "idolmaster_shiny_colors", "idolmaster_million_live",
+    "bang_dream", "bandori", "lovelive", "lovelive_sunshine",
+    "lovelive_nijigasaki", "lovelive_superstar", "project_sekai",
+    "proseka", "vocaloid", "touhou", "kantai_collection", "kancolle",
+    # 动画
+    "spy_x_family", "chainsaw_man", "jujutsu_kaisen", "kimetsu_no_yaiba",
+    "attack_on_titan", "shingeki_no_kyojin", "one_piece", "naruto",
+    "pokemon", "digimon", "dragon_ball", "evangelion", "eva",
+    "sword_art_online", "sao", "re_zero", "re_kara_hajimeru_isekai_seikatsu",
+    "mushoku_tensei", "overlord", "slime", "tensei_shitara_slime_datta_ken",
+    # 通用
+    "original", "copyright", "game", "anime", "manga", "comic",
+}
+
 class XPProfiler:
     """XP画像构建器"""
     
@@ -348,7 +377,10 @@ class XPProfiler:
         discovery_rate: float = 0.1,
         time_decay_days: int = 180,
         ai_config: Optional[dict] = None,
-        saturation_threshold: float = 0.5
+        saturation_threshold: float = 0.5,
+        # 新增参数
+        ip_tags: Optional[Union[list, str]] = None,
+        ip_weight_discount: float = 1.0
     ):
         self.client = client
         self.stop_words = set(stop_words or [])
@@ -358,29 +390,37 @@ class XPProfiler:
         self.saturation_threshold = saturation_threshold  # 高频 Tag 饱和度阈值
         self._blocked_artist_ids: set[int] = set()  # 初始化，由 load_blacklist 填充
         
-        # IP 标签降权配置
-        self.ip_tags = {
-            # 游戏
-            "blue_archive", "honkai_star_rail", "nikke", "arknights",
-            "arknights_endfield", "zenless_zone_zero", "wuthering_waves",
-            "honkai_impact_3rd", "uma_musume", "uma_musume_pretty_derby",
-            "genshin_impact", "starrail", "zenless_zone_zero", "zzz",
-            "azur_lane", "fate_grand_order", "fgo", "princess_connect",
-            "priconne", "re_dive", "idolmaster", "idolmaster_cinderella_girls",
-            "idolmaster_shiny_colors", "idolmaster_million_live",
-            "bang_dream", "bandori", "lovelive", "lovelive_sunshine",
-            "lovelive_nijigasaki", "lovelive_superstar", "project_sekai",
-            "proseka", "vocaloid", "touhou", "kantai_collection", "kancolle",
-            # 动画
-            "spy_x_family", "chainsaw_man", "jujutsu_kaisen", "kimetsu_no_yaiba",
-            "attack_on_titan", "shingeki_no_kyojin", "one_piece", "naruto",
-            "pokemon", "digimon", "dragon_ball", "evangelion", "eva",
-            "sword_art_online", "sao", "re_zero", "re_kara_hajimeru_isekai_seikatsu",
-            "mushoku_tensei", "overlord", "slime", "tensei_shitara_slime_datta_ken",
-            # 通用
-            "original", "copyright", "game", "anime", "manga", "comic",
-        }
-        self.ip_weight_discount = 0.3  # IP 标签权重打 3 折，可配置
+        # IP 标签配置
+        self.ip_weight_discount = ip_weight_discount
+        self.ip_tags = set()
+        
+        # 加载 IP 标签
+        if ip_tags:
+            if isinstance(ip_tags, str):
+                # 文件路径
+                p = Path(ip_tags)
+                if p.exists():
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            tags = json.load(f)
+                            self.ip_tags = set(tags)
+                            logger.info(f"已从文件加载 {len(self.ip_tags)} 个 IP 标签")
+                    except Exception as e:
+                        logger.error(f"加载 IP 标签文件失败: {e}")
+                else:
+                    logger.warning(f"IP 标签文件不存在: {ip_tags}")
+            else:
+                # 列表
+                self.ip_tags = set(ip_tags)
+        else:
+            # 默认使用内置列表 (如果没配，但 discount < 1.0 时也许有用？或者干脆不用)
+            # 为了兼容性，如果用户没配 ip_tags 但配了 discount，我们用默认列表
+            if self.ip_weight_discount < 1.0:
+                 self.ip_tags = DEFAULT_IP_TAGS
+                 logger.info(f"使用内置 IP 标签列表 ({len(self.ip_tags)} 个)")
+
+        if self.ip_tags and self.ip_weight_discount < 1.0:
+            logger.info(f"🎮 IP 降权已启用: {len(self.ip_tags)} 个标签 ×{self.ip_weight_discount}")
         
         # 添加默认停用词（归一化为小写）
         # Pixiv 常见无意义标签
