@@ -7,9 +7,9 @@ import logging
 import secrets
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, Request, HTTPException, Depends, Form, Query, Response
+from fastapi import FastAPI, Request, HTTPException, Depends, Form, Query, Response, Body
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -169,6 +169,41 @@ async def dashboard(request: Request, _=Depends(require_auth)):
     })
 
 
+import hashlib
+import logging
+import secrets
+import subprocess
+import os
+import sys
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, List
+
+from fastapi import FastAPI, Request, HTTPException, Depends, Form, Query, Response, Body
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+import aiohttp
+import yaml
+
+import database as db
+
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Pixiv-XP-Pusher")
+
+# 配置路径
+PROJECT_ROOT = Path(__file__).parent.parent
+CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+STATIC_DIR = Path(__file__).parent / "static"
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+IP_TAGS_FILE = PROJECT_ROOT / "data" / "ip_tags.json"
+SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_ip_tags.py"
+
+# ... (middle parts remain unchanged) ...
+
 @app.get("/gallery", response_class=HTMLResponse)
 async def gallery(request: Request, page: int = Query(1, ge=1), _=Depends(require_auth)):
     """推送历史画廊"""
@@ -188,12 +223,117 @@ async def gallery(request: Request, page: int = Query(1, ge=1), _=Depends(requir
     })
 
 
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request, _=Depends(require_auth)):
+    """设置页面"""
+    config = load_config()
+    return templates.TemplateResponse("settings.html", {
+        "request": request,
+        "active_page": "settings",
+        "config": config
+    })
+
+
 # ============ API 路由 ============
 
 class FeedbackRequest(BaseModel):
     illust_id: int
     action: str  # 'like' | 'dislike'
 
+class SettingsRequest(BaseModel):
+    user_id: int
+    cron: str
+    ip_weight_discount: float
+    danbooru_login: Optional[str] = ""
+    danbooru_api_key: Optional[str] = ""
+    strategies: List[str]
+    r18_mode: str
+    proxy_url: Optional[str] = ""
+
+@app.post("/api/settings")
+async def save_settings(req: SettingsRequest, _=Depends(require_auth)):
+    """保存配置"""
+    try:
+        config = load_config()
+        
+        # 1. IP / Profiler
+        if "profiler" not in config: config["profiler"] = {}
+        config["profiler"]["ip_weight_discount"] = req.ip_weight_discount
+        # 保存 Danbooru 凭证到 config (虽然之前脚本只读 env，但为了回显我们要存)
+        config["profiler"]["danbooru_login"] = req.danbooru_login
+        config["profiler"]["danbooru_api_key"] = req.danbooru_api_key
+        
+        # 2. Strategies
+        config["strategies"] = req.strategies
+        
+        # 3. Pixiv User ID
+        if "pixiv" not in config: config["pixiv"] = {}
+        config["pixiv"]["user_id"] = req.user_id
+        
+        # 4. Scheduler
+        if "scheduler" not in config: config["scheduler"] = {}
+        config["scheduler"]["cron"] = req.cron
+        
+        # 5. Filter / R18
+        if "filter" not in config: config["filter"] = {}
+        config["filter"]["r18_mode"] = req.r18_mode
+        
+        # 6. Proxy
+        if req.proxy_url:
+            if "notifier" in config and "telegram" in config["notifier"]:
+                config["notifier"]["telegram"]["proxy_url"] = req.proxy_url
+                
+        save_config(config)
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"保存配置失败: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/sync-status")
+async def get_sync_status(_=Depends(require_auth)):
+    """检查 IP 列表状态"""
+    if IP_TAGS_FILE.exists():
+        try:
+            mtime = datetime.fromtimestamp(IP_TAGS_FILE.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            with open(IP_TAGS_FILE, "r") as f:
+                data = json.load(f)
+                return {"exists": True, "count": len(data), "mtime": mtime}
+        except:
+            pass
+    return {"exists": False}
+
+class SyncRequest(BaseModel):
+    danbooru_login: str
+    danbooru_api_key: str
+
+@app.post("/api/sync-ip")
+async def sync_ip_list(req: SyncRequest, _=Depends(require_auth)):
+    """执行 IP 同步"""
+    if not SYNC_SCRIPT.exists():
+        return {"success": False, "output": "脚本文件未找到: scripts/sync_ip_tags.py"}
+    
+    env = os.environ.copy()
+    if req.danbooru_login: env["DANBOORU_LOGIN"] = req.danbooru_login
+    if req.danbooru_api_key: env["DANBOORU_API_KEY"] = req.danbooru_api_key
+    
+    try:
+        # 确保 data 目录存在
+        IP_TAGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        
+        result = subprocess.run(
+            [sys.executable, str(SYNC_SCRIPT)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        
+        return {
+            "success": result.returncode == 0,
+            "output": result.stdout + "\n" + result.stderr
+        }
+    except Exception as e:
+        return {"success": False, "output": f"执行出错: {e}"}
 
 @app.post("/api/feedback")
 async def api_feedback(req: FeedbackRequest, request: Request, _=Depends(require_auth)):
