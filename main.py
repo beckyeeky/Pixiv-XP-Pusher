@@ -491,7 +491,10 @@ async def setup_services(config: dict):
         discovery_rate=profiler_cfg.get("discovery_rate", 0.1),
         time_decay_days=profiler_cfg.get("time_decay_days", 180),
         ai_config=profiler_cfg.get("ai"),
-        saturation_threshold=profiler_cfg.get("saturation_threshold", 0.5)
+        saturation_threshold=profiler_cfg.get("saturation_threshold", 0.5),
+        # Pass IP discount config
+        ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),
+        ip_weight_discount=profiler_cfg.get("ip_weight_discount", 1.0)
     )
     
     # Init Notifiers (使用 main_client 用于下载图片等，sync_client 用于 on_action 回调)
