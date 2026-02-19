@@ -44,8 +44,10 @@ def fetch_copyright_tags():
             
             for tag in data:
                 # Danbooru 使用 : 作为命名空间分隔符，直接去掉以匹配 Pixiv 格式
+                # 同时处理可能产生的连续下划线
                 # 例如: honkai:_star_rail -> honkai_star_rail
-                normalized_name = tag["name"].replace(":", "")
+                #       series:_name -> series_name (处理连续下划线)
+                normalized_name = tag["name"].replace(":", "").replace("__", "_")
                 all_tags.append(normalized_name)
             
             print(f"[Page {page}] Fetched {len(data)} tags")
