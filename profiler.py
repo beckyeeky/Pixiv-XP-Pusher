@@ -440,9 +440,6 @@ class XPProfiler:
                  self.ip_tags = DEFAULT_IP_TAGS
                  logger.info(f"使用内置 IP 标签列表 ({len(self.ip_tags)} 个)")
 
-        # 加载用户自定义的 IP 降权标签 (来自 config.yaml)
-        self._load_custom_ip_tags()
-
         if self.ip_tags and self.ip_weight_discount < 1.0:
             logger.info(f"🎮 IP 降权已启用: {len(self.ip_tags)} 个标签 ×{self.ip_weight_discount}")
         
@@ -524,24 +521,6 @@ class XPProfiler:
                     return aliases
             except Exception as e:
                 logger.warning(f"加载 IP 标签别名文件失败: {e}，使用默认映射")
-        
-        return DEFAULT_IP_TAG_ALIASES.copy()
-    
-    def _load_custom_ip_tags(self):
-        """加载用户自定义的 IP 降权标签 (从 config.yaml)"""
-        try:
-            config_file = Path("config.yaml")
-            if config_file.exists():
-                with open(config_file, "r", encoding="utf-8") as f:
-                    config = yaml.safe_load(f) or {}
-                    custom_tags = config.get("profiler", {}).get("custom_ip_tags", [])
-                    if custom_tags:
-                        # 归一化并合并到 ip_tags
-                        normalized_tags = set(t.replace(":", "").replace("__", "_") for t in custom_tags)
-                        self.ip_tags.update(normalized_tags)
-                        logger.info(f"已加载 {len(normalized_tags)} 个自定义 IP 降权标签")
-        except Exception as e:
-            logger.warning(f"加载自定义 IP 降权标签失败: {e}")
         
         return DEFAULT_IP_TAG_ALIASES.copy()
     
@@ -849,9 +828,13 @@ class XPProfiler:
         
         profile = normalized_profile
         
-        # 然后进行 IP 降权
+        # 然后进行 IP 降权 (但如果该 Tag 已有 Boost，则不进行 IP 降权，完全交给 Boost)
         for tag in list(profile.keys()):
             if tag in self.ip_tags:
+                # 检查是否已有 Boost (包含在 boost_tags 中)
+                if tag in (self.boost_tags or {}):
+                    continue # 交给后面的 boost 逻辑处理
+                
                 old_weight = profile[tag]
                 profile[tag] = old_weight * self.ip_weight_discount
                 discounted_count += 1

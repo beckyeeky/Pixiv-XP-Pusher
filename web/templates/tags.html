@@ -124,6 +124,11 @@
         color: white;
     }
 
+    .btn-block {
+        background: #ef4444;
+        color: white;
+    }
+
     .btn-ip {
         background: #f59e0b;
         color: white;
@@ -374,7 +379,7 @@ function searchTag() {
                         </div>
                         <div class="tag-actions">
                             <button class="btn-boost" onclick="addBoostTag('${item.tag}')">Boost</button>
-                            <button class="btn-ip" onclick="addIpDownweight('${item.tag}')">IP降权</button>
+                            <button class="btn-ip" onclick="addIpDownweight('${item.tag}')">降权</button>
                             <button class="btn-block" onclick="addBlacklistTag('${item.tag}')">屏蔽</button>
                         </div>
                     `;
@@ -397,6 +402,8 @@ function searchTag() {
 }
 
 function addIpDownweight(tag) {
+    if (!confirm(`确定要降低 "${tag}" 的权重吗？\n这将使其推荐频率大幅降低 (0.1x)。`)) return;
+    
     // 默认降权倍率 0.1
     const multiplier = 0.1;
     
