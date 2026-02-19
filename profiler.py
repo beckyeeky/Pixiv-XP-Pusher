@@ -440,6 +440,9 @@ class XPProfiler:
                  self.ip_tags = DEFAULT_IP_TAGS
                  logger.info(f"使用内置 IP 标签列表 ({len(self.ip_tags)} 个)")
 
+        # 加载用户自定义的 IP 降权标签 (来自 config.yaml)
+        self._load_custom_ip_tags()
+
         if self.ip_tags and self.ip_weight_discount < 1.0:
             logger.info(f"🎮 IP 降权已启用: {len(self.ip_tags)} 个标签 ×{self.ip_weight_discount}")
         
@@ -521,6 +524,24 @@ class XPProfiler:
                     return aliases
             except Exception as e:
                 logger.warning(f"加载 IP 标签别名文件失败: {e}，使用默认映射")
+        
+        return DEFAULT_IP_TAG_ALIASES.copy()
+    
+    def _load_custom_ip_tags(self):
+        """加载用户自定义的 IP 降权标签 (从 config.yaml)"""
+        try:
+            config_file = Path("config.yaml")
+            if config_file.exists():
+                with open(config_file, "r", encoding="utf-8") as f:
+                    config = yaml.safe_load(f) or {}
+                    custom_tags = config.get("profiler", {}).get("custom_ip_tags", [])
+                    if custom_tags:
+                        # 归一化并合并到 ip_tags
+                        normalized_tags = set(t.replace(":", "").replace("__", "_") for t in custom_tags)
+                        self.ip_tags.update(normalized_tags)
+                        logger.info(f"已加载 {len(normalized_tags)} 个自定义 IP 降权标签")
+        except Exception as e:
+            logger.warning(f"加载自定义 IP 降权标签失败: {e}")
         
         return DEFAULT_IP_TAG_ALIASES.copy()
     

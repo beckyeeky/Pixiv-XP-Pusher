@@ -124,9 +124,18 @@
         color: white;
     }
 
-    .btn-block {
-        background: #ef4444;
+    .btn-ip {
+        background: #f59e0b;
         color: white;
+    }
+
+    .tag-chip.ip {
+        border-color: #f59e0b;
+        background: rgba(245, 158, 11, 0.1);
+    }
+
+    .tag-chip.ip:hover {
+        background: rgba(239, 68, 68, 0.2);
     }
 
     .section-card {
@@ -292,7 +301,9 @@ function loadTagSettings() {
                 container.innerHTML = '';
                 Object.entries(boostTags).forEach(([tag, multiplier]) => {
                     const chip = document.createElement('span');
-                    chip.className = 'tag-chip boost';
+                    // 如果倍率小于1，使用 ip 样式（降权），否则使用 boost 样式
+                    const isDownweight = multiplier < 1.0;
+                    chip.className = isDownweight ? 'tag-chip ip' : 'tag-chip boost';
                     chip.innerHTML = `${tag} <span style="opacity:0.7">×${multiplier}</span> <span class="remove-icon">✕</span>`;
                     chip.onclick = () => removeBoostTag(tag);
                     chip.title = `点击删除 ${tag}`;
@@ -363,6 +374,7 @@ function searchTag() {
                         </div>
                         <div class="tag-actions">
                             <button class="btn-boost" onclick="addBoostTag('${item.tag}')">Boost</button>
+                            <button class="btn-ip" onclick="addIpDownweight('${item.tag}')">IP降权</button>
                             <button class="btn-block" onclick="addBlacklistTag('${item.tag}')">屏蔽</button>
                         </div>
                     `;
@@ -382,6 +394,26 @@ function searchTag() {
             console.error('搜索失败:', err);
             alert('搜索失败: ' + err.message);
         });
+}
+
+function addIpDownweight(tag) {
+    // 默认降权倍率 0.1
+    const multiplier = 0.1;
+    
+    fetch('/api/config/boost-tag', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tag, multiplier})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            loadTagSettings();
+        } else {
+            alert('添加失败: ' + (data.error || '未知错误'));
+        }
+    })
+    .catch(err => alert('网络错误: ' + err.message));
 }
 
 function addBoostTag(tag) {
