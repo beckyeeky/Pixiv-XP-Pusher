@@ -42,8 +42,16 @@ SESSION_EXPIRE_HOURS = 24
 
 
 def load_config() -> dict:
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+            if config is None:
+                logger.warning("config.yaml 为空或格式无效，返回默认配置")
+                return {}
+            return config
+    except Exception as e:
+        logger.error(f"加载 config.yaml 失败: {e}")
+        return {}
 
 
 def save_config(config: dict):
@@ -75,27 +83,35 @@ async def require_auth(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """主页/登录页"""
-    config = load_config()
-    web_cfg = config.get("web", {})
-    
-    # 检查是否已设置密码
-    if not web_cfg.get("password"):
-        return RedirectResponse("/setup")
-    
-    if verify_session(request):
-        return RedirectResponse("/dashboard")
-    
-    return templates.TemplateResponse("login.html", {"request": request, "active_page": ""})
+    try:
+        config = load_config()
+        web_cfg = config.get("web", {})
+        
+        # 检查是否已设置密码
+        if not web_cfg.get("password"):
+            return RedirectResponse("/setup")
+        
+        if verify_session(request):
+            return RedirectResponse("/dashboard")
+        
+        return templates.TemplateResponse("login.html", {"request": request, "active_page": ""})
+    except Exception as e:
+        logger.error(f"访问首页出错: {e}")
+        raise HTTPException(500, f"服务器错误: {e}")
 
 
 @app.get("/setup", response_class=HTMLResponse)
 async def setup_page(request: Request):
     """首次设置密码页"""
-    config = load_config()
-    if config.get("web", {}).get("password"):
-        return RedirectResponse("/")
-    
-    return templates.TemplateResponse("setup.html", {"request": request, "active_page": ""})
+    try:
+        config = load_config()
+        if config.get("web", {}).get("password"):
+            return RedirectResponse("/")
+        
+        return templates.TemplateResponse("setup.html", {"request": request, "active_page": ""})
+    except Exception as e:
+        logger.error(f"访问设置页出错: {e}")
+        raise HTTPException(500, f"服务器错误: {e}")
 
 
 @app.post("/setup")
@@ -334,6 +350,29 @@ async def sync_ip_list(req: SyncRequest, _=Depends(require_auth)):
         }
     except Exception as e:
         return {"success": False, "output": f"执行出错: {e}"}
+
+@app.get("/api/search-tag")
+async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth)):
+    """模糊搜索 XP 画像中的标签"""
+    try:
+        # 使用数据库模糊查询
+        # 注意：这里直接操作 DB，需要 import database
+        async with db.get_db() as conn:
+            # 搜索 tag 名
+            cursor = await conn.execute(
+                "SELECT tag, weight FROM xp_profile WHERE tag LIKE ? ORDER BY weight DESC LIMIT 20",
+                (f"%{q}%",)
+            )
+            rows = await cursor.fetchall()
+            
+            results = []
+            for row in rows:
+                results.append({"tag": row[0], "weight": row[1]})
+                
+            return {"success": True, "results": results}
+    except Exception as e:
+        logger.error(f"搜索标签失败: {e}")
+        return {"success": False, "error": str(e)}
 
 @app.post("/api/feedback")
 async def api_feedback(req: FeedbackRequest, request: Request, _=Depends(require_auth)):
