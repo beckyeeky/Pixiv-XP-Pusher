@@ -367,6 +367,18 @@ DEFAULT_IP_TAGS = {
     "original", "copyright", "game", "anime", "manga", "comic",
 }
 
+# 手动 IP 标签映射表 (别名/简称 -> 标准英文名)
+# 用于处理日文简称、缩写等非标准名称
+IP_TAG_ALIASES = {
+    # Blue Archive
+    "ブルアカ": "blue_archive",
+    "ブルーアーカイブ": "blue_archive",
+    "bluearchive": "blue_archive",
+    
+    # 其他常见别名可以继续添加
+    # "日文名": "english_name",
+}
+
 class XPProfiler:
     """XP画像构建器"""
     
@@ -782,6 +794,22 @@ class XPProfiler:
         
         # IP 标签降权处理
         discounted_count = 0
+        
+        # 先应用别名映射 (例如: ブルアカ -> blue_archive)
+        normalized_profile = {}
+        for tag, weight in profile.items():
+            # 检查是否有别名映射
+            normalized_tag = IP_TAG_ALIASES.get(tag, tag)
+            
+            # 如果映射后的标签已存在，合并权重（取平均）
+            if normalized_tag in normalized_profile:
+                normalized_profile[normalized_tag] = (normalized_profile[normalized_tag] + weight) / 2
+            else:
+                normalized_profile[normalized_tag] = weight
+        
+        profile = normalized_profile
+        
+        # 然后进行 IP 降权
         for tag in list(profile.keys()):
             if tag in self.ip_tags:
                 old_weight = profile[tag]
