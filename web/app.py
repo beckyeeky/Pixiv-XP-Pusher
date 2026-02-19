@@ -454,6 +454,57 @@ async def remove_blacklist_tag(req: BlacklistTagRequest, _=Depends(require_auth)
         logger.error(f"删除黑名单标签失败: {e}")
         return {"success": False, "error": str(e)}
 
+
+# ============ IP 降权标签管理 ============
+
+class IPTagRequest(BaseModel):
+    tag: str
+
+@app.post("/api/config/ip-tag")
+async def add_ip_tag(req: IPTagRequest, _=Depends(require_auth)):
+    """添加 IP 降权标签"""
+    try:
+        config = load_config()
+        
+        # 确保 profiler 部分存在
+        if "profiler" not in config:
+            config["profiler"] = {}
+        
+        # 确保 custom_ip_tags 存在（用户手动添加的 IP 标签）
+        if "custom_ip_tags" not in config["profiler"]:
+            config["profiler"]["custom_ip_tags"] = []
+        
+        # 添加（如果不存在）
+        if req.tag not in config["profiler"]["custom_ip_tags"]:
+            config["profiler"]["custom_ip_tags"].append(req.tag)
+            save_config(config)
+            return {"success": True}
+        else:
+            return {"success": False, "error": "标签已在 IP 降权列表中"}
+    except Exception as e:
+        logger.error(f"添加 IP 降权标签失败: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.delete("/api/config/ip-tag")
+async def remove_ip_tag(req: IPTagRequest, _=Depends(require_auth)):
+    """删除 IP 降权标签"""
+    try:
+        config = load_config()
+        
+        if ("profiler" in config and 
+            "custom_ip_tags" in config["profiler"] and 
+            req.tag in config["profiler"]["custom_ip_tags"]):
+            
+            config["profiler"]["custom_ip_tags"].remove(req.tag)
+            save_config(config)
+            return {"success": True}
+        else:
+            return {"success": False, "error": "标签不在 IP 降权列表中"}
+    except Exception as e:
+        logger.error(f"删除 IP 降权标签失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/search-tag")
 async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth)):
     """模糊搜索 XP 画像中的标签（支持多语言）"""
