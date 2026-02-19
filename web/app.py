@@ -342,6 +342,107 @@ async def sync_ip_list(req: SyncRequest, _=Depends(require_auth)):
     except Exception as e:
         return {"success": False, "output": f"执行出错: {e}"}
 
+@app.get("/api/config")
+async def get_config_section(section: str = Query(None), _=Depends(require_auth)):
+    """获取配置的特定部分"""
+    config = load_config()
+    if section:
+        return {section: config.get(section, {})}
+    return config
+
+class BoostTagRequest(BaseModel):
+    tag: str
+    multiplier: float = 1.5
+
+@app.post("/api/config/boost-tag")
+async def add_boost_tag(req: BoostTagRequest, _=Depends(require_auth)):
+    """添加或更新 Boost Tag"""
+    try:
+        config = load_config()
+        
+        # 确保 profiler 部分存在
+        if "profiler" not in config:
+            config["profiler"] = {}
+        
+        # 确保 boost_tags 存在
+        if "boost_tags" not in config["profiler"]:
+            config["profiler"]["boost_tags"] = {}
+        
+        # 添加或更新
+        config["profiler"]["boost_tags"][req.tag] = req.multiplier
+        
+        save_config(config)
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"添加 Boost Tag 失败: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.delete("/api/config/boost-tag")
+async def remove_boost_tag(req: BoostTagRequest, _=Depends(require_auth)):
+    """删除 Boost Tag"""
+    try:
+        config = load_config()
+        
+        if ("profiler" in config and 
+            "boost_tags" in config["profiler"] and 
+            req.tag in config["profiler"]["boost_tags"]):
+            
+            del config["profiler"]["boost_tags"][req.tag]
+            save_config(config)
+            return {"success": True}
+        else:
+            return {"success": False, "error": "Tag 不存在"}
+    except Exception as e:
+        logger.error(f"删除 Boost Tag 失败: {e}")
+        return {"success": False, "error": str(e)}
+
+class BlacklistTagRequest(BaseModel):
+    tag: str
+
+@app.post("/api/config/blacklist-tag")
+async def add_blacklist_tag(req: BlacklistTagRequest, _=Depends(require_auth)):
+    """添加黑名单标签"""
+    try:
+        config = load_config()
+        
+        # 确保 filter 部分存在
+        if "filter" not in config:
+            config["filter"] = {}
+        
+        # 确保 blacklist_tags 存在
+        if "blacklist_tags" not in config["filter"]:
+            config["filter"]["blacklist_tags"] = []
+        
+        # 添加（如果不存在）
+        if req.tag not in config["filter"]["blacklist_tags"]:
+            config["filter"]["blacklist_tags"].append(req.tag)
+            save_config(config)
+            return {"success": True}
+        else:
+            return {"success": False, "error": "标签已在黑名单中"}
+    except Exception as e:
+        logger.error(f"添加黑名单标签失败: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.delete("/api/config/blacklist-tag")
+async def remove_blacklist_tag(req: BlacklistTagRequest, _=Depends(require_auth)):
+    """删除黑名单标签"""
+    try:
+        config = load_config()
+        
+        if ("filter" in config and 
+            "blacklist_tags" in config["filter"] and 
+            req.tag in config["filter"]["blacklist_tags"]):
+            
+            config["filter"]["blacklist_tags"].remove(req.tag)
+            save_config(config)
+            return {"success": True}
+        else:
+            return {"success": False, "error": "标签不在黑名单中"}
+    except Exception as e:
+        logger.error(f"删除黑名单标签失败: {e}")
+        return {"success": False, "error": str(e)}
+
 @app.get("/api/search-tag")
 async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth)):
     """模糊搜索 XP 画像中的标签（支持多语言）"""
