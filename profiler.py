@@ -369,14 +369,14 @@ DEFAULT_IP_TAGS = {
 
 # 手动 IP 标签映射表 (别名/简称 -> 标准英文名)
 # 用于处理日文简称、缩写等非标准名称
-IP_TAG_ALIASES = {
+# 可以从 data/ip_tag_aliases.json 覆盖
+DEFAULT_IP_TAG_ALIASES = {
     # Blue Archive
     "ブルアカ": "blue_archive",
     "ブルーアーカイブ": "blue_archive",
     "bluearchive": "blue_archive",
-    
-    # 其他常见别名可以继续添加
-    # "日文名": "english_name",
+    "ホシノ": "blue_archive",
+    "アロナ": "blue_archive",
 }
 
 class XPProfiler:
@@ -406,6 +406,9 @@ class XPProfiler:
         # IP 标签配置
         self.ip_weight_discount = ip_weight_discount
         self.ip_tags = set()
+        
+        # 加载 IP 标签别名映射 (文件优先于默认)
+        self.ip_tag_aliases = self._load_ip_tag_aliases()
         
         # 手动加权配置
         self.boost_tags = boost_tags or {}
@@ -504,6 +507,22 @@ class XPProfiler:
 
             logger.error(f"加载黑名单失败: {e}")
             self._blocked_artist_ids = set()
+
+    def _load_ip_tag_aliases(self) -> dict[str, str]:
+        """加载 IP 标签别名映射 (从文件或默认)"""
+        aliases_file = Path(__file__).parent / "data" / "ip_tag_aliases.json"
+        
+        if aliases_file.exists():
+            try:
+                with open(aliases_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    aliases = data.get("aliases", {})
+                    logger.info(f"已从文件加载 {len(aliases)} 个 IP 标签别名")
+                    return aliases
+            except Exception as e:
+                logger.warning(f"加载 IP 标签别名文件失败: {e}，使用默认映射")
+        
+        return DEFAULT_IP_TAG_ALIASES.copy()
     
     async def build_profile(
         self,
@@ -799,7 +818,7 @@ class XPProfiler:
         normalized_profile = {}
         for tag, weight in profile.items():
             # 检查是否有别名映射
-            normalized_tag = IP_TAG_ALIASES.get(tag, tag)
+            normalized_tag = self.ip_tag_aliases.get(tag, tag)
             
             # 如果映射后的标签已存在，合并权重（取平均）
             if normalized_tag in normalized_profile:

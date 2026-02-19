@@ -1,0 +1,16 @@
+{
+  "_comment": "IP 标签别名映射表 - 将日文简称、缩写等非标准名称映射到标准英文名",
+  "aliases": {
+    "ブルアカ": "blue_archive",
+    "ブルーアーカイブ": "blue_archive",
+    "bluearchive": "blue_archive",
+    
+    "ホシノ": "blue_archive",
+    "アロナ": "blue_archive",
+    
+    "ウマ娘": "uma_musume",
+    "プリコネ": "princess_connect",
+    
+    "_example_only": "remove_this_line_when_editing"
+  }
+}
