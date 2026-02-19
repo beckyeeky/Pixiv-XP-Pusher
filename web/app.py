@@ -277,9 +277,18 @@ async def save_settings(req: SettingsRequest, _=Depends(require_auth)):
         config["filter"]["r18_mode"] = req.r18_mode
         
         # 6. Proxy
-        if req.proxy_url:
-            if "notifier" in config and "telegram" in config["notifier"]:
-                config["notifier"]["telegram"]["proxy_url"] = req.proxy_url
+        # 确保 notifier.telegram 结构存在
+        if "notifier" not in config:
+            config["notifier"] = {}
+        if "telegram" not in config["notifier"]:
+            config["notifier"]["telegram"] = {}
+        
+        # 处理代理 URL：如果是空字符串或 "None"，则设为 None
+        if req.proxy_url and req.proxy_url.strip() and req.proxy_url.strip().lower() != "none":
+            config["notifier"]["telegram"]["proxy_url"] = req.proxy_url.strip()
+        else:
+            # 清除代理设置
+            config["notifier"]["telegram"]["proxy_url"] = None
                 
         save_config(config)
         return {"success": True}
@@ -425,7 +434,11 @@ async def proxy_image(illust_id: int):
     config = load_config()
     # 复用 Telegram 配置的代理
     proxy = config.get("notifier", {}).get("telegram", {}).get("proxy_url")
-    if proxy and not proxy.startswith("http"):
+    
+    # 处理代理 URL：如果是 None、空字符串或字符串 "None"，则设为 None
+    if not proxy or proxy.strip() == "" or proxy.strip().lower() == "none":
+        proxy = None
+    elif proxy and not proxy.startswith("http"):
         proxy = f"http://{proxy}"
         
     urls = [
