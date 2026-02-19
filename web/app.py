@@ -5,6 +5,10 @@ Web UI - FastAPI 后端
 import hashlib
 import logging
 import secrets
+import subprocess
+import os
+import sys
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -190,40 +194,13 @@ async def dashboard(request: Request, _=Depends(require_auth)):
     })
 
 
-import hashlib
-import logging
-import secrets
-import subprocess
-import os
-import sys
-import json
-from datetime import datetime
-from pathlib import Path
-from typing import Optional, List
-
-from fastapi import FastAPI, Request, HTTPException, Depends, Form, Query, Response, Body
-from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
-import aiohttp
-import yaml
-
-import database as db
-
-logger = logging.getLogger(__name__)
-
-app = FastAPI(title="Pixiv-XP-Pusher")
-
-# 配置路径
+# 配置路径常量（添加到文件顶部已有的常量后面）
 PROJECT_ROOT = Path(__file__).parent.parent
-CONFIG_PATH = PROJECT_ROOT / "config.yaml"
-STATIC_DIR = Path(__file__).parent / "static"
-TEMPLATES_DIR = Path(__file__).parent / "templates"
 IP_TAGS_FILE = PROJECT_ROOT / "data" / "ip_tags.json"
 SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_ip_tags.py"
 
-# ... (middle parts remain unchanged) ...
+# 确保 data 目录存在
+IP_TAGS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 @app.get("/gallery", response_class=HTMLResponse)
 async def gallery(request: Request, page: int = Query(1, ge=1), _=Depends(require_auth)):
