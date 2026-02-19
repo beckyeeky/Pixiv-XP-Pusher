@@ -345,7 +345,21 @@ function searchTag() {
                 }
                 
                 el.innerHTML = `${item.tag} <span class="weight">${weightText}${hint}</span>`;
-                el.title = `来源: ${item.source}, 类型: ${item.type}`;
+                
+                // 构建悬停提示文本
+                let tooltip = `来源: ${item.source}, 类型: ${item.type}`;
+                
+                // 添加匹配的原始标签信息
+                if (item.matched_original) {
+                    tooltip += `\n匹配的原始标签: ${item.matched_original}`;
+                }
+                
+                // 添加所有原始标签信息
+                if (item.original_tags && item.original_tags.length > 0) {
+                    tooltip += `\n对应原始标签: ${item.original_tags.join(', ')}`;
+                }
+                
+                el.title = tooltip;
                 list.appendChild(el);
             });
         } else {
