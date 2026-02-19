@@ -223,11 +223,22 @@ async def gallery(request: Request, page: int = Query(1, ge=1), _=Depends(requir
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, _=Depends(require_auth)):
-    """设置页面"""
+    """设置页面 - 纯配置"""
     config = load_config()
     return templates.TemplateResponse("settings.html", {
         "request": request,
         "active_page": "settings",
+        "config": config
+    })
+
+
+@app.get("/tags", response_class=HTMLResponse)
+async def tags_page(request: Request, _=Depends(require_auth)):
+    """标签管理页面"""
+    config = load_config()
+    return templates.TemplateResponse("tags.html", {
+        "request": request,
+        "active_page": "tags",
         "config": config
     })
 

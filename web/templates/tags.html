@@ -1,0 +1,467 @@
+{% extends "base.html" %}
+
+{% block title %}标签管理 - Pixiv-XP-Pusher{% endblock %}
+
+{% block extra_head %}
+<style>
+    .tags-container {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem;
+    }
+    
+    @media (max-width: 768px) {
+        .tags-container {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    .search-box {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .search-input-group {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .search-input-group input {
+        flex: 1;
+        padding: 0.6rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+    }
+
+    .search-input-group button {
+        padding: 0.6rem 1rem;
+        background: var(--accent);
+        color: white;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 0.9rem;
+    }
+
+    .search-input-group button:hover {
+        opacity: 0.9;
+    }
+
+    .weight-control {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+    }
+
+    .weight-control input {
+        width: 60px;
+        padding: 0.3rem;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        text-align: center;
+    }
+
+    .tag-result-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.6rem;
+        margin-bottom: 0.4rem;
+        background: var(--bg-primary);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        transition: background 0.2s;
+    }
+
+    .tag-result-item:hover {
+        background: var(--accent-soft);
+    }
+
+    .tag-info {
+        flex: 1;
+    }
+
+    .tag-name {
+        font-weight: 500;
+        color: var(--text-primary);
+    }
+
+    .tag-meta {
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+    }
+
+    .tag-actions {
+        display: flex;
+        gap: 0.3rem;
+    }
+
+    .tag-actions button {
+        padding: 0.3rem 0.6rem;
+        font-size: 0.8rem;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: opacity 0.2s;
+    }
+
+    .tag-actions button:hover {
+        opacity: 0.8;
+    }
+
+    .btn-boost {
+        background: #10b981;
+        color: white;
+    }
+
+    .btn-block {
+        background: #ef4444;
+        color: white;
+    }
+
+    .section-card {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1rem;
+    }
+
+    .section-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.8rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .section-title {
+        font-size: 1rem;
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    .tag-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        min-height: 40px;
+    }
+
+    .tag-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.3rem 0.6rem;
+        background: var(--bg-primary);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        font-size: 0.85rem;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .tag-chip:hover {
+        border-color: #ef4444;
+        background: rgba(239, 68, 68, 0.1);
+    }
+
+    .tag-chip.boost {
+        border-color: #10b981;
+        background: rgba(16, 185, 129, 0.1);
+    }
+
+    .tag-chip.boost:hover {
+        background: rgba(239, 68, 68, 0.2);
+    }
+
+    .tag-chip .remove-icon {
+        font-size: 0.7rem;
+        opacity: 0.6;
+    }
+
+    .empty-state {
+        color: var(--text-secondary);
+        font-size: 0.85rem;
+        font-style: italic;
+    }
+
+    .search-results-container {
+        max-height: 400px;
+        overflow-y: auto;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card" style="margin-bottom: 1.5rem;">
+    <div class="card-header">
+        <h2 class="card-title">🏷️ 标签管理</h2>
+    </div>
+    <p style="color: var(--text-secondary); font-size: 0.9rem;">
+        管理您的 Boost Tags（提升推荐权重）和黑名单（过滤不想要的标签）。
+    </p>
+</div>
+
+<div class="tags-container">
+    <!-- 左侧：字典查询 -->
+    <div class="section-card">
+        <div class="section-header">
+            <span class="section-title">📖 XP 字典查询</span>
+        </div>
+        
+        <div class="search-box">
+            <div class="search-input-group">
+                <input type="text" id="tagSearchInput" placeholder="输入关键词（如：女体、白髪、thighs）">
+                <button onclick="searchTag()">搜索</button>
+            </div>
+            <div class="weight-control">
+                <span>Boost 倍率:</span>
+                <input type="number" id="boostWeight" value="1.5" step="0.1" min="1.0" max="5.0">
+                <span>×</span>
+            </div>
+        </div>
+
+        <div id="searchResults" style="display: none;">
+            <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                搜索结果（点击右侧按钮操作）
+            </div>
+            <div id="tagResultsList" class="search-results-container">
+                <!-- Results will be populated here -->
+            </div>
+        </div>
+
+        <div id="searchLoading" style="display: none; text-align: center; padding: 1rem; color: var(--text-secondary);">
+            搜索中...
+        </div>
+    </div>
+
+    <!-- 右侧：已设置标签 -->
+    <div>
+        <!-- Boost Tags -->
+        <div class="section-card" style="margin-bottom: 1rem;">
+            <div class="section-header">
+                <span class="section-title">🚀 Boost Tags</span>
+                <span style="font-size: 0.8rem; color: var(--text-secondary);">提升推荐权重</span>
+            </div>
+            <div id="boostTagsList" class="tag-list">
+                <span class="empty-state">暂无 Boost Tags</span>
+            </div>
+        </div>
+
+        <!-- 黑名单 -->
+        <div class="section-card">
+            <div class="section-header">
+                <span class="section-title">🚫 黑名单</span>
+                <span style="font-size: 0.8rem; color: var(--text-secondary);">过滤相关作品</span>
+            </div>
+            <div id="blacklistTagsList" class="tag-list">
+                <span class="empty-state">暂无黑名单标签</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// 页面加载时获取当前设置
+document.addEventListener('DOMContentLoaded', loadTagSettings);
+
+function loadTagSettings() {
+    // 加载 Boost Tags
+    fetch('/api/config?section=profiler')
+        .then(r => r.json())
+        .then(data => {
+            const boostTags = data.profiler?.boost_tags || {};
+            const container = document.getElementById('boostTagsList');
+            
+            if (Object.keys(boostTags).length === 0) {
+                container.innerHTML = '<span class="empty-state">暂无 Boost Tags</span>';
+            } else {
+                container.innerHTML = '';
+                Object.entries(boostTags).forEach(([tag, multiplier]) => {
+                    const chip = document.createElement('span');
+                    chip.className = 'tag-chip boost';
+                    chip.innerHTML = `${tag} <span style="opacity:0.7">×${multiplier}</span> <span class="remove-icon">✕</span>`;
+                    chip.onclick = () => removeBoostTag(tag);
+                    chip.title = `点击删除 ${tag}`;
+                    container.appendChild(chip);
+                });
+            }
+        })
+        .catch(err => console.error('加载 Boost Tags 失败:', err));
+
+    // 加载黑名单
+    fetch('/api/config?section=filter')
+        .then(r => r.json())
+        .then(data => {
+            const blacklist = data.filter?.blacklist_tags || [];
+            const container = document.getElementById('blacklistTagsList');
+            
+            if (blacklist.length === 0) {
+                container.innerHTML = '<span class="empty-state">暂无黑名单标签</span>';
+            } else {
+                container.innerHTML = '';
+                blacklist.forEach(tag => {
+                    const chip = document.createElement('span');
+                    chip.className = 'tag-chip';
+                    chip.innerHTML = `${tag} <span class="remove-icon">✕</span>`;
+                    chip.onclick = () => removeBlacklistTag(tag);
+                    chip.title = `点击删除 ${tag}`;
+                    container.appendChild(chip);
+                });
+            }
+        })
+        .catch(err => console.error('加载黑名单失败:', err));
+}
+
+function searchTag() {
+    const input = document.getElementById('tagSearchInput');
+    const query = input.value.trim();
+    
+    if (!query) return;
+
+    document.getElementById('searchLoading').style.display = 'block';
+    document.getElementById('searchResults').style.display = 'none';
+
+    fetch(`/api/search-tag?q=${encodeURIComponent(query)}`)
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('searchLoading').style.display = 'none';
+            
+            if (data.success && data.results && data.results.length > 0) {
+                const container = document.getElementById('tagResultsList');
+                container.innerHTML = '';
+                
+                data.results.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'tag-result-item';
+                    
+                    const weight = item.weight || 0;
+                    const weightText = weight > 0 ? weight.toFixed(1) : 'N/A';
+                    
+                    let tooltip = `权重: ${weightText}\n来源: ${item.source}`;
+                    if (item.original_tags && item.original_tags.length > 0) {
+                        tooltip += `\n原始标签: ${item.original_tags.join(', ')}`;
+                    }
+                    
+                    div.innerHTML = `
+                        <div class="tag-info">
+                            <div class="tag-name">${item.tag}</div>
+                            <div class="tag-meta">权重: ${weightText} | ${item.source}</div>
+                        </div>
+                        <div class="tag-actions">
+                            <button class="btn-boost" onclick="addBoostTag('${item.tag}')">Boost</button>
+                            <button class="btn-block" onclick="addBlacklistTag('${item.tag}')">屏蔽</button>
+                        </div>
+                    `;
+                    div.title = tooltip;
+                    container.appendChild(div);
+                });
+                
+                document.getElementById('searchResults').style.display = 'block';
+            } else {
+                document.getElementById('tagResultsList').innerHTML = 
+                    '<div style="color: var(--text-secondary); text-align: center; padding: 1rem;">无匹配结果</div>';
+                document.getElementById('searchResults').style.display = 'block';
+            }
+        })
+        .catch(err => {
+            document.getElementById('searchLoading').style.display = 'none';
+            console.error('搜索失败:', err);
+            alert('搜索失败: ' + err.message);
+        });
+}
+
+function addBoostTag(tag) {
+    const weight = parseFloat(document.getElementById('boostWeight').value) || 1.5;
+    
+    fetch('/api/config/boost-tag', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tag, multiplier: weight})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            loadTagSettings();
+            // 显示成功提示（可选）
+        } else {
+            alert('添加失败: ' + (data.error || '未知错误'));
+        }
+    })
+    .catch(err => alert('网络错误: ' + err.message));
+}
+
+function removeBoostTag(tag) {
+    if (!confirm(`确定要删除 Boost Tag "${tag}" 吗？`)) return;
+    
+    fetch('/api/config/boost-tag', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tag})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            loadTagSettings();
+        } else {
+            alert('删除失败: ' + (data.error || '未知错误'));
+        }
+    });
+}
+
+function addBlacklistTag(tag) {
+    fetch('/api/config/blacklist-tag', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tag})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            loadTagSettings();
+        } else {
+            alert('添加失败: ' + (data.error || '未知错误'));
+        }
+    })
+    .catch(err => alert('网络错误: ' + err.message));
+}
+
+function removeBlacklistTag(tag) {
+    if (!confirm(`确定要从黑名单中删除 "${tag}" 吗？`)) return;
+    
+    fetch('/api/config/blacklist-tag', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tag})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            loadTagSettings();
+        } else {
+            alert('删除失败: ' + (data.error || '未知错误'));
+        }
+    });
+}
+
+// 回车键搜索
+document.getElementById('tagSearchInput').addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') {
+        searchTag();
+    }
+});
+</script>
+{% endblock %}
