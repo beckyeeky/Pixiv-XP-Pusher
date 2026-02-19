@@ -83,17 +83,22 @@ async def require_auth(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """主页/登录页"""
+    logger.info("访问 / 路由")
     try:
         config = load_config()
+        logger.info(f"加载的 config: {config}")
         web_cfg = config.get("web", {})
+        logger.info(f"web_cfg: {web_cfg}, password: {web_cfg.get('password')}")
         
         # 检查是否已设置密码
         if not web_cfg.get("password"):
+            logger.info("密码为空，重定向到 /setup")
             return RedirectResponse("/setup")
         
         if verify_session(request):
             return RedirectResponse("/dashboard")
         
+        logger.info("渲染 login.html")
         return templates.TemplateResponse("login.html", {"request": request, "active_page": ""})
     except Exception as e:
         logger.error(f"访问首页出错: {e}")
