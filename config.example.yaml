@@ -115,6 +115,14 @@ filter:
   # 黑名单标签
   blacklist_tags:
     - "R-18G"
+    # AI 相关标签（如果开启 exclude_ai: true，这些也会被过滤）
+    # - "AI"
+    # - "AI生成"
+    # - "AI art"
+    # - "AIイラスト"
+    # - "Stable Diffusion"
+    # - "Midjourney"
+    # - "NovelAI"
 
   # === 推荐增强选项 (借鉴 X 算法) ===
 
