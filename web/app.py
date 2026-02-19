@@ -344,12 +344,13 @@ async def sync_ip_list(req: SyncRequest, _=Depends(require_auth)):
 
 @app.get("/api/search-tag")
 async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth)):
-    """模糊搜索 XP 画像中的标签"""
+    """模糊搜索 XP 画像中的标签（支持多语言）"""
     try:
         conn = await db.get_db()
         results = []
+        seen_tags = set()  # 避免重复
         
-        # 1. 先搜索 xp_profile 表 (XP 画像)
+        # 1. 先搜索 xp_profile 表 (XP 画像) - 英文标签
         try:
             cursor = await conn.execute(
                 "SELECT tag, weight FROM xp_profile WHERE tag LIKE ? ORDER BY weight DESC LIMIT 20",
@@ -357,11 +358,71 @@ async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth))
             )
             profile_rows = await cursor.fetchall()
             for row in profile_rows:
-                results.append({"tag": row[0], "weight": row[1], "source": "xp_profile"})
+                tag = row[0]
+                if tag not in seen_tags:
+                    seen_tags.add(tag)
+                    results.append({
+                        "tag": tag, 
+                        "weight": row[1], 
+                        "source": "xp_profile",
+                        "type": "normalized"
+                    })
         except Exception as e:
             logger.warning(f"搜索 xp_profile 表失败（可能表不存在）: {e}")
         
-        # 2. 如果结果太少，搜索 xp_bookmarks 表 (收藏数据)
+        # 2. 搜索 tag_mapping_stats 表 - 通过原始标签找标准化标签
+        try:
+            cursor = await conn.execute(
+                """SELECT DISTINCT tms.normalized_tag, xp.weight 
+                   FROM tag_mapping_stats tms 
+                   LEFT JOIN xp_profile xp ON tms.normalized_tag = xp.tag
+                   WHERE tms.original_tag LIKE ? 
+                   ORDER BY COALESCE(xp.weight, 0) DESC 
+                   LIMIT 20""",
+                (f"%{q}%",)
+            )
+            mapping_rows = await cursor.fetchall()
+            for row in mapping_rows:
+                tag = row[0]
+                if tag not in seen_tags:
+                    seen_tags.add(tag)
+                    results.append({
+                        "tag": tag, 
+                        "weight": row[1] or 0.0, 
+                        "source": "tag_mapping",
+                        "type": "normalized",
+                        "original_match": True  # 标记是通过原始标签匹配的
+                    })
+        except Exception as e:
+            logger.warning(f"搜索 tag_mapping_stats 表失败: {e}")
+        
+        # 3. 搜索 ai_tag_cache 表 - 原始标签到清洗后标签的映射
+        try:
+            cursor = await conn.execute(
+                """SELECT DISTINCT atc.cleaned_tag, xp.weight 
+                   FROM ai_tag_cache atc 
+                   LEFT JOIN xp_profile xp ON atc.cleaned_tag = xp.tag
+                   WHERE atc.original_tag LIKE ? AND atc.cleaned_tag IS NOT NULL
+                   ORDER BY COALESCE(xp.weight, 0) DESC 
+                   LIMIT 20""",
+                (f"%{q}%",)
+            )
+            cache_rows = await cursor.fetchall()
+            for row in cache_rows:
+                tag = row[0]
+                if tag and tag not in seen_tags:
+                    seen_tags.add(tag)
+                    results.append({
+                        "tag": tag, 
+                        "weight": row[1] or 0.0, 
+                        "source": "ai_cache",
+                        "type": "normalized",
+                        "original_match": True
+                    })
+        except Exception as e:
+            logger.warning(f"搜索 ai_tag_cache 表失败: {e}")
+        
+        # 4. 如果结果太少，搜索 xp_bookmarks 表 (收藏数据)
         if len(results) < 5:
             try:
                 cursor = await conn.execute(
@@ -370,15 +431,23 @@ async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth))
                 )
                 bookmark_rows = await cursor.fetchall()
                 for row in bookmark_rows:
-                    # 避免重复
-                    if not any(r["tag"] == row[0] for r in results):
-                        results.append({"tag": row[0], "weight": 0.0, "source": "xp_bookmarks"})
+                    tag = row[0]
+                    if tag not in seen_tags:
+                        seen_tags.add(tag)
+                        results.append({
+                            "tag": tag, 
+                            "weight": 0.0, 
+                            "source": "xp_bookmarks",
+                            "type": "raw"
+                        })
             except Exception as e:
                 logger.warning(f"搜索 xp_bookmarks 表失败: {e}")
         
         await conn.close()
         
-        # 3. 如果还是没有结果，返回空列表
+        # 按权重排序
+        results.sort(key=lambda x: x["weight"], reverse=True)
+        
         return {"success": True, "results": results}
     except Exception as e:
         logger.error(f"搜索标签失败: {e}")
