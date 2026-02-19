@@ -504,9 +504,15 @@ python main.py --now
 
 # 方式C: 仅启动定时任务（后台守护）
 python main.py
+
+# 方式D: 同时启动 Web 管理 + 推送服务
+# Windows: 运行 start.bat 选择选项 5
+# Linux/macOS:
+python -m uvicorn web.app:app --host 0.0.0.0 --port 8000 > web.log 2>&1 &
+python main.py --now
 ```
 
-**Windows 用户：** 直接双击 `start.bat` 启动交互菜单。
+**Windows 用户：** 直接双击 `start.bat` 启动交互菜单，选择选项 **5** 同时启动 Web 和推送服务。
 
 ---
 
@@ -687,6 +693,44 @@ telegram:
    # 编辑 config.yaml，确保 proxy_url 是有效 URL 或完全删除
    sed -i '/proxy_url:/d' config.yaml  # 删除 proxy_url 行
    ```
+</details>
+
+<details>
+<summary><b>Q: 如何同时运行 Web 管理界面和后台推送服务？</b></summary>
+
+**方法 1: 使用交互菜单 (推荐)**
+```bash
+# 运行启动脚本
+start.bat  # Windows
+# 或
+python launcher.py  # Linux/macOS
+
+# 选择选项 5: "同时启动 Web + 推送服务"
+```
+
+**方法 2: 手动启动两个进程**
+```bash
+# 终端 1: 启动 Web 服务器
+python -m uvicorn web.app:app --host 0.0.0.0 --port 8000
+
+# 终端 2: 启动推送服务
+python main.py --now
+```
+
+**方法 3: Linux/macOS 后台运行**
+```bash
+# 后台启动 Web 服务器
+python -m uvicorn web.app:app --host 0.0.0.0 --port 8000 > web.log 2>&1 &
+
+# 前台启动推送服务
+python main.py --now
+```
+
+**方法 4: Docker 部署 (最稳定)**
+```bash
+# 一键启动所有服务
+docker-compose up -d
+```
 </details>
 
 ---

@@ -203,8 +203,9 @@ def main_menu():
         print("   2. 仅启动定时任务")
         print("   3. 单次运行 (调试用)")
         print("   4. 启动网页管理")
-        print("   5. 获取 Token")
-        print("   6. 重新运行配置")
+        print("   5. 同时启动 Web + 推送服务")
+        print("   6. 获取 Token")
+        print("   7. 重新运行配置")
         print("   0. 退出\n")
         
         choice = input("   请选择: ").strip()
@@ -231,10 +232,43 @@ def main_menu():
             input("\n   按回车键继续...")
             
         elif choice == '5':
+            print("\n   🌐 同时启动 Web 管理 + 推送服务")
+            print("   Web: http://localhost:8000")
+            print("   日志输出到终端，按 Ctrl+C 停止所有服务\n")
+            
+            # Windows 和 Linux/macOS 不同的后台启动方式
+            if os.name == 'nt':  # Windows
+                # Windows 使用 start 命令启动新窗口
+                import threading
+                import time
+                
+                def start_web():
+                    os.system(f'"{sys.executable}" -m uvicorn web.app:app --host 0.0.0.0 --port 8000')
+                
+                # 在新线程中启动 Web 服务器
+                web_thread = threading.Thread(target=start_web, daemon=True)
+                web_thread.start()
+                time.sleep(2)  # 给 Web 服务器一点启动时间
+                
+                # 前台运行推送服务
+                print("   Web 服务器已启动，现在启动推送服务...")
+                run_command("python main.py --now")
+                
+            else:  # Linux/macOS
+                # 使用 & 后台运行 Web 服务器
+                print("   启动 Web 服务器到后台...")
+                os.system(f'"{sys.executable}" -m uvicorn web.app:app --host 0.0.0.0 --port 8000 > web.log 2>&1 &')
+                time.sleep(2)
+                
+                # 前台运行推送服务
+                print("   Web 服务器已启动，现在启动推送服务...")
+                run_command("python main.py --now")
+            
+        elif choice == '6':
             run_command("python get_token.py")
             input("\n   按回车键继续...")
             
-        elif choice == '6':
+        elif choice == '7':
             if os.path.exists(".initialized"):
                 os.remove(".initialized")
             return  # restart wizard
