@@ -346,21 +346,40 @@ async def sync_ip_list(req: SyncRequest, _=Depends(require_auth)):
 async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth)):
     """模糊搜索 XP 画像中的标签"""
     try:
-        # 使用数据库模糊查询
-        # 注意：这里直接操作 DB，需要 import database
-        async with db.get_db() as conn:
-            # 搜索 tag 名
+        conn = await db.get_db()
+        results = []
+        
+        # 1. 先搜索 xp_profile 表 (XP 画像)
+        try:
             cursor = await conn.execute(
                 "SELECT tag, weight FROM xp_profile WHERE tag LIKE ? ORDER BY weight DESC LIMIT 20",
                 (f"%{q}%",)
             )
-            rows = await cursor.fetchall()
-            
-            results = []
-            for row in rows:
-                results.append({"tag": row[0], "weight": row[1]})
-                
-            return {"success": True, "results": results}
+            profile_rows = await cursor.fetchall()
+            for row in profile_rows:
+                results.append({"tag": row[0], "weight": row[1], "source": "xp_profile"})
+        except Exception as e:
+            logger.warning(f"搜索 xp_profile 表失败（可能表不存在）: {e}")
+        
+        # 2. 如果结果太少，搜索 xp_bookmarks 表 (收藏数据)
+        if len(results) < 5:
+            try:
+                cursor = await conn.execute(
+                    "SELECT DISTINCT tag FROM xp_bookmarks WHERE tag LIKE ? LIMIT 20",
+                    (f"%{q}%",)
+                )
+                bookmark_rows = await cursor.fetchall()
+                for row in bookmark_rows:
+                    # 避免重复
+                    if not any(r["tag"] == row[0] for r in results):
+                        results.append({"tag": row[0], "weight": 0.0, "source": "xp_bookmarks"})
+            except Exception as e:
+                logger.warning(f"搜索 xp_bookmarks 表失败: {e}")
+        
+        await conn.close()
+        
+        # 3. 如果还是没有结果，返回空列表
+        return {"success": True, "results": results}
     except Exception as e:
         logger.error(f"搜索标签失败: {e}")
         return {"success": False, "error": str(e)}
