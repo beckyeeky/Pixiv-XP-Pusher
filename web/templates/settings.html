@@ -235,13 +235,13 @@
         </div>
     </div>
 
-    <!-- 3. XP 字典查询 (新增) -->
+    <!-- 3. XP 字典查询与快速操作 -->
     <div class="card">
         <div class="card-header">
-            <h3 class="card-title">📖 XP 字典查询</h3>
+            <h3 class="card-title">📖 XP 字典查询与快速操作</h3>
         </div>
         <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:1rem;">
-            不知道某个 Tag 在画像里叫什么？在这里搜索。
+            搜索标签，快速添加到 Boost 或黑名单。
         </p>
         
         <div class="form-group" style="display:flex;gap:0.5rem;">
@@ -251,10 +251,32 @@
         
         <div id="tagSearchResults" style="margin-top:1rem;display:none;">
             <div style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:0.5rem;">
-                搜索结果 (标签: 权重)
+                搜索结果 (点击标签查看详情，右侧按钮快速操作)
             </div>
-            <div class="tag-cloud" id="tagResultsList">
+            <div id="tagResultsList">
                 <!-- tags will go here -->
+            </div>
+        </div>
+        
+        <!-- 当前设置展示 -->
+        <div style="margin-top:2rem;display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+            <!-- Boost Tags 管理 -->
+            <div>
+                <h4 style="margin-bottom:0.5rem;font-size:1rem;">🚀 Boost Tags</h4>
+                <div id="boostTagsList" class="tag-cloud">
+                    <!-- 动态加载 -->
+                </div>
+                <div style="margin-top:0.5rem;font-size:0.85rem;color:var(--text-secondary);">
+                    权重: <input type="number" id="boostWeight" value="1.5" step="0.1" min="1.0" max="5.0" style="width:60px;padding:0.2rem;">倍
+                </div>
+            </div>
+            
+            <!-- 黑名单管理 -->
+            <div>
+                <h4 style="margin-bottom:0.5rem;font-size:1rem;">🚫 黑名单</h4>
+                <div id="blacklistTagsList" class="tag-cloud">
+                    <!-- 动态加载 -->
+                </div>
             </div>
         </div>
     </div>
@@ -330,13 +352,28 @@ function searchTag() {
         list.innerHTML = '';
         if (data.success && data.results && data.results.length > 0) {
             data.results.forEach(item => {
-                const el = document.createElement('span');
-                el.className = 'tag';
-                // 格式化权重显示
+                const container = document.createElement('div');
+                container.style.display = 'flex';
+                container.style.alignItems = 'center';
+                container.style.justifyContent = 'space-between';
+                container.style.marginBottom = '0.5rem';
+                container.style.padding = '0.5rem';
+                container.style.background = 'var(--bg-primary)';
+                container.style.borderRadius = '6px';
+                container.style.border = '1px solid var(--border)';
+                
+                // 左侧：标签信息
+                const tagInfo = document.createElement('div');
+                tagInfo.style.flex = '1';
+                
+                const tagName = document.createElement('span');
+                tagName.className = 'tag';
+                tagName.style.cursor = 'pointer';
+                tagName.style.marginRight = '0.5rem';
+                
                 const weight = item.weight || 0;
                 const weightText = weight > 0 ? weight.toFixed(1) : 'N/A';
                 
-                // 添加提示信息
                 let hint = '';
                 if (item.original_match) {
                     hint = ' (通过原始标签匹配)';
@@ -344,23 +381,66 @@ function searchTag() {
                     hint = ' (原始标签)';
                 }
                 
-                el.innerHTML = `${item.tag} <span class="weight">${weightText}${hint}</span>`;
+                tagName.innerHTML = `${item.tag} <span class="weight">${weightText}${hint}</span>`;
                 
-                // 构建悬停提示文本
+                // 悬停提示
                 let tooltip = `来源: ${item.source}, 类型: ${item.type}`;
-                
-                // 添加匹配的原始标签信息
                 if (item.matched_original) {
                     tooltip += `\n匹配的原始标签: ${item.matched_original}`;
                 }
-                
-                // 添加所有原始标签信息
                 if (item.original_tags && item.original_tags.length > 0) {
                     tooltip += `\n对应原始标签: ${item.original_tags.join(', ')}`;
                 }
+                tagName.title = tooltip;
                 
-                el.title = tooltip;
-                list.appendChild(el);
+                // 点击标签显示详情
+                tagName.onclick = () => {
+                    alert(`标签: ${item.tag}\n权重: ${weightText}\n${tooltip}`);
+                };
+                
+                tagInfo.appendChild(tagName);
+                container.appendChild(tagInfo);
+                
+                // 右侧：操作按钮
+                const actions = document.createElement('div');
+                actions.style.display = 'flex';
+                actions.style.gap = '0.3rem';
+                
+                // Boost 按钮
+                const boostBtn = document.createElement('button');
+                boostBtn.innerHTML = '🚀 Boost';
+                boostBtn.style.padding = '0.3rem 0.6rem';
+                boostBtn.style.fontSize = '0.8rem';
+                boostBtn.style.background = 'var(--accent-soft)';
+                boostBtn.style.border = '1px solid var(--accent)';
+                boostBtn.style.borderRadius = '4px';
+                boostBtn.style.cursor = 'pointer';
+                boostBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    addBoostTag(item.tag);
+                };
+                boostBtn.title = `提升 ${item.tag} 的推荐权重`;
+                
+                // 黑名单按钮
+                const blockBtn = document.createElement('button');
+                blockBtn.innerHTML = '🚫 屏蔽';
+                blockBtn.style.padding = '0.3rem 0.6rem';
+                blockBtn.style.fontSize = '0.8rem';
+                blockBtn.style.background = 'var(--bg-primary)';
+                blockBtn.style.border = '1px solid var(--border)';
+                blockBtn.style.borderRadius = '4px';
+                blockBtn.style.cursor = 'pointer';
+                blockBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    addBlacklistTag(item.tag);
+                };
+                blockBtn.title = `屏蔽包含 ${item.tag} 标签的作品`;
+                
+                actions.appendChild(boostBtn);
+                actions.appendChild(blockBtn);
+                container.appendChild(actions);
+                
+                list.appendChild(container);
             });
         } else {
             let message = '无匹配结果';
@@ -382,6 +462,139 @@ function setCron(val) {
     document.querySelector('input[name="cron"]').value = val;
     return false;
 }
+
+// 加载当前设置
+function loadCurrentSettings() {
+    // 加载 Boost Tags
+    fetch('/api/config?section=profiler')
+        .then(r => r.json())
+        .then(data => {
+            const boostTags = data.profiler?.boost_tags || {};
+            const boostList = document.getElementById('boostTagsList');
+            boostList.innerHTML = '';
+            
+            for (const [tag, multiplier] of Object.entries(boostTags)) {
+                const el = document.createElement('span');
+                el.className = 'tag';
+                el.innerHTML = `${tag} <span class="weight">×${multiplier}</span>`;
+                el.style.cursor = 'pointer';
+                el.title = `点击删除 ${tag}`;
+                el.onclick = () => removeBoostTag(tag);
+                boostList.appendChild(el);
+            }
+            
+            if (Object.keys(boostTags).length === 0) {
+                boostList.innerHTML = '<span style="color:var(--text-secondary);font-size:0.9rem;">暂无 Boost Tags</span>';
+            }
+        });
+    
+    // 加载黑名单
+    fetch('/api/config?section=filter')
+        .then(r => r.json())
+        .then(data => {
+            const blacklist = data.filter?.blacklist_tags || [];
+            const blacklistEl = document.getElementById('blacklistTagsList');
+            blacklistEl.innerHTML = '';
+            
+            blacklist.forEach(tag => {
+                const el = document.createElement('span');
+                el.className = 'tag';
+                el.innerHTML = tag;
+                el.style.cursor = 'pointer';
+                el.title = `点击删除 ${tag}`;
+                el.onclick = () => removeBlacklistTag(tag);
+                blacklistEl.appendChild(el);
+            });
+            
+            if (blacklist.length === 0) {
+                blacklistEl.innerHTML = '<span style="color:var(--text-secondary);font-size:0.9rem;">暂无黑名单标签</span>';
+            }
+        });
+}
+
+// 添加 Boost Tag
+function addBoostTag(tag) {
+    const weight = parseFloat(document.getElementById('boostWeight').value) || 1.5;
+    
+    fetch('/api/config/boost-tag', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tag, multiplier: weight})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            alert(`✅ 已添加 Boost: ${tag} ×${weight}`);
+            loadCurrentSettings();
+        } else {
+            alert(`❌ 添加失败: ${data.error}`);
+        }
+    })
+    .catch(err => {
+        alert(`❌ 网络错误: ${err.message}`);
+    });
+}
+
+// 删除 Boost Tag
+function removeBoostTag(tag) {
+    if (!confirm(`确定要删除 Boost Tag: ${tag} 吗？`)) return;
+    
+    fetch('/api/config/boost-tag', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tag})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            loadCurrentSettings();
+        } else {
+            alert(`❌ 删除失败: ${data.error}`);
+        }
+    });
+}
+
+// 添加黑名单标签
+function addBlacklistTag(tag) {
+    fetch('/api/config/blacklist-tag', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tag})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            alert(`✅ 已添加到黑名单: ${tag}`);
+            loadCurrentSettings();
+        } else {
+            alert(`❌ 添加失败: ${data.error}`);
+        }
+    });
+}
+
+// 删除黑名单标签
+function removeBlacklistTag(tag) {
+    if (!confirm(`确定要从黑名单中删除: ${tag} 吗？`)) return;
+    
+    fetch('/api/config/blacklist-tag', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tag})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            loadCurrentSettings();
+        } else {
+            alert(`❌ 删除失败: ${data.error}`);
+        }
+    });
+}
+
+// 页面加载时初始化
+document.addEventListener('DOMContentLoaded', function() {
+    loadCurrentSettings();
+});
 
 // 检查 IP 同步状态
 fetch('/api/sync-status')
