@@ -1,8 +1,16 @@
-# Pixiv-XP-Pusher
+# Pixiv-XP-Pusher (beckyeeky Fork)
 
-> 🎨 **智能 XP 捕获与推送系统**
+> 🎨 **智能 XP 捕获与推送系统 - 增强版**
 >
 > 基于用户收藏自动分析 XP（性癖/兴趣偏好）画像，全网搜索并智能推送最懂你的 Pixiv 插画。支持 Telegram / QQ (OneBot) 多渠道推送。
+>
+> **✨ Fork 增强特性：**
+> - **IP 标签降权** - 自动识别并降低 IP/游戏/动画标题标签权重，专注视觉元素
+> - **手动标签加权** - 可手动提升特定标签的推荐权重
+> - **Web 配置编辑器** - 图形化界面管理所有设置，告别 YAML 编辑
+> - **Danbooru IP 同步** - 自动同步最新 IP 标签列表
+> - **标签调试器** - 查询标签在系统中的标准名称
+> - **代理修复** - 改进的代理 URL 处理逻辑
 
 ---
 
@@ -44,6 +52,75 @@
       - `/block_artist` - 快速屏蔽画师 ID
   - **OneBot (QQ)**: 支持 Go-CQHTTP/Lagrange，链接卡片或图文消息，多图并发下载
   - **AstrBot** [实验性]: 通过 HTTP API 接入 AstrBot 多平台框架，支持 QQ/微信/Telegram 等
+
+## 🚀 Fork 增强特性
+
+### 1. IP 标签降权系统
+**问题**: 系统会过度推荐 IP/游戏/动画标题标签（如 `blue_archive`, `honkai_star_rail`），而忽略视觉元素标签（如 `large_breasts`, `thighs`）。
+
+**解决方案**:
+- **自动识别**: 从 Danbooru 同步版权标签列表
+- **权重折扣**: 可配置的降权系数（默认 1.0 = 不降权，0.1 = 降权 90%）
+- **向后兼容**: 默认启用，不影响现有配置
+
+**配置示例**:
+```yaml
+profiler:
+  ip_tags: []  # 自动从 Danbooru 同步，或手动指定
+  ip_weight_discount: 0.1  # IP 标签权重打 1 折
+```
+
+**同步 IP 列表**:
+```bash
+# 设置环境变量
+export DANBOORU_LOGIN=your_username
+export DANBOORU_API_KEY=your_api_key
+
+# 运行同步脚本
+python scripts/sync_ip_tags.py
+```
+
+### 2. 手动标签加权
+**功能**: 可手动提升特定标签的推荐权重，突破算法限制。
+
+**配置示例**:
+```yaml
+profiler:
+  boost_tags:
+    white_hair: 1.5      # 提升 50% 权重
+    perfect_body: 2.0    # 提升 100% 权重（双倍）
+    garter_straps: 1.2   # 提升 20% 权重
+```
+
+**工作原理**:
+- **乘法加成**: 尊重原始权重，热门标签获得更大绝对提升
+- **新标签注入**: 可强行注入从未收藏过的标签
+- **实时生效**: 下次构建 XP 画像时立即应用
+
+### 3. Web 图形化配置编辑器
+**功能**: 完全替代手动编辑 `config.yaml`，提供直观的 Web 界面。
+
+**访问方式**: `http://localhost:8000/settings`
+
+**包含功能**:
+- **IP 降权设置**: 滑块调节降权系数
+- **Danbooru 凭证**: 配置 API 密钥用于同步
+- **IP 同步按钮**: 一键同步最新 IP 标签列表
+- **策略开关**: 勾选启用的推荐策略
+- **Cron 设置**: 可视化定时任务配置
+- **标签调试器**: 查询标签在系统中的标准名称
+
+### 4. 标签调试器
+**问题**: 不知道某个标签在系统中被标准化为什么名称？
+
+**解决方案**: 在 Web 设置页面的 "XP 字典查询" 中输入关键词，系统会显示匹配的标签及其权重。
+
+**示例**:
+- 输入 `女体` → 显示 `perfect_body: 2.5`, `voluptuous: 1.8`
+- 输入 `blue` → 显示 `blue_hair: 3.2`, `blue_eyes: 2.1`
+
+### 5. 代理 URL 智能处理
+**修复**: 正确处理 `None`、空字符串和字符串 `"None"` 代理配置，避免 `http://None:80` 连接错误。
 - ⚙️ **完全自动化**
   - 智能调度器，支持多时间点运行
   - **每日日报**: 每天生成 XP 变化报告与策略统计
@@ -149,6 +226,17 @@ profiler:
 
   scan_limit: 1000 # 每次分析收藏的数量
   discovery_rate: 0.1 # 探索新 Tag 的概率
+  
+  # [Fork!] IP 标签降权配置
+  ip_tags: []  # IP/版权标签列表，可自动从 Danbooru 同步
+  ip_weight_discount: 1.0  # IP 标签权重折扣 (0.0-1.0)，1.0=不降权，0.1=降权90%
+  
+  # [Fork!] 手动标签加权
+  boost_tags: {}  # {标签: 倍率}，如 {"white_hair": 1.5, "perfect_body": 2.0}
+  
+  # [Fork!] Danbooru API 凭证 (用于同步 IP 标签)
+  danbooru_login: ""  # Danbooru 用户名
+  danbooru_api_key: ""  # Danbooru API Key
 
 fetcher:
   # MAB 策略配额限制 (防止某一策略独占)
@@ -220,6 +308,13 @@ notifier:
 - **Gallery**: 浏览推送历史，提供无限滚动画廊。
   - **画廊代理**: 内置本地反代服务，**无需梯子**即可在画廊中浏览 Pixiv 图片（需配置 `proxy_url`）。
 - **设置**: 首次访问需设置管理密码，之后凭密码登录。
+- **Settings (Fork!)**: 图形化配置编辑器，包含：
+  - IP 降权系数调节
+  - Danbooru 凭证配置
+  - IP 标签一键同步
+  - 推荐策略开关
+  - 定时任务配置
+  - 标签调试器
 
 ---
 
@@ -236,10 +331,18 @@ pixiv-xp/
 ├── requirements.txt     # Python 依赖
 ├── docker-compose.yml   # Docker 编排
 ├── pixiv_client.py      # Pixiv API 封装
-├── profiler.py          # XP 画像分析核心
+├── profiler.py          # XP 画像分析核心 (包含 IP 降权/Boost 逻辑)
 ├── fetcher.py           # 内容搜索与抓取
 ├── filter.py            # 过滤与去重逻辑
 ├── database.py          # SQLite 数据存储
+├── scripts/             # [Fork!] 工具脚本
+│   └── sync_ip_tags.py  # Danbooru IP 标签同步工具
+├── web/                 # Web 管理界面
+│   ├── app.py           # FastAPI 后端 (包含设置页面 API)
+│   ├── templates/       # HTML 模板
+│   │   ├── settings.html # [Fork!] 图形化配置编辑器
+│   │   └── ...
+│   └── static/          # 静态资源
 └── notifier/            # 推送适配器 (Telegram, OneBot)
 ```
 
@@ -485,6 +588,107 @@ telegram:
 请检查 `config.yaml` 中 LLM 的 `api_key` 和 `base_url` 是否正确。如果 API 不稳定，可以在配置中关闭 AI 功能 (`enabled: false`)，系统将回退到纯统计模式运行。
 </details>
 
+<details>
+<summary><b>Q: [Fork] 如何配置 IP 标签降权?</b></summary>
+
+1. **自动同步** (推荐):
+   ```bash
+   # 设置 Danbooru 环境变量
+   export DANBOORU_LOGIN=your_username
+   export DANBOORU_API_KEY=your_api_key
+   
+   # 运行同步脚本
+   python scripts/sync_ip_tags.py
+   ```
+
+2. **手动配置**:
+   ```yaml
+   profiler:
+     ip_tags: ["blue_archive", "honkai_star_rail", "nikke"]
+     ip_weight_discount: 0.1  # 降权 90%
+   ```
+
+3. **Web UI 配置**:
+   访问 `http://localhost:8000/settings`，在 "IP 降权" 部分设置折扣系数并同步 IP 列表。
+</details>
+
+<details>
+<summary><b>Q: [Fork] 如何手动提升某个标签的权重?</b></summary>
+
+1. **查找标签标准名称**:
+   访问 `http://localhost:8000/settings`，在 "XP 字典查询" 中输入关键词，找到系统使用的标准名称。
+
+2. **配置 boost_tags**:
+   ```yaml
+   profiler:
+     boost_tags:
+       white_hair: 1.5      # 提升 50%
+       perfect_body: 2.0    # 提升 100% (双倍)
+   ```
+
+3. **Web UI 配置**:
+   未来版本将在 Web 设置页面添加 Boost 标签配置界面。
+</details>
+
+<details>
+<summary><b>Q: [Fork] Web 设置页面打不开怎么办?</b></summary>
+
+1. **检查服务是否运行**:
+   ```bash
+   # 查看进程
+   ps aux | grep uvicorn
+   
+   # 检查端口
+   netstat -tlnp | grep 8000
+   ```
+
+2. **检查 config.yaml**:
+   ```yaml
+   web:
+     enabled: true
+     password: ""  # 留空以显示设置页面
+     port: 8000
+   ```
+
+3. **查看日志**:
+   ```bash
+   # 查看 Web 服务日志
+   tail -f logs/web.log
+   ```
+
+4. **常见问题**:
+   - 端口被占用: 修改 `web.port`
+   - 密码已设置: 删除 `web.password` 或设为空字符串
+   - 路由问题: 确保已拉取最新代码并重启服务
+</details>
+
+<details>
+<summary><b>Q: [Fork] 图片代理报错 "Cannot connect to host none:80"</b></summary>
+
+**原因**: 代理 URL 被设置为 `None` 或字符串 `"None"`。
+
+**解决**:
+
+1. **检查配置**:
+   ```yaml
+   notifier:
+     telegram:
+       proxy_url: "http://127.0.0.1:7890"  # 正确的代理地址
+       # 或留空/删除此行以禁用代理
+   ```
+
+2. **Web UI 修复**:
+   访问 `http://localhost:8000/settings`，在 "基础设置" 中:
+   - 设置正确的代理 URL
+   - 或留空并保存以清除代理设置
+
+3. **手动修复**:
+   ```bash
+   # 编辑 config.yaml，确保 proxy_url 是有效 URL 或完全删除
+   sed -i '/proxy_url:/d' config.yaml  # 删除 proxy_url 行
+   ```
+</details>
+
 ---
 
 ## 📜 许可证
@@ -495,7 +699,47 @@ MIT License
 
 ## 📝 更新日志 / Changelog
 
-### 2026-01-26
+### 2026-02-19 (beckyeeky Fork)
+
+**✨ 新增功能 / New Features**
+
+- **IP 标签降权系统**: 自动识别并降低 IP/游戏/动画标题标签权重，专注视觉元素标签
+- **手动标签加权**: 支持手动提升特定标签的推荐权重 (`boost_tags`)
+- **Web 图形化配置编辑器**: 完全替代手动编辑 `config.yaml`，提供直观的 Web 界面
+- **Danbooru IP 同步**: 自动从 Danbooru 同步最新版权标签列表
+- **标签调试器**: Web UI 内查询标签标准名称
+- **代理 URL 智能处理**: 修复 `http://None:80` 连接错误
+
+**🔧 配置更新 / Configuration Updates**
+
+```yaml
+profiler:
+  # IP 标签降权
+  ip_tags: []  # 自动同步或手动指定
+  ip_weight_discount: 1.0  # 降权系数 (0.0-1.0)
+  
+  # 手动标签加权
+  boost_tags: {}  # {标签: 倍率}
+  
+  # Danbooru 凭证
+  danbooru_login: ""
+  danbooru_api_key: ""
+```
+
+**🐛 修复 / Bug Fixes**
+
+- **Web UI 路由修复**: 修复重复导入导致的 `/` 和 `/setup` 404 错误
+- **图片代理修复**: 正确处理 `None`/空字符串代理 URL
+- **配置传递修复**: 修复 `ip_tags` 参数传递错误
+
+**🚀 使用指南 / Usage Guide**
+
+1. **访问 Web 设置页面**: `http://localhost:8000/settings`
+2. **配置 IP 降权**: 设置折扣系数并同步 IP 列表
+3. **使用标签调试器**: 查询标签标准名称
+4. **配置手动加权**: 编辑 `config.yaml` 中的 `boost_tags`
+
+### 2026-01-26 (原项目)
 
 **🐛 修复 / Bug Fixes**
 
