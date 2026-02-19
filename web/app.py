@@ -361,11 +361,14 @@ async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth))
                 tag = row[0]
                 if tag not in seen_tags:
                     seen_tags.add(tag)
+                    # 获取这个标准化标签对应的原始标签
+                    original_tags = await get_original_tags_for_normalized(conn, tag)
                     results.append({
                         "tag": tag, 
                         "weight": row[1], 
                         "source": "xp_profile",
-                        "type": "normalized"
+                        "type": "normalized",
+                        "original_tags": original_tags
                     })
         except Exception as e:
             logger.warning(f"搜索 xp_profile 表失败（可能表不存在）: {e}")
@@ -373,7 +376,7 @@ async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth))
         # 2. 搜索 tag_mapping_stats 表 - 通过原始标签找标准化标签
         try:
             cursor = await conn.execute(
-                """SELECT DISTINCT tms.normalized_tag, xp.weight 
+                """SELECT DISTINCT tms.normalized_tag, xp.weight, tms.original_tag
                    FROM tag_mapping_stats tms 
                    LEFT JOIN xp_profile xp ON tms.normalized_tag = xp.tag
                    WHERE tms.original_tag LIKE ? 
@@ -384,14 +387,19 @@ async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth))
             mapping_rows = await cursor.fetchall()
             for row in mapping_rows:
                 tag = row[0]
+                original_tag = row[2]
                 if tag not in seen_tags:
                     seen_tags.add(tag)
+                    # 获取所有原始标签（包括当前匹配的）
+                    original_tags = await get_original_tags_for_normalized(conn, tag)
                     results.append({
                         "tag": tag, 
                         "weight": row[1] or 0.0, 
                         "source": "tag_mapping",
                         "type": "normalized",
-                        "original_match": True  # 标记是通过原始标签匹配的
+                        "original_match": True,  # 标记是通过原始标签匹配的
+                        "matched_original": original_tag,  # 匹配到的原始标签
+                        "original_tags": original_tags  # 所有原始标签
                     })
         except Exception as e:
             logger.warning(f"搜索 tag_mapping_stats 表失败: {e}")
@@ -399,7 +407,7 @@ async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth))
         # 3. 搜索 ai_tag_cache 表 - 原始标签到清洗后标签的映射
         try:
             cursor = await conn.execute(
-                """SELECT DISTINCT atc.cleaned_tag, xp.weight 
+                """SELECT DISTINCT atc.cleaned_tag, xp.weight, atc.original_tag
                    FROM ai_tag_cache atc 
                    LEFT JOIN xp_profile xp ON atc.cleaned_tag = xp.tag
                    WHERE atc.original_tag LIKE ? AND atc.cleaned_tag IS NOT NULL
@@ -410,14 +418,19 @@ async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth))
             cache_rows = await cursor.fetchall()
             for row in cache_rows:
                 tag = row[0]
+                original_tag = row[2]
                 if tag and tag not in seen_tags:
                     seen_tags.add(tag)
+                    # 获取所有原始标签
+                    original_tags = await get_original_tags_for_normalized(conn, tag)
                     results.append({
                         "tag": tag, 
                         "weight": row[1] or 0.0, 
                         "source": "ai_cache",
                         "type": "normalized",
-                        "original_match": True
+                        "original_match": True,
+                        "matched_original": original_tag,
+                        "original_tags": original_tags
                     })
         except Exception as e:
             logger.warning(f"搜索 ai_tag_cache 表失败: {e}")
@@ -452,6 +465,37 @@ async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth))
     except Exception as e:
         logger.error(f"搜索标签失败: {e}")
         return {"success": False, "error": str(e)}
+
+async def get_original_tags_for_normalized(conn, normalized_tag: str) -> list:
+    """获取标准化标签对应的所有原始标签"""
+    try:
+        # 从 tag_mapping_stats 表获取
+        cursor = await conn.execute(
+            "SELECT original_tag FROM tag_mapping_stats WHERE normalized_tag = ? ORDER BY frequency DESC LIMIT 5",
+            (normalized_tag,)
+        )
+        mapping_rows = await cursor.fetchall()
+        
+        # 从 ai_tag_cache 表获取
+        cursor = await conn.execute(
+            "SELECT original_tag FROM ai_tag_cache WHERE cleaned_tag = ? LIMIT 5",
+            (normalized_tag,)
+        )
+        cache_rows = await cursor.fetchall()
+        
+        # 合并并去重
+        original_tags = set()
+        for row in mapping_rows:
+            if row[0]:
+                original_tags.add(row[0])
+        for row in cache_rows:
+            if row[0]:
+                original_tags.add(row[0])
+        
+        return list(original_tags)
+    except Exception as e:
+        logger.warning(f"获取原始标签失败: {e}")
+        return []
 
 @app.post("/api/feedback")
 async def api_feedback(req: FeedbackRequest, request: Request, _=Depends(require_auth)):
