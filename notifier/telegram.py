@@ -7,6 +7,7 @@ from io import BytesIO
 from typing import Callable, Optional
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler
 
 from .base import BaseNotifier
@@ -707,9 +708,7 @@ class TelegramNotifier(BaseNotifier):
                 action, illust_id = data.split(":")
                 if action in ("like", "dislike", "follow"):
                     try:
-                        await self.handle_feedback(int(illust_id), action)
-                        
-                        # 更新按钮文字显示状态
+                        # 1. 乐观更新：先改界面，让用户觉得"秒回"
                         try:
                             current_markup = query.message.reply_markup
                             if current_markup and current_markup.inline_keyboard:
@@ -725,38 +724,47 @@ class TelegramNotifier(BaseNotifier):
                                             new_text = "✅ 已关注"
                                         elif action == "dislike" and "不喜欢" in btn.text:
                                             new_text = "✅ 已屏蔽"
-                                        # 使用 callback_data 或 url 创建新按钮
+                                        
+                                        # 保持原有的 callback_data 或 url
                                         if btn.callback_data:
                                             new_btn = InlineKeyboardButton(new_text, callback_data=btn.callback_data)
                                         else:
                                             new_btn = InlineKeyboardButton(new_text, url=btn.url)
                                         new_row.append(new_btn)
                                     new_keyboard.append(new_row)
-                                await query.edit_message_reply_markup(
-                                    reply_markup=InlineKeyboardMarkup(new_keyboard)
-                                )
+                                
+                                try:
+                                    await query.edit_message_reply_markup(
+                                        reply_markup=InlineKeyboardMarkup(new_keyboard)
+                                    )
+                                except BadRequest as e:
+                                    # 忽略"未修改"错误（用户可能狂点）
+                                    if "Message is not modified" not in str(e):
+                                        logger.warning(f"更新按钮UI警告: {e}")
                         except Exception as e:
-                            logger.error(f"更新按钮文字失败: {e}")
-                            import traceback
-                            logger.error(traceback.format_exc())
-                        
-                        emoji = "❤️" if action == "like" else ("👤" if action == "follow" else "👎")
-                        msg = "已收藏" if action == "like" else ("已关注" if action == "follow" else "已标记不喜欢")
-                        # 按钮已更新文字显示状态，不再单独发送确认消息
-                        # await query.message.reply_text(f"{emoji} {msg}")
-                    except Exception as e:
-                        logger.error(f"处理反馈失败 ({action} {illust_id}): {e}")
-                        try:
-                            await query.message.reply_text(f"❌ 处理失败: {e}")
-                        except:
-                            # 最后尝试直接发送
+                            logger.error(f"更新按钮UI失败: {e}")
+
+                        # 2. 异步队列：后台执行耗时的 API 操作
+                        async def _background_task():
                             try:
-                                await self.bot.send_message(
-                                    chat_id=query.message.chat_id,
-                                    text=f"❌ 处理失败: {e}"
-                                )
-                            except:
-                                pass
+                                await self.handle_feedback(int(illust_id), action)
+                            except Exception as e:
+                                logger.error(f"后台处理反馈失败 ({action} {illust_id}): {e}")
+                                # 如果失败了，发个消息通知用户（因为按钮已经变成绿色了，得告诉他其实没成功）
+                                try:
+                                    await self.bot.send_message(
+                                        chat_id=query.message.chat_id,
+                                        text=f"⚠️ 操作同步到 Pixiv 失败: {e}",
+                                        reply_to_message_id=query.message.message_id
+                                    )
+                                except:
+                                    pass
+
+                        # 扔进 asyncio 循环，不等待结果
+                        asyncio.create_task(_background_task())
+
+                    except Exception as e:
+                        logger.error(f"处理反馈流程异常: {e}")
         
         # 处理回复消息（1=喜欢, 2=不喜欢, 或输入内容）
         async def reply_handler(update, context):
