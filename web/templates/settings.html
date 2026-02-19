@@ -335,7 +335,17 @@ function searchTag() {
                 // 格式化权重显示
                 const weight = item.weight || 0;
                 const weightText = weight > 0 ? weight.toFixed(1) : 'N/A';
-                el.innerHTML = `${item.tag} <span class="weight">${weightText}</span>`;
+                
+                // 添加提示信息
+                let hint = '';
+                if (item.original_match) {
+                    hint = ' (通过原始标签匹配)';
+                } else if (item.type === 'raw') {
+                    hint = ' (原始标签)';
+                }
+                
+                el.innerHTML = `${item.tag} <span class="weight">${weightText}${hint}</span>`;
+                el.title = `来源: ${item.source}, 类型: ${item.type}`;
                 list.appendChild(el);
             });
         } else {
