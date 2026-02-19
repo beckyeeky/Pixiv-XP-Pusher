@@ -407,17 +407,17 @@ class XPProfiler:
                     try:
                         with open(p, "r", encoding="utf-8") as f:
                             tags = json.load(f)
-                            # 归一化：去掉 Danbooru 的 : 命名空间分隔符
+                            # 归一化：去掉 Danbooru 的 : 命名空间分隔符，处理连续下划线
                             # 例如: honkai:_star_rail -> honkai_star_rail
-                            self.ip_tags = set(t.replace(":", "") for t in tags)
+                            self.ip_tags = set(t.replace(":", "").replace("__", "_") for t in tags)
                             logger.info(f"已从文件加载 {len(self.ip_tags)} 个 IP 标签")
                     except Exception as e:
                         logger.error(f"加载 IP 标签文件失败: {e}")
                 else:
                     logger.warning(f"IP 标签文件不存在: {ip_tags}")
             else:
-                # 列表 - 去掉 : 命名空间分隔符
-                self.ip_tags = set(t.replace(":", "") for t in ip_tags)
+                # 列表 - 去掉 : 命名空间分隔符，处理连续下划线
+                self.ip_tags = set(t.replace(":", "").replace("__", "_") for t in ip_tags)
         else:
             # 默认使用内置列表 (如果没配，但 discount < 1.0 时也许有用？或者干脆不用)
             # 为了兼容性，如果用户没配 ip_tags 但配了 discount，我们用默认列表
