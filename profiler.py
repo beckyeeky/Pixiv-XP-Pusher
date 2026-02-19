@@ -380,7 +380,8 @@ class XPProfiler:
         saturation_threshold: float = 0.5,
         # 新增参数
         ip_tags: Optional[Union[list, str]] = None,
-        ip_weight_discount: float = 1.0
+        ip_weight_discount: float = 1.0,
+        boost_tags: Optional[dict] = None  # {tag: multiplier}
     ):
         self.client = client
         self.stop_words = set(stop_words or [])
@@ -394,6 +395,9 @@ class XPProfiler:
         self.ip_weight_discount = ip_weight_discount
         self.ip_tags = set()
         
+        # 手动加权配置
+        self.boost_tags = boost_tags or {}
+        
         # 加载 IP 标签
         if ip_tags:
             if isinstance(ip_tags, str):
@@ -403,7 +407,8 @@ class XPProfiler:
                     try:
                         with open(p, "r", encoding="utf-8") as f:
                             tags = json.load(f)
-                            self.ip_tags = set(tags)
+                            # 归一化：将 Danbooru 的 : 转换为 _
+                            self.ip_tags = set(t.replace(":", "_") for t in tags)
                             logger.info(f"已从文件加载 {len(self.ip_tags)} 个 IP 标签")
                     except Exception as e:
                         logger.error(f"加载 IP 标签文件失败: {e}")
@@ -411,7 +416,7 @@ class XPProfiler:
                     logger.warning(f"IP 标签文件不存在: {ip_tags}")
             else:
                 # 列表
-                self.ip_tags = set(ip_tags)
+                self.ip_tags = set(t.replace(":", "_") for t in ip_tags)
         else:
             # 默认使用内置列表 (如果没配，但 discount < 1.0 时也许有用？或者干脆不用)
             # 为了兼容性，如果用户没配 ip_tags 但配了 discount，我们用默认列表
@@ -785,6 +790,33 @@ class XPProfiler:
         if discounted_count > 0:
             logger.info(f"🎮 IP 标签降权完成: {discounted_count} 个标签 ×{self.ip_weight_discount}")
         
+        # 手动加权处理
+        if self.boost_tags:
+            boosted_count = 0
+            # 计算平均权重作为基准
+            if profile:
+                avg_weight = sum(profile.values()) / len(profile)
+            else:
+                avg_weight = 1.0
+                
+            for tag, multiplier in self.boost_tags.items():
+                # 确保只处理有效的、非停用词的 Tag
+                if tag in self.stop_words:
+                    continue
+                    
+                if tag in profile:
+                    # 现有 Tag：乘法加成
+                    profile[tag] *= multiplier
+                    boosted_count += 1
+                else:
+                    # 新 Tag (从未收藏过)：注入初始分 (0.5倍平均分 * 倍率)
+                    # 这是一个很有用的功能，允许用户强行推从未见过的东西
+                    profile[tag] = avg_weight * 0.5 * multiplier
+                    boosted_count += 1
+            
+            if boosted_count > 0:
+                logger.info(f"🚀 手动加权生效: {boosted_count} 个标签")
+
         # 保存到数据库 (现有代码)
         await db.update_xp_profile(profile)
         

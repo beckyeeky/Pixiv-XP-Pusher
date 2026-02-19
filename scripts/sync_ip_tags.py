@@ -43,7 +43,9 @@ def fetch_copyright_tags():
                 break
             
             for tag in data:
-                all_tags.append(tag["name"])
+                # Danbooru 使用 : 作为命名空间分隔符，转换为下划线以匹配 Pixiv 格式
+                normalized_name = tag["name"].replace(":", "_")
+                all_tags.append(normalized_name)
             
             print(f"[Page {page}] Fetched {len(data)} tags")
             page += 1
