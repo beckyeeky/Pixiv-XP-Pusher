@@ -86,99 +86,114 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
         """
         try:
             logger.info(f"🔗 触发连锁反应 (深度={current_depth}): 正在获取 {seed_illust.id} 的关联作品...")
-            # 1. 获取关联
-            related = await client.get_related_illusts(seed_illust.id, limit=20)
-            if not related:
-                logger.info(f"🔗 作品 {seed_illust.id} 无关联推荐，连锁结束")
-                return
+            typing_task = None
+            if notifiers_list:
+                for notifier in notifiers_list:
+                    if isinstance(notifier, TelegramNotifier) and notifier.chat_ids:
+                        typing_task = asyncio.create_task(notifier._keep_typing(int(notifier.chat_ids[0])))
+                        break
+            try:
+                # 1. 获取关联
+                related = await client.get_related_illusts(seed_illust.id, limit=20)
+                if not related:
+                    logger.info(f"🔗 作品 {seed_illust.id} 无关联推荐，连锁结束")
+                    return
 
-            # 2. 过滤 (复用 ContentFilter 逻辑，但简化参数)
-            from filter import ContentFilter
-            # 临时构造 filter 配置
-            filter_cfg = config.get("filter", {})
-            c_filter = ContentFilter(
-                blacklist_tags=list(profiler.stop_words), # 使用实时黑名单
-                exclude_ai=filter_cfg.get("exclude_ai", True),
-                r18_mode=filter_cfg.get("r18_mode", False),
-                min_create_days=filter_cfg.get("min_create_days", 0),
-                skip_ugoira=filter_cfg.get("skip_ugoira", False)
-            )
+                # 2. 过滤 (复用 ContentFilter 逻辑，但简化参数)
+                from filter import ContentFilter
+                # 临时构造 filter 配置
+                filter_cfg = config.get("filter", {})
+                c_filter = ContentFilter(
+                    blacklist_tags=list(profiler.stop_words), # 使用实时黑名单
+                    exclude_ai=filter_cfg.get("exclude_ai", True),
+                    r18_mode=filter_cfg.get("r18_mode", False),
+                    min_create_days=filter_cfg.get("min_create_days", 0),
+                    skip_ugoira=filter_cfg.get("skip_ugoira", False)
+                )
             
-            # 使用简单的过滤逻辑 (不去重 SENT_HISTORY，因为这是用户主动要求的)
-            # 但我们要去重 "已收藏" 和 "画师屏蔽"
-            filtered = []
-            seen_ids = set()
-            import database as db_mod
-            xp_profile = await db_mod.get_xp_profile()
-            
-            for ill in related:
-                # 严格去重 (ID 类型统一)
-                if int(ill.id) == int(seed_illust.id): continue
+                # 使用简单的过滤逻辑 (不去重 SENT_HISTORY，因为这是用户主动要求的)
+                # 但我们要去重 "已收藏" 和 "画师屏蔽"
+                filtered = []
+                seen_ids = set()
+                import database as db_mod
+                xp_profile = await db_mod.get_xp_profile()
                 
-                # 本次候选队列去重，防止 API 返回重复作品
-                if ill.id in seen_ids: continue
-                seen_ids.add(ill.id)
+                for ill in related:
+                    # 严格去重 (ID 类型统一)
+                    if int(ill.id) == int(seed_illust.id):
+                        continue
+                    
+                    # 本次候选队列去重，防止 API 返回重复作品
+                    if ill.id in seen_ids:
+                        continue
+                    seen_ids.add(ill.id)
 
-                # 过滤已推送过的作品 (响应用户需求: 不推老图)
-                if await db_mod.is_pushed(ill.id):
-                    logger.debug(f"🔗 作品 {ill.id} 已推送过，跳过推荐")
-                    continue
-                # 检查屏蔽
-                if not c_filter.check_illust(ill): continue
-                if ill.user_id in profiler._blocked_artist_ids: continue
+                    # 过滤已推送过的作品 (响应用户需求: 不推老图)
+                    if await db_mod.is_pushed(ill.id):
+                        logger.debug(f"🔗 作品 {ill.id} 已推送过，跳过推荐")
+                        continue
+                    # 检查屏蔽
+                    if not c_filter.check_illust(ill):
+                        continue
+                    if ill.user_id in profiler._blocked_artist_ids:
+                        continue
+                    
+                    # 计算分数
+                    score = 0
+                    for t in ill.tags:
+                        norm = t.lower().replace(" ", "_")
+                        if norm in xp_profile:
+                            score += xp_profile[norm]
+                    
+                    # Artist Boost
+                    artist_score = await db_mod.get_artist_score(ill.user_id)
+                    score += artist_score
+                    
+                    filtered.append((ill, score))
                 
-                # 计算分数
-                score = 0
-                for t in ill.tags:
-                     norm = t.lower().replace(" ", "_")
-                     if norm in xp_profile: score += xp_profile[norm]
+                # 排序取前 N
+                filtered.sort(key=lambda x: x[1], reverse=True)
                 
-                # Artist Boost
-                artist_score = await db_mod.get_artist_score(ill.user_id)
-                score += artist_score
+                push_limit = config.get("feedback", {}).get("related_push_limit", 1)
+                top_results = [x[0] for x in filtered[:push_limit]]
                 
-                filtered.append((ill, score))
-            
-            # 排序取前 N
-            filtered.sort(key=lambda x: x[1], reverse=True)
-            
-            push_limit = config.get("feedback", {}).get("related_push_limit", 1)
-            top_results = [x[0] for x in filtered[:push_limit]]
-            
-            if top_results:
-                # 构建消息前缀（包含源作品信息）
-                source_title = getattr(seed_illust, 'title', f'#{seed_illust.id}')
-                message_prefix = f"🔗 连锁推荐 (源自: {source_title})"
-                
-                logger.info(f"🔗 连锁推送: {len(top_results)} 个关联作品")
-                for n in notifiers_list:
-                    if hasattr(n, 'push_illusts'):
-                        # 使用 push_illusts 带回复功能
-                        sent_map = await n.push_illusts(
-                            top_results, 
-                            message_prefix=message_prefix,
-                            reply_to_message_id=parent_msg_id
-                        )
-                        
-                        # 缓存连锁作品信息（包含链深度）
-                        for ill in top_results:
-                            # 获取该作品对应的消息 ID
-                            msg_id = sent_map.get(ill.id)
-                            # 缓存作品信息 + 链元数据
-                            await db_mod.cache_illust(
-                                illust_id=ill.id,
-                                tags=ill.tags,
-                                user_id=ill.user_id,
-                                user_name=ill.user_name,
-                                source='related_chain',  # 连锁推送来源（区别于 MAB 的 related）
-                                chain_depth=current_depth,
-                                chain_parent_id=seed_illust.id,
-                                chain_msg_id=msg_id
+                if top_results:
+                    # 构建消息前缀（包含源作品信息）
+                    source_title = getattr(seed_illust, 'title', f'#{seed_illust.id}')
+                    message_prefix = f"🔗 连锁推荐 (源自: {source_title})"
+                    
+                    logger.info(f"🔗 连锁推送: {len(top_results)} 个关联作品")
+                    for n in notifiers_list:
+                        if hasattr(n, 'push_illusts'):
+                            # 使用 push_illusts 带回复功能
+                            sent_map = await n.push_illusts(
+                                top_results, 
+                                message_prefix=message_prefix,
+                                reply_to_message_id=parent_msg_id
                             )
-                            # 记录推送来源
-                            await db_mod.mark_pushed(ill.id, 'related_chain')
-            else:
-                logger.info("🔗 关联作品过滤后为空")
+                            
+                            # 缓存连锁作品信息（包含链深度）
+                            for ill in top_results:
+                                # 获取该作品对应的消息 ID
+                                msg_id = sent_map.get(ill.id)
+                                # 缓存作品信息 + 链元数据
+                                await db_mod.cache_illust(
+                                    illust_id=ill.id,
+                                    tags=ill.tags,
+                                    user_id=ill.user_id,
+                                    user_name=ill.user_name,
+                                    source='related_chain',  # 连锁推送来源（区别于 MAB 的 related）
+                                    chain_depth=current_depth,
+                                    chain_parent_id=seed_illust.id,
+                                    chain_msg_id=msg_id
+                                )
+                                # 记录推送来源
+                                await db_mod.mark_pushed(ill.id, 'related_chain')
+                else:
+                    logger.info("🔗 关联作品过滤后为空")
+            finally:
+                if typing_task:
+                    typing_task.cancel()
 
         except Exception as e:
             logger.error(f"连锁推送失败: {e}")
