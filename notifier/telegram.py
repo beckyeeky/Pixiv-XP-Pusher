@@ -885,15 +885,20 @@ class TelegramNotifier(BaseNotifier):
                         illusts = await self.client.get_user_illusts(artist_id, since=one_year_ago, limit=100)
                         
                         if illusts:
-                            # 过滤掉已经推过的，并过滤掉不想看的动图/AI/R18等
-                            # 但为了简单和快速反馈，只做基础随机抽选
-                            illust = random.choice(illusts)
-                            await update.message.reply_text(f"🎲 抽选到: {illust.title} (来自近一年内的 {len(illusts)} 份作品)")
-                            sent = await self.send([illust])
-                            if sent:
-                                await update.message.reply_text(f"✅ 推送成功: {illust.title}")
+                            sample_size = min(20, len(illusts))
+                            sampled = random.sample(illusts, sample_size)
+                            await update.message.reply_text(f"🎲 正在为您生成画师 {artist_id} 的精选集... (抽取了 {sample_size}/{len(illusts)} 张)")
+                            
+                            # 临时强制开启批量模式进行聚合发送
+                            original_mode = self.batch_mode
+                            self.batch_mode = "telegraph"
+                            sent_ids = await self.send(sampled)
+                            self.batch_mode = original_mode
+                            
+                            if sent_ids:
+                                await update.message.reply_text(f"✅ 画师作品集生成完毕 (共 {len(sent_ids)} 张图)")
                             else:
-                                await update.message.reply_text("❌ 推送失败")
+                                await update.message.reply_text("❌ 生成画师作品集失败")
                         else:
                             await update.message.reply_text(f"❌ 未找到画师 {artist_id} 在近一年内的公开作品")
                     else:
