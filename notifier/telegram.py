@@ -914,6 +914,80 @@ class TelegramNotifier(BaseNotifier):
                 else:
                     await update.message.reply_text("⚠️ 内部错误: 未配置 Action 回调")
                 
+        # /search 指令 - 定向关键词搜索
+        async def cmd_search(update, context):
+            user_id = update.message.from_user.id
+            if self.allowed_users and user_id not in self.allowed_users:
+                await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
+                return
+            
+            args = context.args
+            if not args:
+                await update.message.reply_text(
+                    "🔍 *定向搜图*\n\n"
+                    "用法: `/search 关键词1|关键词2|...`\n"
+                    "例: `/search 白发|黑丝`\n"
+                    "例: `/search white_hair`\n\n"
+                    "将搜索最多20张符合条件的图，打包成画册推送。",
+                    parse_mode="Markdown"
+                )
+                return
+            
+            # 解析关键词（支持 | 分隔多个词）
+            search_input = " ".join(args)
+            keywords = [k.strip() for k in search_input.split("|") if k.strip()]
+            
+            if not keywords:
+                await update.message.reply_text("❌ 请输入有效的搜索关键词")
+                return
+            
+            await update.message.reply_text(f"🔍 正在搜索: {' | '.join(keywords)} ...")
+            
+            try:
+                if self.client:
+                    # 搜索作品（最多50个候选）
+                    illusts = await self.client.search_illusts(
+                        tags=keywords,
+                        bookmark_threshold=100,  # 基础质量门槛
+                        date_range_days=365,     # 近一年的作品
+                        limit=50
+                    )
+                    
+                    if not illusts:
+                        await update.message.reply_text(f"❌ 未找到包含 {' | '.join(keywords)} 的作品")
+                        return
+                    
+                    # 过滤已推送的
+                    import database as db_mod
+                    filtered = []
+                    for ill in illusts:
+                        if not await db_mod.is_pushed(ill.id):
+                            filtered.append(ill)
+                        if len(filtered) >= 20:  # 最多20张
+                            break
+                    
+                    if not filtered:
+                        await update.message.reply_text(f"⚠️ 找到了 {len(illusts)} 张图，但全都推送过了，试试其他关键词？")
+                        return
+                    
+                    # 使用批量模式打包发送
+                    await update.message.reply_text(f"📦 找到 {len(filtered)} 张符合条件的作品，正在生成画册...")
+                    
+                    original_mode = self.batch_mode
+                    self.batch_mode = "telegraph"
+                    sent_ids = await self.send(filtered)
+                    self.batch_mode = original_mode
+                    
+                    if sent_ids:
+                        await update.message.reply_text(f"✅ 搜索完成！共推送 {len(sent_ids)} 张图")
+                    else:
+                        await update.message.reply_text("❌ 画册生成失败")
+                else:
+                    await update.message.reply_text("⚠️ Pixiv 客户端未初始化")
+            except Exception as e:
+                logger.error(f"搜索失败: {e}")
+                await update.message.reply_text(f"❌ 搜索失败: {e}")
+        
         # /schedule 指令
         async def cmd_schedule(update, context):
             user_id = update.message.from_user.id
@@ -1086,6 +1160,9 @@ class TelegramNotifier(BaseNotifier):
                 "*🤖 Bot 指令帮助*\n\n"
                 "`/menu` - 📋 打开控制面板\n"
                 "`/push` - 🚀 立即触发推送\n"
+                "`/push <ID>` - 📌 推送指定作品\n"
+                "`/push a <画师ID>` - 🎨 画师随机作品集\n"
+                "`/search <关键词>` - 🔍 定向搜图 (支持多关键词用|分隔)\n"
                 "`/xp` - 🎯 查看 XP 画像 (Top Tags)\n"
                 "`/stats` - 📈 查看策略成功率\n"
                 "`/schedule` - ⏰ 查看/修改定时时间\n"
@@ -1231,6 +1308,7 @@ class TelegramNotifier(BaseNotifier):
         self._app.add_handler(CommandHandler("block_artist", cmd_block_artist))
         self._app.add_handler(CommandHandler("unblock_artist", cmd_unblock_artist))
         self._app.add_handler(CommandHandler("batch", cmd_batch))
+        self._app.add_handler(CommandHandler("search", cmd_search))
         self._app.add_handler(CommandHandler("menu", cmd_menu))
         self._app.add_handler(CommandHandler("start", cmd_menu))  # /start 也打开菜单
         self._app.add_handler(CommandHandler("help", cmd_help))
@@ -1255,6 +1333,7 @@ class TelegramNotifier(BaseNotifier):
             commands = [
                 BotCommand("menu", "📋 控制面板"),
                 BotCommand("push", "🚀 立即推送"),
+                BotCommand("search", "🔍 定向搜图"),
                 BotCommand("xp", "🎯 查看XP画像"),
                 BotCommand("stats", "📈 策略表现"),
                 BotCommand("schedule", "⏰ 定时任务"),
