@@ -822,12 +822,12 @@ async def get_push_stats(days: int = 7) -> dict:
         for row in rows:
             try:
                 tags = json.loads(row['tags']) if row['tags'] else []
-                for tag in tags[:5]:  # 只统计前5个标签
+                for tag in tags[:10]:  # 统计前10个标签
                     tag_count[tag] = tag_count.get(tag, 0) + 1
             except:
                 pass
         
-        top_tags = sorted(tag_count.items(), key=lambda x: x[1], reverse=True)[:5]
+        top_tags = sorted(tag_count.items(), key=lambda x: x[1], reverse=True)[:10]
         
         return {
             "total_pushed": total_pushed,
