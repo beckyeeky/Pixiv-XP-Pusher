@@ -206,7 +206,7 @@ async def init_db():
             pass  # 列已存在
         
         # === 初始化 MAB 策略统计 (确保所有策略都有记录) ===
-        default_strategies = ['xp_search', 'subscription', 'ranking', 'related']
+        default_strategies = ['xp_search', 'subscription', 'ranking', 'related', 'related_chain']
         for strategy in default_strategies:
             await db.execute(
                 "INSERT OR IGNORE INTO strategy_stats (strategy, success_count, total_count) VALUES (?, 0, 0)",
