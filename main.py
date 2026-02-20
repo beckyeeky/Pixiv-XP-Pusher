@@ -100,7 +100,8 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                 blacklist_tags=list(profiler.stop_words), # 使用实时黑名单
                 exclude_ai=filter_cfg.get("exclude_ai", True),
                 r18_mode=filter_cfg.get("r18_mode", False),
-                min_create_days=filter_cfg.get("min_create_days", 0)
+                min_create_days=filter_cfg.get("min_create_days", 0),
+                skip_ugoira=filter_cfg.get("skip_ugoira", False)
             )
             
             # 使用简单的过滤逻辑 (不去重 SENT_HISTORY，因为这是用户主动要求的)
@@ -530,204 +531,205 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
         except Exception as e:
             logger.warning(f"Token 刷新失败: {e}")
     
-    try:
-        # 1. 构建/更新 XP 画像
-        profiler_cfg = config.get("profiler", {})
+        try:
+            # 1. 构建/更新 XP 画像
+            profiler_cfg = config.get("profiler", {})
         
-        await profiler.build_profile(
-            user_id=config["pixiv"]["user_id"],
-            scan_limit=profiler_cfg.get("scan_limit", 500),
-            include_private=profiler_cfg.get("include_private", True)
-        )
+            await profiler.build_profile(
+                user_id=config["pixiv"]["user_id"],
+                scan_limit=profiler_cfg.get("scan_limit", 500),
+                include_private=profiler_cfg.get("include_private", True)
+            )
         
-        top_tags = await profiler.get_top_tags(profiler_cfg.get("top_n", 20))
-        logger.info(f"Top XP Tags: {[t[0] for t in top_tags[:10]]}")
+            top_tags = await profiler.get_top_tags(profiler_cfg.get("top_n", 20))
+            logger.info(f"Top XP Tags: {[t[0] for t in top_tags[:10]]}")
         
-        if config.get("test"): # Test mode skip heavy DB load if possible, but we need it for xp_profile
-             pass
+            if config.get("test"): # Test mode skip heavy DB load if possible, but we need it for xp_profile
+                 pass
              
-        # 获取完整的 XP Profile 用于匹配度计算
-        import database as db_module
-        xp_profile = await db_module.get_xp_profile()
+            # 获取完整的 XP Profile 用于匹配度计算
+            import database as db_module
+            xp_profile = await db_module.get_xp_profile()
         
-        # 2. 获取内容
-        fetcher_cfg = config.get("fetcher", {})
+            # 2. 获取内容
+            fetcher_cfg = config.get("fetcher", {})
         
-        # 1.5 获取关注列表（使用 sync_client，低风险操作）
-        following_ids = set()
-        pixiv_uid = config.get("pixiv", {}).get("user_id", 0)
-        if pixiv_uid:
-            try:
-                following_ids = await sync_client.fetch_following(user_id=pixiv_uid)
-            except Exception as e:
-                logger.warning(f"获取关注列表失败: {e}")
+            # 1.5 获取关注列表（使用 sync_client，低风险操作）
+            following_ids = set()
+            pixiv_uid = config.get("pixiv", {}).get("user_id", 0)
+            if pixiv_uid:
+                try:
+                    following_ids = await sync_client.fetch_following(user_id=pixiv_uid)
+                except Exception as e:
+                    logger.warning(f"获取关注列表失败: {e}")
         
-        manual_subs = set(fetcher_cfg.get("subscribed_artists") or [])
-        all_subs = list(following_ids | manual_subs)
-        logger.info(f"有效关注画师数: {len(all_subs)} (API获取: {len(following_ids)}, 手动: {len(manual_subs)})")
+            manual_subs = set(fetcher_cfg.get("subscribed_artists") or [])
+            all_subs = list(following_ids | manual_subs)
+            logger.info(f"有效关注画师数: {len(all_subs)} (API获取: {len(following_ids)}, 手动: {len(manual_subs)})")
 
-        # ContentFetcher: 搜索/排行榜用 client，订阅检查用 sync_client
-        fetcher = ContentFetcher(
-            client=client,
-            sync_client=sync_client,  # 新增：同步客户端
-            bookmark_threshold=fetcher_cfg.get("bookmark_threshold", {"search": 1000, "subscription": 0}),
-            date_range_days=fetcher_cfg.get("date_range_days", 7),
-            subscribed_artists=list(manual_subs),
-            discovery_rate=profiler_cfg.get("discovery_rate", 0.1),
-            ranking_config=fetcher_cfg.get("ranking"),
-            dynamic_threshold_config=fetcher_cfg.get("dynamic_threshold"),  # 动态阈值配置
-            search_limit=fetcher_cfg.get("search_limit", 50)  # 搜索数量限制 (默认50)
-        )
+            # ContentFetcher: 搜索/排行榜用 client，订阅检查用 sync_client
+            fetcher = ContentFetcher(
+                client=client,
+                sync_client=sync_client,  # 新增：同步客户端
+                bookmark_threshold=fetcher_cfg.get("bookmark_threshold", {"search": 1000, "subscription": 0}),
+                date_range_days=fetcher_cfg.get("date_range_days", 7),
+                subscribed_artists=list(manual_subs),
+                discovery_rate=profiler_cfg.get("discovery_rate", 0.1),
+                ranking_config=fetcher_cfg.get("ranking"),
+                dynamic_threshold_config=fetcher_cfg.get("dynamic_threshold"),  # 动态阈值配置
+                search_limit=fetcher_cfg.get("search_limit", 50)  # 搜索数量限制 (默认50)
+            )
         
-        # 执行 Discovery (Search + Ranking + Subs)
-        top_tags = await profiler.get_top_tags(profiler_cfg.get("top_n", 20)) # Re-get is cheap
+            # 执行 Discovery (Search + Ranking + Subs)
+            top_tags = await profiler.get_top_tags(profiler_cfg.get("top_n", 20)) # Re-get is cheap
         
-        # 执行 Discovery (Search + Ranking + Subs) -> MAB Scheduled
-        top_tags = await profiler.get_top_tags(profiler_cfg.get("top_n", 20)) # Re-get is cheap
+            # 执行 Discovery (Search + Ranking + Subs) -> MAB Scheduled
+            top_tags = await profiler.get_top_tags(profiler_cfg.get("top_n", 20)) # Re-get is cheap
         
-        all_illusts = await fetcher.fetch_content(
-             xp_tags=top_tags, 
-             total_limit=fetcher_cfg.get("discovery_limit", 200)
-        )
-        logger.info(f"共获取 {len(all_illusts)} 个候选作品")
+            all_illusts = await fetcher.fetch_content(
+                 xp_tags=top_tags, 
+                 total_limit=fetcher_cfg.get("discovery_limit", 200)
+            )
+            logger.info(f"共获取 {len(all_illusts)} 个候选作品")
         
-        # 3. 过滤
-        filter_cfg = config.get("filter", {})
-        match_cfg = fetcher_cfg.get("match_score", {})
+            # 3. 过滤
+            filter_cfg = config.get("filter", {})
+            match_cfg = fetcher_cfg.get("match_score", {})
         
-        # 初始化可选的 Embedder (AI 语义匹配)
-        embedder = None
-        ai_cfg = config.get("ai", {})
-        embedding_cfg = ai_cfg.get("embedding", {})
-        if embedding_cfg.get("enabled", False):
-            try:
-                from embedder import Embedder
-                embedder = Embedder(embedding_cfg)
-                if embedder.enabled:
-                    logger.info(f"已启用 AI 语义匹配 (model={embedder.model})")
-            except Exception as e:
-                logger.warning(f"Embedder 初始化失败: {e}")
+            # 初始化可选的 Embedder (AI 语义匹配)
+            embedder = None
+            ai_cfg = config.get("ai", {})
+            embedding_cfg = ai_cfg.get("embedding", {})
+            if embedding_cfg.get("enabled", False):
+                try:
+                    from embedder import Embedder
+                    embedder = Embedder(embedding_cfg)
+                    if embedder.enabled:
+                        logger.info(f"已启用 AI 语义匹配 (model={embedder.model})")
+                except Exception as e:
+                    logger.warning(f"Embedder 初始化失败: {e}")
         
-        # 初始化可选的 AIScorer (LLM 精排)
-        ai_scorer = None
-        scorer_cfg = ai_cfg.get("scorer", {})
-        if scorer_cfg.get("enabled", False):
-            try:
-                from ai_scorer import AIScorer
+            # 初始化可选的 AIScorer (LLM 精排)
+            ai_scorer = None
+            scorer_cfg = ai_cfg.get("scorer", {})
+            if scorer_cfg.get("enabled", False):
+                try:
+                    from ai_scorer import AIScorer
                 
-                # 支持复用 profiler.ai 的 API 配置
-                if scorer_cfg.get("use_profiler_api", True):
-                    profiler_ai_cfg = config.get("profiler", {}).get("ai", {})
-                    # 合并配置：scorer 优先，缺失的从 profiler.ai 继承
-                    merged_cfg = {
-                        "enabled": scorer_cfg.get("enabled", False),
-                        "provider": scorer_cfg.get("provider") or profiler_ai_cfg.get("provider", "openai"),
-                        "api_key": scorer_cfg.get("api_key") or profiler_ai_cfg.get("api_key", ""),
-                        "base_url": scorer_cfg.get("base_url") or profiler_ai_cfg.get("base_url", ""),
-                        "model": scorer_cfg.get("model") or profiler_ai_cfg.get("model", "gpt-4o-mini"),
-                        "max_candidates": scorer_cfg.get("max_candidates", 50),
-                        "score_weight": scorer_cfg.get("score_weight", 0.3),
-                    }
-                    ai_scorer = AIScorer(merged_cfg)
-                else:
-                    ai_scorer = AIScorer(scorer_cfg)
+                    # 支持复用 profiler.ai 的 API 配置
+                    if scorer_cfg.get("use_profiler_api", True):
+                        profiler_ai_cfg = config.get("profiler", {}).get("ai", {})
+                        # 合并配置：scorer 优先，缺失的从 profiler.ai 继承
+                        merged_cfg = {
+                            "enabled": scorer_cfg.get("enabled", False),
+                            "provider": scorer_cfg.get("provider") or profiler_ai_cfg.get("provider", "openai"),
+                            "api_key": scorer_cfg.get("api_key") or profiler_ai_cfg.get("api_key", ""),
+                            "base_url": scorer_cfg.get("base_url") or profiler_ai_cfg.get("base_url", ""),
+                            "model": scorer_cfg.get("model") or profiler_ai_cfg.get("model", "gpt-4o-mini"),
+                            "max_candidates": scorer_cfg.get("max_candidates", 50),
+                            "score_weight": scorer_cfg.get("score_weight", 0.3),
+                        }
+                        ai_scorer = AIScorer(merged_cfg)
+                    else:
+                        ai_scorer = AIScorer(scorer_cfg)
                 
-                if ai_scorer.enabled:
-                    logger.info(f"已启用 AI 精排评分 (model={ai_scorer.model})")
-            except Exception as e:
-                logger.warning(f"AIScorer 初始化失败: {e}")
+                    if ai_scorer.enabled:
+                        logger.info(f"已启用 AI 精排评分 (model={ai_scorer.model})")
+                except Exception as e:
+                    logger.warning(f"AIScorer 初始化失败: {e}")
         
-        content_filter = ContentFilter(
-            blacklist_tags=filter_cfg.get("blacklist_tags"),
-            daily_limit=filter_cfg.get("daily_limit", 20),
-            exclude_ai=filter_cfg.get("exclude_ai", True),
-            min_match_score=match_cfg.get("min_threshold", 0.0),
-            match_weight=match_cfg.get("weight_in_sort", 0.5),
-            max_per_artist=filter_cfg.get("max_per_artist", 3),
-            subscribed_artists=all_subs,
-            artist_boost=filter_cfg.get("artist_boost", 0.3),
-            min_create_days=filter_cfg.get("min_create_days", 0),
-            r18_mode=filter_cfg.get("r18_mode", False),
-            # 新增：借鉴 X 算法的增强选项
-            author_diversity=filter_cfg.get("author_diversity"),
-            source_boost=filter_cfg.get("source_boost"),
-            embedder=embedder,  # 可选的语义匹配
-            ai_scorer=ai_scorer,  # 可选的 LLM 精排
-            # 多样性增强
-            shuffle_factor=filter_cfg.get("shuffle_factor", 0.0),
-            exploration_ratio=filter_cfg.get("exploration_ratio", 0.0)
-        )
+            content_filter = ContentFilter(
+                blacklist_tags=filter_cfg.get("blacklist_tags"),
+                daily_limit=filter_cfg.get("daily_limit", 20),
+                exclude_ai=filter_cfg.get("exclude_ai", True),
+                min_match_score=match_cfg.get("min_threshold", 0.0),
+                match_weight=match_cfg.get("weight_in_sort", 0.5),
+                max_per_artist=filter_cfg.get("max_per_artist", 3),
+                subscribed_artists=all_subs,
+                artist_boost=filter_cfg.get("artist_boost", 0.3),
+                min_create_days=filter_cfg.get("min_create_days", 0),
+                r18_mode=filter_cfg.get("r18_mode", False),
+                skip_ugoira=filter_cfg.get("skip_ugoira", False),
+                # 新增：借鉴 X 算法的增强选项
+                author_diversity=filter_cfg.get("author_diversity"),
+                source_boost=filter_cfg.get("source_boost"),
+                embedder=embedder,  # 可选的语义匹配
+                ai_scorer=ai_scorer,  # 可选的 LLM 精排
+                # 多样性增强
+                shuffle_factor=filter_cfg.get("shuffle_factor", 0.0),
+                exploration_ratio=filter_cfg.get("exploration_ratio", 0.0)
+            )
         
-        pixiv_uid = config.get("pixiv", {}).get("user_id", 0)
-        filtered = await content_filter.filter(all_illusts, xp_profile=xp_profile, user_id=pixiv_uid)
-        logger.info(f"过滤后 {len(filtered)} 个作品")
+            pixiv_uid = config.get("pixiv", {}).get("user_id", 0)
+            filtered = await content_filter.filter(all_illusts, xp_profile=xp_profile, user_id=pixiv_uid)
+            logger.info(f"过滤后 {len(filtered)} 个作品")
         
-        # 4. 推送
-        if notifiers and filtered:
-            try:
-                # 缓存作品信息 (包含来源归因)
-                for illust in filtered:
-                    await cache_illust(illust.id, illust.tags, illust.user_id, illust.user_name, source=illust.source)
+            # 4. 推送
+            if notifiers and filtered:
+                try:
+                    # 缓存作品信息 (包含来源归因)
+                    for illust in filtered:
+                        await cache_illust(illust.id, illust.tags, illust.user_id, illust.user_name, source=illust.source)
                 
-                all_sent_ids = set()
-                for notifier in notifiers:
-                    try:
-                        sent_ids = await notifier.send(filtered)
-                        all_sent_ids.update(sent_ids)
-                    except Exception as e:
-                        logger.error(f"推送器 {type(notifier).__name__} 发送失败: {e}")
+                    all_sent_ids = set()
+                    for notifier in notifiers:
+                        try:
+                            sent_ids = await notifier.send(filtered)
+                            all_sent_ids.update(sent_ids)
+                        except Exception as e:
+                            logger.error(f"推送器 {type(notifier).__name__} 发送失败: {e}")
                 
-                if all_sent_ids:
-                    # 记录推送历史
-                    filtered_map = {ill.id: ill for ill in filtered}
-                    for pid in all_sent_ids:
+                    if all_sent_ids:
+                        # 记录推送历史
+                        filtered_map = {ill.id: ill for ill in filtered}
+                        for pid in all_sent_ids:
 
-                        if pid in filtered_map:
-                            illust = filtered_map[pid]
-                            source = getattr(illust, 'source', 'unknown')
-                            await mark_pushed(pid, source)
+                            if pid in filtered_map:
+                                illust = filtered_map[pid]
+                                source = getattr(illust, 'source', 'unknown')
+                                await mark_pushed(pid, source)
                             
-                            # 更新 MAB 策略统计 (Total Count)
-                            if source in ['xp_search', 'subscription', 'ranking', 'related', 'engagement_artists']:
-                                await db_module.update_strategy_stats(source, is_success=False)
+                                # 更新 MAB 策略统计 (Total Count)
+                                if source in ['xp_search', 'subscription', 'ranking', 'related', 'engagement_artists']:
+                                    await db_module.update_strategy_stats(source, is_success=False)
                     
-                    # 将消息 ID 写入数据库缓存（用于连锁推送引用）
-                    for notifier in notifiers:
-                        if hasattr(notifier, '_message_illust_map'):
-                            for msg_id, illust_id in notifier._message_illust_map.items():
-                                if illust_id in all_sent_ids:
-                                    await db_module.set_chain_meta(illust_id, chain_depth=0, chain_msg_id=msg_id)
+                        # 将消息 ID 写入数据库缓存（用于连锁推送引用）
+                        for notifier in notifiers:
+                            if hasattr(notifier, '_message_illust_map'):
+                                for msg_id, illust_id in notifier._message_illust_map.items():
+                                    if illust_id in all_sent_ids:
+                                        await db_module.set_chain_meta(illust_id, chain_depth=0, chain_msg_id=msg_id)
                             
-                    logger.info(f"推送完成: {len(all_sent_ids)}/{len(filtered)} 个作品成功")
-                else:
-                    logger.error("没有任何作品被成功推送")
+                        logger.info(f"推送完成: {len(all_sent_ids)}/{len(filtered)} 个作品成功")
+                    else:
+                        logger.error("没有任何作品被成功推送")
                     
-                # 5. AI 错误报警
-                ai_errors = profiler.ai_processor.occurred_errors
-                if ai_errors:
-                    err_count = len(ai_errors)
-                    err_id = ai_errors[0]
-                    msg = f"⚠️ 警告：本次任务有 {err_count} 批 Tag AI 优化失败。\n已自动记录并降级处理。"
-                    buttons = [("🔄 重试修复", f"retry_ai:{err_id}")]
-                    logger.warning(f"AI 优化失败 {err_count} 次，发送警告")
+                    # 5. AI 错误报警
+                    ai_errors = profiler.ai_processor.occurred_errors
+                    if ai_errors:
+                        err_count = len(ai_errors)
+                        err_id = ai_errors[0]
+                        msg = f"⚠️ 警告：本次任务有 {err_count} 批 Tag AI 优化失败。\n已自动记录并降级处理。"
+                        buttons = [("🔄 重试修复", f"retry_ai:{err_id}")]
+                        logger.warning(f"AI 优化失败 {err_count} 次，发送警告")
                     
-                    for notifier in notifiers:
-                        if hasattr(notifier, 'send_text'):
-                            try:
-                                await notifier.send_text(msg, buttons)
-                            except:
-                                pass
-            except Exception as e:
-                logger.error(f"推送过程出错: {e}")
-        elif not filtered:
-             logger.info("无新作品可推送")
-        else:
-            logger.warning("未配置推送器")
+                        for notifier in notifiers:
+                            if hasattr(notifier, 'send_text'):
+                                try:
+                                    await notifier.send_text(msg, buttons)
+                                except:
+                                    pass
+                except Exception as e:
+                    logger.error(f"推送过程出错: {e}")
+            elif not filtered:
+                 logger.info("无新作品可推送")
+            else:
+                logger.warning("未配置推送器")
         
-    except Exception as e:
-        logger.error(f"任务执行出错: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"任务执行出错: {e}", exc_info=True)
     
-    logger.info("=== 推送任务结束 ===")
+        logger.info("=== 推送任务结束 ===")
 
 
 async def run_once(config: dict):
