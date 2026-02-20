@@ -386,6 +386,15 @@ class ContentFilter:
         score_map = {item[0].id: item[1] for item in scored_result}
         sorted_illusts = [item[0] for item in scored_result]
         
+        # 优化标签顺序：按 XP 画像得分降序排列，使核心标签优先显示
+        if xp_profile:
+            from utils import normalize_tag
+            for illust in sorted_illusts:
+                illust.tags.sort(
+                    key=lambda t: xp_profile.get(normalize_tag(t), xp_profile.get(t.lower(), 0.0)), 
+                    reverse=True
+                )
+        
         # 6.1 AI 精排 (可选) - 使用 LLM 对候选作品进行二次评分
         if self.ai_scorer and self.ai_scorer.enabled and xp_profile:
             try:
