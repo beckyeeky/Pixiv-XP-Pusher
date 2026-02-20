@@ -878,10 +878,11 @@ class TelegramNotifier(BaseNotifier):
                 
                 try:
                     if self.client:
-                        from datetime import datetime, timedelta
+                        from datetime import datetime, timedelta, timezone
                         import random
                         # 限制获取最近100张（或者1年内的），避免API超时
-                        one_year_ago = datetime.now() - timedelta(days=365)
+                        # 使用 UTC 时区避免 datetime 比较错误
+                        one_year_ago = datetime.now(timezone.utc) - timedelta(days=365)
                         illusts = await self.client.get_user_illusts(artist_id, since=one_year_ago, limit=100)
                         
                         if illusts:
@@ -892,7 +893,8 @@ class TelegramNotifier(BaseNotifier):
                             # 临时强制开启批量模式进行聚合发送
                             original_mode = self.batch_mode
                             self.batch_mode = "telegraph"
-                            sent_ids = await self.send(sampled)
+                            custom_title = f"画师 {artist_id} 精选集"
+                            sent_ids = await self.send(sampled, custom_title)
                             self.batch_mode = original_mode
                             
                             if sent_ids:
@@ -975,7 +977,8 @@ class TelegramNotifier(BaseNotifier):
                     
                     original_mode = self.batch_mode
                     self.batch_mode = "telegraph"
-                    sent_ids = await self.send(filtered)
+                    search_title = " | ".join(keywords)
+                    sent_ids = await self.send(filtered, search_title)
                     self.batch_mode = original_mode
                     
                     if sent_ids:
@@ -1427,14 +1430,14 @@ class TelegramNotifier(BaseNotifier):
         except Exception as e:
             logger.error(f"停止 Telegram 轮询时出错: {e}")
     
-    async def send(self, illusts: list[Illust]) -> list[int]:
+    async def send(self, illusts: list[Illust], custom_title: str = None) -> list[int]:
         """发送推送"""
         if not illusts:
             return []
         
         # Telegraph 批量模式
         if self.batch_mode == "telegraph" and len(illusts) > 1:
-            return await self._send_batch_telegraph(illusts)
+            return await self._send_batch_telegraph(illusts, custom_title)
         
         # 逐条发送模式
         success_ids = []
@@ -1462,7 +1465,7 @@ class TelegramNotifier(BaseNotifier):
                 logger.error(f"Telegraph 初始化失败: {e}")
                 self._telegraph = False  # 标记为失败，避免重复尝试
     
-    async def _send_batch_telegraph(self, illusts: list[Illust]) -> list[int]:
+    async def _send_batch_telegraph(self, illusts: list[Illust], custom_title: str = None) -> list[int]:
         """Telegraph 批量发送模式"""
         import database as db
         
@@ -1472,23 +1475,23 @@ class TelegramNotifier(BaseNotifier):
             logger.warning("Telegraph 不可用，降级为逐条发送")
             return await self._send_batch_fallback(illusts)
         
-        lines = [f"📚 今日推送 ({len(illusts)}张)\n"]
+        # 构建标题
+        if custom_title:
+            header = f"📚 {custom_title} ({len(illusts)}张)"
+            page_title = custom_title
+        else:
+            header = f"📚 今日推送 ({len(illusts)}张)"
+            page_title = f"Pixiv 推送 - {len(illusts)}张"
+        
+        lines = [header + "\n"]
         import html
-        
-        lines = [f"📚 今日推送 ({len(illusts)}张)\n"]
-        import html
-        
-        # 用户要求：无论设置如何，都不在 Telegram 消息正文中显示列表
-        # 列表内容仅在 Telegraph 网页中展示
-        
-        # 创建 Telegraph 页面
         
         # 创建 Telegraph 页面
         telegraph_url = None
         try:
             content = await self._build_telegraph_content(illusts)
             response = self._telegraph.create_page(
-                title=f"Pixiv 推送 - {len(illusts)}张",
+                title=page_title,
                 html_content=content
             )
             telegraph_url = f"https://telegra.ph/{response['path']}"
