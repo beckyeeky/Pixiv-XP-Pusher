@@ -13,8 +13,9 @@
     <div class="gallery-grid">
         {% for item in items %}
         <div class="gallery-item">
-            <img src="https://pixiv.cat/{{ item.illust_id }}.jpg" 
-                 onerror="this.onerror=null; this.src='/api/proxy/image/{{ item.illust_id }}';" 
+            <!-- 使用 wsrv.nl 全球免费图像缓存代理，将源图实时缩放压缩，节省海量客户端带宽与内存 -->
+            <img src="https://wsrv.nl/?url=pixiv.cat/{{ item.illust_id }}.jpg&w=500&output=webp" 
+                 onerror="this.onerror=null; this.src='https://pixiv.cat/{{ item.illust_id }}.jpg';" 
                  alt="Illust {{ item.illust_id }}" loading="lazy"
                  style="background: #2a2a3e;">
             <div class="overlay">
@@ -28,15 +29,41 @@
 
     <!-- 分页 -->
     {% if total > limit %}
-    <div style="margin-top: 1.5rem; text-align: center;">
-        {% if page > 1 %}
-        <a href="/gallery?page={{ page - 1 }}" class="btn" style="margin-right: 0.5rem;">上一页</a>
-        {% endif %}
-        <span style="color: var(--text-secondary);">第 {{ page }} / {{ (total // limit) + 1 }} 页</span>
-        {% if page * limit < total %} <a href="/gallery?page={{ page + 1 }}" class="btn" style="margin-left: 0.5rem;">
-            下一页</a>
-            {% endif %}
+    {% set total_pages = (total // limit) + (1 if total % limit else 0) %}
+    <div style="margin-top: 2rem; display: flex; flex-direction: column; align-items: center; gap: 1rem;">
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center;">
+            <a href="/gallery?page=1" class="btn" style="{% if page == 1 %}opacity: 0.5; pointer-events: none;{% endif %}">首页</a>
+            
+            <a href="/gallery?page={{ page - 1 }}" class="btn" style="{% if page <= 1 %}opacity: 0.5; pointer-events: none;{% endif %}">上一页</a>
+            
+            <span style="display: inline-flex; align-items: center; padding: 0 1rem; background: var(--bg-secondary); border-radius: 6px; font-weight: 500;">
+                {{ page }} / {{ total_pages }}
+            </span>
+            
+            <a href="/gallery?page={{ page + 1 }}" class="btn" style="{% if page >= total_pages %}opacity: 0.5; pointer-events: none;{% endif %}">下一页</a>
+            
+            <a href="/gallery?page={{ total_pages }}" class="btn" style="{% if page >= total_pages %}opacity: 0.5; pointer-events: none;{% endif %}">尾页</a>
+        </div>
+        
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <span style="color: var(--text-secondary); font-size: 0.9rem;">跳至</span>
+            <input type="number" id="pageJump" min="1" max="{{ total_pages }}" value="{{ page }}" 
+                   style="width: 60px; padding: 0.3rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-primary); color: white; text-align: center;">
+            <button onclick="jumpToPage()" class="btn" style="padding: 0.3rem 0.8rem;">Go</button>
+        </div>
     </div>
+    <script>
+    function jumpToPage() {
+        const input = document.getElementById('pageJump');
+        let p = parseInt(input.value);
+        if (p && p >= 1 && p <= {{ total_pages }}) {
+            window.location.href = '/gallery?page=' + p;
+        }
+    }
+    document.getElementById('pageJump').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') { jumpToPage(); }
+    });
+    </script>
     {% endif %}
 
     {% else %}
