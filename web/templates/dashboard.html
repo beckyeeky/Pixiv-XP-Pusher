@@ -73,10 +73,10 @@
     </div>
     <div class="tag-cloud">
         {% for tag, count in stats.top_tags %}
-        <span class="tag">
+        <a href="https://www.pixiv.net/tags/{{ tag }}/artworks" target="_blank" class="tag" style="text-decoration: none;">
             #{{ tag }}
             <span class="weight">{{ count }}</span>
-        </span>
+        </a>
         {% endfor %}
     </div>
 </div>
