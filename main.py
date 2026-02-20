@@ -107,12 +107,17 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
             # 使用简单的过滤逻辑 (不去重 SENT_HISTORY，因为这是用户主动要求的)
             # 但我们要去重 "已收藏" 和 "画师屏蔽"
             filtered = []
+            seen_ids = set()
             import database as db_mod
             xp_profile = await db_mod.get_xp_profile()
             
             for ill in related:
                 # 严格去重 (ID 类型统一)
                 if int(ill.id) == int(seed_illust.id): continue
+                
+                # 本次候选队列去重，防止 API 返回重复作品
+                if ill.id in seen_ids: continue
+                seen_ids.add(ill.id)
 
                 # 过滤已推送过的作品 (响应用户需求: 不推老图)
                 if await db_mod.is_pushed(ill.id):
