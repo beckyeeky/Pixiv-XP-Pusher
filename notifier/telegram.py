@@ -1901,7 +1901,8 @@ class TelegramNotifier(BaseNotifier):
     
     def format_message(self, illust: Illust) -> str:
         """格式化消息"""
-        tags = " ".join(f"#{t}" for t in illust.tags[:5])
+        display_tags_list = getattr(illust, 'display_tags', illust.tags)
+        tags = " ".join(f"#{t}" for t in display_tags_list[:5])
         r18_mark = "🔞 " if illust.is_r18 else ""
         ugoira_mark = "🎞️ " if getattr(illust, 'type', 'illust') == 'ugoira' else ""
         

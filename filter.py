@@ -386,14 +386,31 @@ class ContentFilter:
         score_map = {item[0].id: item[1] for item in scored_result}
         sorted_illusts = [item[0] for item in scored_result]
         
-        # 优化标签顺序：按 XP 画像得分降序排列，使核心标签优先显示
+        # 优化标签展示顺序：按 XP 画像得分降序排列，并过滤无意义标签 (防止破坏原始 tags 列表)
         if xp_profile:
             from utils import normalize_tag
             for illust in sorted_illusts:
-                illust.tags.sort(
-                    key=lambda t: xp_profile.get(normalize_tag(t), xp_profile.get(t.lower(), 0.0)), 
-                    reverse=True
-                )
+                tag_scores = {}
+                valid_tags = []
+                
+                for t in illust.tags:
+                    norm_t = normalize_tag(t)
+                    t_lower = t.lower()
+                    
+                    # 过滤掉黑名单/停用词
+                    if norm_t in self.blacklist_tags or t_lower in self.blacklist_tags:
+                        continue
+                        
+                    # 计算权重
+                    score = xp_profile.get(norm_t, xp_profile.get(t_lower, 0.0))
+                    tag_scores[t] = score
+                    valid_tags.append(t)
+                
+                # 按照权重降序排列
+                valid_tags.sort(key=lambda x: tag_scores[x], reverse=True)
+                
+                # 挂载为动态属性，不污染原始标签集合
+                illust.display_tags = valid_tags
         
         # 6.1 AI 精排 (可选) - 使用 LLM 对候选作品进行二次评分
         if self.ai_scorer and self.ai_scorer.enabled and xp_profile:
