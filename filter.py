@@ -114,7 +114,8 @@ class ContentFilter:
         ai_scorer = None,  # 可选的 AIScorer 实例 (用于 LLM 精排)
         # 多样性增强
         shuffle_factor: float = 0.0,  # 随机打散因子 (0-0.5)
-        exploration_ratio: float = 0.0  # 探索比例 (0-0.5)
+        exploration_ratio: float = 0.0,  # 探索比例 (0-0.5)
+        skip_ugoira: bool = False  # 跳过动图
     ):
         self.blacklist_tags = set(t.lower() for t in (blacklist_tags or []))
         self.daily_limit = daily_limit
@@ -126,6 +127,7 @@ class ContentFilter:
         self.artist_boost = artist_boost
         self.min_create_days = min_create_days
         self.r18_mode = r18_mode
+        self.skip_ugoira = skip_ugoira
         
         # 画师多样性衰减 (借鉴 X 算法 AuthorDiversityScorer)
         # 公式: multiplier(position) = (1.0 - floor) × decay^position + floor
@@ -228,6 +230,10 @@ class ContentFilter:
             else:
                 # 默认/mixed/neutral：不因 R-18 属性过滤，全凭匹配度
                 pass
+            
+            # 4.2 动图过滤
+            if self.skip_ugoira and getattr(illust, 'type', 'illust') == 'ugoira':
+                continue
             
             result.append(illust)
         
@@ -500,6 +506,10 @@ class ContentFilter:
             if not illust.is_r18: return False
         elif mode_str in ("safe", "18-", "clean"):
             if illust.is_r18: return False
+            
+        # 6. Ugoira Mode
+        if self.skip_ugoira and getattr(illust, 'type', 'illust') == 'ugoira':
+            return False
             
         return True
     

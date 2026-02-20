@@ -103,6 +103,7 @@ filter:
     # 注意：此参数控制每次脚本运行时最多推送多少张
     # 如果您每小时运行一次，全天总量 = 24 * daily_limit
   exclude_ai: false # 过滤 AI 生成作品
+  skip_ugoira: true # 丢弃 Ugoira 动图格式以节约内存和带宽
   max_per_artist: 3 # 单画师最多推送数
   artist_boost: 0.3 # 订阅画师加成
   min_create_days: 30 # 过滤 N 天前的作品
