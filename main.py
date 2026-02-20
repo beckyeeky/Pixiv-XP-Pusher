@@ -170,13 +170,13 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                                 tags=ill.tags,
                                 user_id=ill.user_id,
                                 user_name=ill.user_name,
-                                source='related',  # 连锁推送来源
+                                source='related_chain',  # 连锁推送来源（区别于 MAB 的 related）
                                 chain_depth=current_depth,
                                 chain_parent_id=seed_illust.id,
                                 chain_msg_id=msg_id
                             )
                             # 记录推送来源
-                            await db_mod.mark_pushed(ill.id, 'related')
+                            await db_mod.mark_pushed(ill.id, 'related_chain')
             else:
                 logger.info("🔗 关联作品过滤后为空")
 
@@ -249,10 +249,10 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
              try:
                  await sync_client.add_bookmark(illust_id)
                  
-                 # 更新 MAB 策略反馈 (所有策略都计入统计，包括 related)
+                 # 更新 MAB 策略反馈 (排除连锁推送 related_chain，但统计 MAB 的 related)
                  from database import get_push_source, update_strategy_stats
                  source = await get_push_source(illust_id)
-                 if source:
+                 if source and source != 'related_chain':
                      await update_strategy_stats(source, is_success=True)
                      logger.info(f"MAB策略 '{source}' 获得正反馈")
                 
