@@ -204,6 +204,15 @@ async def init_db():
             logger.info("迁移：illust_cache 添加 chain 列")
         except:
             pass  # 列已存在
+        
+        # === 初始化 MAB 策略统计 (确保所有策略都有记录) ===
+        default_strategies = ['xp_search', 'subscription', 'ranking', 'related']
+        for strategy in default_strategies:
+            await db.execute(
+                "INSERT OR IGNORE INTO strategy_stats (strategy, success_count, total_count) VALUES (?, 0, 0)",
+                (strategy,)
+            )
+        await db.commit()
 
 
 async def cleanup_old_records(days: int = 180):
@@ -568,8 +577,8 @@ async def cache_illust(
         await db.commit()
 
 
-async def get_push_source(illust_id: int) -> str | None:
-    """获取作品的推送来源策略"""
+async def get_push_source_from_cache(illust_id: int) -> str | None:
+    """从缓存获取作品的推送来源策略 (fallback 用)"""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT source FROM illust_cache WHERE illust_id = ?",
