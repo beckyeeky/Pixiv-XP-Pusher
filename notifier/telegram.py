@@ -149,6 +149,22 @@ class TelegramNotifier(BaseNotifier):
         if self.batch_mode == "telegraph":
             logger.info("批量模式: Telegraph")
 
+    async def _send_typing(self, chat_id: int):
+        """发送 typing 状态"""
+        try:
+            await self.bot.send_chat_action(chat_id=chat_id, action='typing')
+        except Exception as e:
+            logger.debug(f"发送 typing 状态失败: {e}")
+
+    async def _keep_typing(self, chat_id: int):
+        """保持 typing 状态（每4秒发送一次）"""
+        try:
+            while True:
+                await self._send_typing(chat_id)
+                await asyncio.sleep(4)
+        except asyncio.CancelledError:
+            pass
+
     def _resolve_topic_id(self, illust: Illust) -> int | None:
         """根据作品标签匹配 Topic ID"""
         if not self.topic_rules:
@@ -672,7 +688,7 @@ class TelegramNotifier(BaseNotifier):
                     index
                 )
                 if illust_id:
-                    await self.handle_feedback(illust_id, action)
+                    await self.handle_feedback(illust_id, action, chat_id=query.message.chat_id)
                     emoji = "❤️" if action == "like" else "👎"
                     await query.message.reply_text(f"{emoji} 已记录 #{index} 的反馈")
                 
@@ -696,7 +712,7 @@ class TelegramNotifier(BaseNotifier):
                     str(query.message.chat_id)
                 )
                 for illust_id in illust_ids:
-                    await self.handle_feedback(illust_id, action)
+                    await self.handle_feedback(illust_id, action, chat_id=query.message.chat_id)
                 
                 emoji = "❤️" if action == "like" else "👎"
                 await query.message.reply_text(f"{emoji} 已对全部 {len(illust_ids)} 个作品记录反馈")
@@ -757,7 +773,7 @@ class TelegramNotifier(BaseNotifier):
                         # 2. 异步队列：后台执行耗时的 API 操作
                         async def _background_task():
                             try:
-                                await self.handle_feedback(int(illust_id), action)
+                                await self.handle_feedback(int(illust_id), action, chat_id=query.message.chat_id)
                             except Exception as e:
                                 logger.error(f"后台处理反馈失败 ({action} {illust_id}): {e}")
                                 # 如果失败了，发个消息通知用户（因为按钮已经变成绿色了，得告诉他其实没成功）
@@ -834,10 +850,10 @@ class TelegramNotifier(BaseNotifier):
                 return
             
             if text == "1":
-                await self.handle_feedback(illust_id, "like")
+                await self.handle_feedback(illust_id, "like", chat_id=message.chat_id)
                 await message.reply_text("❤️ 已记录喜欢")
             elif text == "2":
-                await self.handle_feedback(illust_id, "dislike")
+                await self.handle_feedback(illust_id, "dislike", chat_id=message.chat_id)
                 await message.reply_text("👎 已记录不喜欢")
                 
         # /push 指令 (支持 /push 或 /push <ID> 或 /push a <画师ID>)
@@ -848,73 +864,78 @@ class TelegramNotifier(BaseNotifier):
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
             
-            args = context.args
-            if args and args[0].isdigit():
-                # 推送指定作品
-                illust_id = int(args[0])
-                await update.message.reply_text(f"🔍 正在获取作品 {illust_id}...")
-                
-                try:
-                    if self.client:
-                        illust = await self.client.get_illust_detail(illust_id)
-                        if illust:
-                            await update.message.reply_text(f"📨 正在推送: {illust.title}...")
-                            sent = await self.send([illust])
-                            if sent:
-                                await update.message.reply_text(f"✅ 推送成功: {illust.title}")
+            chat_id = update.message.chat_id
+            typing_task = asyncio.create_task(self._keep_typing(chat_id))
+            try:
+                args = context.args
+                if args and args[0].isdigit():
+                    # 推送指定作品
+                    illust_id = int(args[0])
+                    await update.message.reply_text(f"🔍 正在获取作品 {illust_id}...")
+                    
+                    try:
+                        if self.client:
+                            illust = await self.client.get_illust_detail(illust_id)
+                            if illust:
+                                await update.message.reply_text(f"📨 正在推送: {illust.title}...")
+                                sent = await self.send([illust])
+                                if sent:
+                                    await update.message.reply_text(f"✅ 推送成功: {illust.title}")
+                                else:
+                                    await update.message.reply_text("❌ 推送失败")
                             else:
-                                await update.message.reply_text("❌ 推送失败")
+                                await update.message.reply_text(f"❌ 未找到作品 {illust_id}")
                         else:
-                            await update.message.reply_text(f"❌ 未找到作品 {illust_id}")
-                    else:
-                        await update.message.reply_text("⚠️ Pixiv 客户端未初始化")
-                except Exception as e:
-                    logger.error(f"手动推送 {illust_id} 失败: {e}")
-                    await update.message.reply_text(f"❌ 推送失败: {e}")
-            elif args and len(args) > 1 and args[0] == "a" and args[1].isdigit():
-                # 推送指定画师近1年的随机作品
-                artist_id = int(args[1])
-                await update.message.reply_text(f"🔍 正在获取画师 {artist_id} 的作品库...")
-                
-                try:
-                    if self.client:
-                        from datetime import datetime, timedelta, timezone
-                        import random
-                        # 限制获取最近100张（或者1年内的），避免API超时
-                        # 使用 UTC 时区避免 datetime 比较错误
-                        one_year_ago = datetime.now(timezone.utc) - timedelta(days=365)
-                        illusts = await self.client.get_user_illusts(artist_id, since=one_year_ago, limit=100)
-                        
-                        if illusts:
-                            sample_size = min(20, len(illusts))
-                            sampled = random.sample(illusts, sample_size)
-                            await update.message.reply_text(f"🎲 正在为您生成画师 {artist_id} 的精选集... (抽取了 {sample_size}/{len(illusts)} 张)")
+                            await update.message.reply_text("⚠️ Pixiv 客户端未初始化")
+                    except Exception as e:
+                        logger.error(f"手动推送 {illust_id} 失败: {e}")
+                        await update.message.reply_text(f"❌ 推送失败: {e}")
+                elif args and len(args) > 1 and args[0] == "a" and args[1].isdigit():
+                    # 推送指定画师近1年的随机作品
+                    artist_id = int(args[1])
+                    await update.message.reply_text(f"🔍 正在获取画师 {artist_id} 的作品库...")
+                    
+                    try:
+                        if self.client:
+                            from datetime import datetime, timedelta, timezone
+                            import random
+                            # 限制获取最近100张（或者1年内的），避免API超时
+                            # 使用 UTC 时区避免 datetime 比较错误
+                            one_year_ago = datetime.now(timezone.utc) - timedelta(days=365)
+                            illusts = await self.client.get_user_illusts(artist_id, since=one_year_ago, limit=100)
                             
-                            # 临时强制开启批量模式进行聚合发送
-                            original_mode = self.batch_mode
-                            self.batch_mode = "telegraph"
-                            custom_title = f"画师 {artist_id} 精选集"
-                            sent_ids = await self.send(sampled, custom_title)
-                            self.batch_mode = original_mode
-                            
-                            if sent_ids:
-                                await update.message.reply_text(f"✅ 画师作品集生成完毕 (共 {len(sent_ids)} 张图)")
+                            if illusts:
+                                sample_size = min(20, len(illusts))
+                                sampled = random.sample(illusts, sample_size)
+                                await update.message.reply_text(f"🎲 正在为您生成画师 {artist_id} 的精选集... (抽取了 {sample_size}/{len(illusts)} 张)")
+                                
+                                # 临时强制开启批量模式进行聚合发送
+                                original_mode = self.batch_mode
+                                self.batch_mode = "telegraph"
+                                custom_title = f"画师 {artist_id} 精选集"
+                                sent_ids = await self.send(sampled, custom_title)
+                                self.batch_mode = original_mode
+                                
+                                if sent_ids:
+                                    await update.message.reply_text(f"✅ 画师作品集生成完毕 (共 {len(sent_ids)} 张图)")
+                                else:
+                                    await update.message.reply_text("❌ 生成画师作品集失败")
                             else:
-                                await update.message.reply_text("❌ 生成画师作品集失败")
+                                await update.message.reply_text(f"❌ 未找到画师 {artist_id} 在近一年内的公开作品")
                         else:
-                            await update.message.reply_text(f"❌ 未找到画师 {artist_id} 在近一年内的公开作品")
-                    else:
-                        await update.message.reply_text("⚠️ Pixiv 客户端未初始化")
-                except Exception as e:
-                    logger.error(f"画师随机推送 {artist_id} 失败: {e}")
-                    await update.message.reply_text(f"❌ 推送失败: {e}")
-            else:
-                # 触发全量推送任务
-                await update.message.reply_text("🚀 收到指令，正在启动推送任务...")
-                if self.on_action:
-                    await self.on_action("run_task", None)
+                            await update.message.reply_text("⚠️ Pixiv 客户端未初始化")
+                    except Exception as e:
+                        logger.error(f"画师随机推送 {artist_id} 失败: {e}")
+                        await update.message.reply_text(f"❌ 推送失败: {e}")
                 else:
-                    await update.message.reply_text("⚠️ 内部错误: 未配置 Action 回调")
+                    # 触发全量推送任务
+                    await update.message.reply_text("🚀 收到指令，正在启动推送任务...")
+                    if self.on_action:
+                        await self.on_action("run_task", None)
+                    else:
+                        await update.message.reply_text("⚠️ 内部错误: 未配置 Action 回调")
+            finally:
+                typing_task.cancel()
                 
         # /search 指令 - 定向关键词搜索
         async def cmd_search(update, context):
@@ -945,6 +966,8 @@ class TelegramNotifier(BaseNotifier):
             
             await update.message.reply_text(f"🔍 正在搜索: {' | '.join(keywords)} ...")
             
+            chat_id = update.message.chat_id
+            typing_task = asyncio.create_task(self._keep_typing(chat_id))
             try:
                 if self.client:
                     # 搜索作品（最多50个候选）
@@ -990,6 +1013,8 @@ class TelegramNotifier(BaseNotifier):
             except Exception as e:
                 logger.error(f"搜索失败: {e}")
                 await update.message.reply_text(f"❌ 搜索失败: {e}")
+            finally:
+                typing_task.cancel()
         
         # /schedule 指令
         async def cmd_schedule(update, context):
@@ -1475,62 +1500,69 @@ class TelegramNotifier(BaseNotifier):
             logger.warning("Telegraph 不可用，降级为逐条发送")
             return await self._send_batch_fallback(illusts)
         
-        # 构建标题
-        if custom_title:
-            header = f"📚 {custom_title} ({len(illusts)}张)"
-            page_title = custom_title
-        else:
-            header = f"📚 今日推送 ({len(illusts)}张)"
-            page_title = f"Pixiv 推送 - {len(illusts)}张"
-        
-        lines = [header + "\n"]
-        import html
-        
-        # 创建 Telegraph 页面
-        telegraph_url = None
+        typing_task = None
+        if self.chat_ids:
+            typing_task = asyncio.create_task(self._keep_typing(int(self.chat_ids[0])))
         try:
-            content = await self._build_telegraph_content(illusts)
-            response = self._telegraph.create_page(
-                title=page_title,
-                html_content=content
-            )
-            telegraph_url = f"https://telegra.ph/{response['path']}"
-            lines.append(f"\n🔗 <a href='{telegraph_url}'>查看详情</a>")
-        except Exception as e:
-            logger.warning(f"创建 Telegraph 页面失败: {e}")
-            lines.append(f"\n🔗 <i>(详情页创建失败)</i>")
-        
-        text = "\n".join(lines)
-        
-        # 构建反馈按钮
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("❤️ 喜欢", callback_data="batch_like"),
-                InlineKeyboardButton("👎 不喜欢", callback_data="batch_dislike"),
-            ]
-        ])
-        
-        # 发送消息
-        success_ids = []
-        for chat_id in self.chat_ids:
+            # 构建标题
+            if custom_title:
+                header = f"📚 {custom_title} ({len(illusts)}张)"
+                page_title = custom_title
+            else:
+                header = f"📚 今日推送 ({len(illusts)}张)"
+                page_title = f"Pixiv 推送 - {len(illusts)}张"
+            
+            lines = [header + "\n"]
+            import html
+            
+            # 创建 Telegraph 页面
+            telegraph_url = None
             try:
-                msg = await _retry_on_flood(lambda: self.bot.send_message(
-                    chat_id=chat_id,
-                    text=text,
-                    reply_markup=keyboard,
-                    parse_mode="HTML",
-                    message_thread_id=self.thread_id,
-                    disable_web_page_preview=False
-                ))
-                if msg:
-                    # 保存映射
-                    await db.save_batch_mapping(msg.message_id, chat_id, illusts)
-                    success_ids = [i.id for i in illusts]  # 批量模式视为全部成功
-                    logger.info(f"Telegraph 批量消息已发送: {len(illusts)} 个作品")
+                content = await self._build_telegraph_content(illusts)
+                response = self._telegraph.create_page(
+                    title=page_title,
+                    html_content=content
+                )
+                telegraph_url = f"https://telegra.ph/{response['path']}"
+                lines.append(f"\n🔗 <a href='{telegraph_url}'>查看详情</a>")
             except Exception as e:
-                logger.error(f"发送批量消息到 {chat_id} 失败: {e}")
-        
-        return success_ids
+                logger.warning(f"创建 Telegraph 页面失败: {e}")
+                lines.append(f"\n🔗 <i>(详情页创建失败)</i>")
+            
+            text = "\n".join(lines)
+            
+            # 构建反馈按钮
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("❤️ 喜欢", callback_data="batch_like"),
+                    InlineKeyboardButton("👎 不喜欢", callback_data="batch_dislike"),
+                ]
+            ])
+            
+            # 发送消息
+            success_ids = []
+            for chat_id in self.chat_ids:
+                try:
+                    msg = await _retry_on_flood(lambda: self.bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        reply_markup=keyboard,
+                        parse_mode="HTML",
+                        message_thread_id=self.thread_id,
+                        disable_web_page_preview=False
+                    ))
+                    if msg:
+                        # 保存映射
+                        await db.save_batch_mapping(msg.message_id, chat_id, illusts)
+                        success_ids = [i.id for i in illusts]  # 批量模式视为全部成功
+                        logger.info(f"Telegraph 批量消息已发送: {len(illusts)} 个作品")
+                except Exception as e:
+                    logger.error(f"发送批量消息到 {chat_id} 失败: {e}")
+            
+            return success_ids
+        finally:
+            if typing_task:
+                typing_task.cancel()
     
     async def _upload_image(self, session, url: str) -> str | None:
         """下载并上传图片到 Telegraph"""
@@ -2062,42 +2094,49 @@ class TelegramNotifier(BaseNotifier):
             ]
         ])
     
-    async def handle_feedback(self, illust_id: int, action: str) -> bool:
+    async def handle_feedback(self, illust_id: int, action: str, chat_id: int | None = None) -> bool:
         """处理反馈回调 (Vivi增强版: 同步Pixiv操作)"""
-        # 1. 调用原有的XP更新逻辑
-        if self.on_feedback:
-            await self.on_feedback(illust_id, action)
-        
-        # 2. 同步到Pixiv API
-        if self.client:
-            try:
-                if action == "like":
-                    await self.client.add_bookmark(illust_id, private=False)
-                    logger.info(f"[Pixiv] 公开收藏: {illust_id}")
-                elif action == "follow":
-                    # 对于 follow，illust_id 参数实际上是 user_id（从 callback_data 传递过来的）
-                    user_id = illust_id
-                    try:
-                        result = await self.client.api.user_follow_add(user_id, restrict='public')
-                        logger.info(f"[Pixiv] user_follow_add API调用完成，user_id={user_id}, result={result}")
-                        
-                        # 验证是否真的关注了
-                        await asyncio.sleep(1)  # 等待API同步
-                        user_detail = await self.client.api.user_detail(user_id)
-                        is_followed = user_detail.get('user', {}).get('is_followed', False)
-                        logger.info(f"[Pixiv] 验证关注状态: user_id={user_id}, is_followed={is_followed}")
-                        
-                        if is_followed:
-                            logger.info(f"[Pixiv] 关注画师成功(已验证): {user_id}")
-                        else:
-                            logger.error(f"[Pixiv] 关注画师失败: API调用后is_followed仍为False")
-                    except Exception as e:
-                        logger.error(f"[Pixiv] 关注画师异常: {e}")
-                        import traceback
-                        logger.error(traceback.format_exc())
-            except Exception as e:
-                logger.error(f"[Pixiv] 操作失败: {e}")
-        
-        return True
+        typing_task = None
+        if action == "follow" and chat_id:
+            typing_task = asyncio.create_task(self._keep_typing(chat_id))
+        try:
+            # 1. 调用原有的XP更新逻辑
+            if self.on_feedback:
+                await self.on_feedback(illust_id, action)
+            
+            # 2. 同步到Pixiv API
+            if self.client:
+                try:
+                    if action == "like":
+                        await self.client.add_bookmark(illust_id, private=False)
+                        logger.info(f"[Pixiv] 公开收藏: {illust_id}")
+                    elif action == "follow":
+                        # 对于 follow，illust_id 参数实际上是 user_id（从 callback_data 传递过来的）
+                        user_id = illust_id
+                        try:
+                            result = await self.client.api.user_follow_add(user_id, restrict='public')
+                            logger.info(f"[Pixiv] user_follow_add API调用完成，user_id={user_id}, result={result}")
+                            
+                            # 验证是否真的关注了
+                            await asyncio.sleep(1)  # 等待API同步
+                            user_detail = await self.client.api.user_detail(user_id)
+                            is_followed = user_detail.get('user', {}).get('is_followed', False)
+                            logger.info(f"[Pixiv] 验证关注状态: user_id={user_id}, is_followed={is_followed}")
+                            
+                            if is_followed:
+                                logger.info(f"[Pixiv] 关注画师成功(已验证): {user_id}")
+                            else:
+                                logger.error(f"[Pixiv] 关注画师失败: API调用后is_followed仍为False")
+                        except Exception as e:
+                            logger.error(f"[Pixiv] 关注画师异常: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
+                except Exception as e:
+                    logger.error(f"[Pixiv] 操作失败: {e}")
+            
+            return True
+        finally:
+            if typing_task:
+                typing_task.cancel()
     
 
