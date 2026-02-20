@@ -306,9 +306,19 @@ class TelegramNotifier(BaseNotifier):
         elif action == "stats":
             stats = await db.get_all_strategy_stats()
             lines = ["📊 *策略表现*\n"]
+            strategy_names = {
+                "xp_search": "XP搜索", 
+                "search": "XP搜索(旧)", 
+                "subscription": "订阅更新", 
+                "ranking": "排行榜",
+                "related": "关联推荐"
+            }
             for strategy, data in stats.items():
+                name = strategy_names.get(strategy, strategy)
+                if name == strategy and "_" in name:
+                    name = name.replace("_", "\\_")
                 rate = f"{data['rate']:.1%}" if data['total'] > 0 else "N/A"
-                lines.append(f"• {strategy}: {data['success']}/{data['total']} ({rate})")
+                lines.append(f"• *{name}*: {data['success']}/{data['total']} ({rate})")
             
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")
@@ -830,7 +840,7 @@ class TelegramNotifier(BaseNotifier):
                 await self.handle_feedback(illust_id, "dislike")
                 await message.reply_text("👎 已记录不喜欢")
                 
-        # /push 指令 (支持 /push 或 /push <ID>)
+        # /push 指令 (支持 /push 或 /push <ID> 或 /push a <画师ID>)
         async def cmd_push(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
@@ -860,6 +870,36 @@ class TelegramNotifier(BaseNotifier):
                         await update.message.reply_text("⚠️ Pixiv 客户端未初始化")
                 except Exception as e:
                     logger.error(f"手动推送 {illust_id} 失败: {e}")
+                    await update.message.reply_text(f"❌ 推送失败: {e}")
+            elif args and len(args) > 1 and args[0] == "a" and args[1].isdigit():
+                # 推送指定画师近1年的随机作品
+                artist_id = int(args[1])
+                await update.message.reply_text(f"🔍 正在获取画师 {artist_id} 的作品库...")
+                
+                try:
+                    if self.client:
+                        from datetime import datetime, timedelta
+                        import random
+                        # 限制获取最近100张（或者1年内的），避免API超时
+                        one_year_ago = datetime.now() - timedelta(days=365)
+                        illusts = await self.client.get_user_illusts(artist_id, since=one_year_ago, limit=100)
+                        
+                        if illusts:
+                            # 过滤掉已经推过的，并过滤掉不想看的动图/AI/R18等
+                            # 但为了简单和快速反馈，只做基础随机抽选
+                            illust = random.choice(illusts)
+                            await update.message.reply_text(f"🎲 抽选到: {illust.title} (来自近一年内的 {len(illusts)} 份作品)")
+                            sent = await self.send([illust])
+                            if sent:
+                                await update.message.reply_text(f"✅ 推送成功: {illust.title}")
+                            else:
+                                await update.message.reply_text("❌ 推送失败")
+                        else:
+                            await update.message.reply_text(f"❌ 未找到画师 {artist_id} 在近一年内的公开作品")
+                    else:
+                        await update.message.reply_text("⚠️ Pixiv 客户端未初始化")
+                except Exception as e:
+                    logger.error(f"画师随机推送 {artist_id} 失败: {e}")
                     await update.message.reply_text(f"❌ 推送失败: {e}")
             else:
                 # 触发全量推送任务
@@ -1212,6 +1252,9 @@ class TelegramNotifier(BaseNotifier):
                 BotCommand("push", "🚀 立即推送"),
                 BotCommand("xp", "🎯 查看XP画像"),
                 BotCommand("stats", "📈 策略表现"),
+                BotCommand("schedule", "⏰ 定时任务"),
+                BotCommand("block", "🚫 屏蔽标签"),
+                BotCommand("block_artist", "🎨 屏蔽画师"),
                 BotCommand("batch", "📦 批量模式"),
                 BotCommand("help", "ℹ️ 帮助信息"),
             ]
