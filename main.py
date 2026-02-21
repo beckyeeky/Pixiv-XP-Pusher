@@ -108,7 +108,8 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                     exclude_ai=filter_cfg.get("exclude_ai", True),
                     r18_mode=filter_cfg.get("r18_mode", False),
                     min_create_days=filter_cfg.get("min_create_days", 0),
-                    skip_ugoira=filter_cfg.get("skip_ugoira", False)
+                    skip_ugoira=filter_cfg.get("skip_ugoira", False),
+                    content_type=filter_cfg.get("content_type", "all")
                 )
             
                 # 使用简单的过滤逻辑 (不去重 SENT_HISTORY，因为这是用户主动要求的)
@@ -670,6 +671,7 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
                 min_create_days=filter_cfg.get("min_create_days", 0),
                 r18_mode=filter_cfg.get("r18_mode", False),
                 skip_ugoira=filter_cfg.get("skip_ugoira", False),
+                content_type=filter_cfg.get("content_type", "all"),
                 # 新增：借鉴 X 算法的增强选项
                 author_diversity=filter_cfg.get("author_diversity"),
                 source_boost=filter_cfg.get("source_boost"),

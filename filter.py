@@ -115,7 +115,8 @@ class ContentFilter:
         # 多样性增强
         shuffle_factor: float = 0.0,  # 随机打散因子 (0-0.5)
         exploration_ratio: float = 0.0,  # 探索比例 (0-0.5)
-        skip_ugoira: bool = False  # 跳过动图
+        skip_ugoira: bool = False,  # 跳过动图
+        content_type: str = "all"  # 内容类型过滤: "all", "illust", "manga"
     ):
         self.blacklist_tags = set(t.lower() for t in (blacklist_tags or []))
         self.daily_limit = daily_limit
@@ -128,6 +129,7 @@ class ContentFilter:
         self.min_create_days = min_create_days
         self.r18_mode = r18_mode
         self.skip_ugoira = skip_ugoira
+        self.content_type = content_type.lower()  # 统一小写
         
         # 画师多样性衰减 (借鉴 X 算法 AuthorDiversityScorer)
         # 公式: multiplier(position) = (1.0 - floor) × decay^position + floor
@@ -536,6 +538,14 @@ class ContentFilter:
         # 6. Ugoira Mode
         if self.skip_ugoira and getattr(illust, 'type', 'illust') == 'ugoira':
             return False
+        
+        # 7. 内容类型过滤 (illust/manga)
+        if self.content_type != 'all':
+            illust_type = getattr(illust, 'type', 'illust')
+            if self.content_type == 'illust' and illust_type != 'illust':
+                return False
+            if self.content_type == 'manga' and illust_type != 'manga':
+                return False
             
         return True
     
