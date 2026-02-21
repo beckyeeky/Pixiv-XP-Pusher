@@ -970,12 +970,17 @@ class TelegramNotifier(BaseNotifier):
             typing_task = asyncio.create_task(self._keep_typing(chat_id))
             try:
                 if self.client:
+                    # 从配置读取内容类型过滤
+                    filter_cfg = self._read_config().get("filter", {})
+                    content_type = filter_cfg.get("content_type", "all")
+                    
                     # 搜索作品（最多50个候选）
                     illusts = await self.client.search_illusts(
                         tags=keywords,
                         bookmark_threshold=100,  # 基础质量门槛
                         date_range_days=365,     # 近一年的作品
-                        limit=50
+                        limit=50,
+                        content_type=content_type  # 传递内容类型过滤
                     )
                     
                     if not illusts:

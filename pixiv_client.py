@@ -215,7 +215,8 @@ class PixivClient:
         tags: list[str],
         bookmark_threshold: int = 0,
         date_range_days: int = 30,  # 默认扩大到 30 天，增加命中率
-        limit: int = 50
+        limit: int = 50,
+        content_type: str = "all"  # 新增: "all", "illust", "manga"
     ) -> list[Illust]:
         """
         搜索作品
@@ -247,12 +248,18 @@ class PixivClient:
                     if date_range_days > 0:
                          start_date = (datetime.now() - timedelta(days=date_range_days)).strftime("%Y-%m-%d")
                     
-                    result = await self.api.search_illust(
-                        word=query,
-                        search_target="partial_match_for_tags",
-                        sort="popular_desc",
-                        start_date=start_date
-                    )
+                    # 构建搜索参数
+                    search_params = {
+                        "word": query,
+                        "search_target": "partial_match_for_tags",
+                        "sort": "popular_desc",
+                        "start_date": start_date
+                    }
+                    # 添加内容类型过滤
+                    if content_type in ["illust", "manga"]:
+                        search_params["content_type"] = content_type
+                    
+                    result = await self.api.search_illust(**search_params)
             
             if not result.get("illusts"):
                 break
