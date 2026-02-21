@@ -1,16 +1,28 @@
 version: "3.8"
 
 services:
-  pixiv-xp:
+  pusher:
     build: .
     container_name: pixiv-xp-pusher
+    command: python main.py --now
     restart: unless-stopped
     volumes:
-      # 持久化数据和配置
       - ./data:/app/data
       - ./logs:/app/logs
-      - ./config.yaml:/app/config.yaml # 去掉 :ro，允许 Web UI 写入配置
+      - ./config.yaml:/app/config.yaml
+    environment:
+      - TZ=Asia/Shanghai
+
+  web:
+    build: .
+    container_name: pixiv-xp-web
+    command: uvicorn web.app:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
     ports:
-      - "8000:8000" # 映射 Web UI 端口
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config.yaml:/app/config.yaml
     environment:
       - TZ=Asia/Shanghai
