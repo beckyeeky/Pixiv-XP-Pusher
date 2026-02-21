@@ -376,7 +376,8 @@ class PixivClient:
         self,
         mode: str = "day",
         date: str | None = None,
-        limit: int = 50
+        limit: int = 50,
+        content_type: str = "all"
     ) -> list[Illust]:
         """
         获取排行榜
@@ -391,6 +392,7 @@ class PixivClient:
                 - day_r18: R18日榜 (需登录)
             date: 日期 (YYYY-MM-DD)，None 表示昨天
             limit: 返回数量
+            content_type: 内容类型过滤 ("all", "illust", "manga")
         """
         if not self._logged_in:
             logger.warning("排行榜功能需要登录")
@@ -407,6 +409,9 @@ class PixivClient:
                     params = {"mode": mode}
                     if date:
                         params["date"] = date
+                    # 添加内容类型过滤（如果 API 支持）
+                    if content_type in ["illust", "manga"]:
+                        params["content_type"] = content_type
                     result = await self.api.illust_ranking(**params)
             
             if not result.get("illusts"):
