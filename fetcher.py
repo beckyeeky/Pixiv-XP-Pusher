@@ -191,11 +191,15 @@ class ContentFetcher:
         final_q1 = self._build_query(t1, raw_t1)
         final_q2 = self._build_query(t2, raw_t2)
         
+        # 从配置读取 content_type
+        content_type = self.config.get("filter", {}).get("content_type", "all")
+        
         return await self.client.search_illusts(
             tags=[final_q1, final_q2],
             bookmark_threshold=threshold,
             date_range_days=self.date_range_days,
-            limit=self.search_limit
+            limit=self.search_limit,
+            content_type=content_type
         )
 
     async def _search_single(self, tag: str, limit: int) -> list[Illust]:
@@ -207,11 +211,15 @@ class ContentFetcher:
         raw_tag = await db.get_best_search_tag(tag)
         final_q = self._build_query(tag, raw_tag)
         
+        # 从配置读取 content_type
+        content_type = self.config.get("filter", {}).get("content_type", "all")
+        
         return await self.client.search_illusts(
             tags=[final_q],
             bookmark_threshold=threshold,
             date_range_days=self.date_range_days,
-            limit=limit
+            limit=limit,
+            content_type=content_type
         )
 
     def _build_query(self, tag: str, raw_tag: str) -> str:
@@ -278,11 +286,15 @@ class ContentFetcher:
         
         all_illusts = []
         
+        # 从配置读取 content_type
+        content_type = self.config.get("filter", {}).get("content_type", "all")
+        
         for mode in self.ranking_modes:
             try:
                 illusts = await self.client.get_ranking(
                     mode=mode,
-                    limit=self.ranking_limit // len(self.ranking_modes)
+                    limit=self.ranking_limit // len(self.ranking_modes),
+                    content_type=content_type
                 )
                 all_illusts.extend(illusts)
                 logger.info(f"排行榜 [{mode}] 获取 {len(illusts)} 个作品")
@@ -652,11 +664,18 @@ class ContentFetcher:
             return []
             
         all_illusts = []
+        # 从配置读取 content_type
+        content_type = self.config.get("filter", {}).get("content_type", "all")
+        
         for mode in self.ranking_modes:
             try:
                 # 平均分配 limit
                 mode_limit = max(1, limit // len(self.ranking_modes))
-                illusts = await self.client.get_ranking(mode=mode, limit=mode_limit)
+                illusts = await self.client.get_ranking(
+                    mode=mode, 
+                    limit=mode_limit,
+                    content_type=content_type
+                )
                 all_illusts.extend(illusts)
             except Exception as e:
                 logger.error(f"获取 {mode} 排行榜失败: {e}")
