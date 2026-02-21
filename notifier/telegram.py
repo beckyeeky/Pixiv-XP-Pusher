@@ -1412,7 +1412,7 @@ class TelegramNotifier(BaseNotifier):
             except Exception as e:
                 await update.message.reply_text(f"❌ 取消屏蔽失败: {e}")
         
-        # /mute 指令 - 临时静音标签（默认24小时）
+        # /mute 指令 - 临时静音标签（默认24小时），交互式
         async def cmd_mute(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
@@ -1420,26 +1420,40 @@ class TelegramNotifier(BaseNotifier):
                 return
 
             args = context.args
-            if not args:
-                from database import get_muted_tags
-                muted = await get_muted_tags(active_only=True)
-                if not muted:
-                    await update.message.reply_text("🔕 当前没有静音标签\n用法: `/mute <tag>`", parse_mode="Markdown")
-                    return
-                lines = ["🔕 *当前静音标签*\n"]
-                for tag, until_ts in muted[:20]:
-                    lines.append(f"• `{tag}` → `{until_ts}`")
-                await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            import database as db
+
+            # 有参数：直接静音（保持向后兼容）
+            if args:
+                raw = " ".join(args).strip()
+                from utils import normalize_tag
+                tag = normalize_tag(raw.replace('#', ''))
+                until_ts = await db.mute_tag(tag, hours=24)
+                await update.message.reply_text(
+                    f"🔕 已静音标签: `{tag}`\n"
+                    f"⏳ 截止: `{until_ts}`\n"
+                    f"_可在菜单中提前撤销_",
+                    parse_mode="Markdown"
+                )
                 return
 
-            raw = " ".join(args).strip()
-            from utils import normalize_tag
-            from database import mute_tag
-            tag = normalize_tag(raw.replace('#', ''))
-            until_ts = await mute_tag(tag, hours=24)
-            await update.message.reply_text(f"🔕 已静音标签: `{tag}`\n⏳ 截止: `{until_ts}`\n(可用 `/unmute {tag}` 提前撤销)", parse_mode="Markdown")
+            # 无参数：进入交互式菜单
+            muted = await db.get_muted_tags(active_only=True)
+            lines = ["🔕 *静音管理*\n"]
+            if muted:
+                lines.append("当前静音中:\n")
+                for tag, until_ts in muted[:10]:
+                    lines.append(f"  • `{tag}` → `{until_ts}`")
+            else:
+                lines.append("_暂无静音标签_")
 
-        # /unmute 指令 - 提前撤销静音
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ 添加静音标签", callback_data="menu:mute:add")],
+                [InlineKeyboardButton("❎ 取消静音标签", callback_data="menu:mute:remove")],
+                [InlineKeyboardButton("📋 查看全部列表", callback_data="menu:mute")],
+            ])
+            await update.message.reply_text("\n".join(lines), reply_markup=keyboard, parse_mode="Markdown")
+
+        # /unmute 指令 - 提前撤销静音，交互式
         async def cmd_unmute(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
@@ -1447,16 +1461,46 @@ class TelegramNotifier(BaseNotifier):
                 return
 
             args = context.args
-            if not args:
-                await update.message.reply_text("用法: `/unmute <tag>`", parse_mode="Markdown")
+            import database as db
+
+            # 有参数：直接取消（保持向后兼容）
+            if args:
+                raw = " ".join(args).strip()
+                from utils import normalize_tag
+                tag = normalize_tag(raw.replace('#', ''))
+                ok = await db.unmute_tag(tag)
+                await update.message.reply_text(
+                    "✅ 已取消静音" if ok else "⚠️ 该标签当前未静音",
+                    parse_mode="Markdown"
+                )
                 return
 
-            raw = " ".join(args).strip()
-            from utils import normalize_tag
-            from database import unmute_tag
-            tag = normalize_tag(raw.replace('#', ''))
-            ok = await unmute_tag(tag)
-            await update.message.reply_text("✅ 已取消静音" if ok else "⚠️ 该标签当前未静音", parse_mode="Markdown")
+            # 无参数：进入交互式选择
+            muted = await db.get_muted_tags(active_only=True)
+            if not muted:
+                await update.message.reply_text(
+                    "🔕 当前没有静音标签\n\n"
+                    "使用 `/mute` 添加静音",
+                    parse_mode="Markdown"
+                )
+                return
+
+            # 构建交互式按钮列表
+            rows = []
+            row = []
+            for (tag, until_ts) in muted[:12]:
+                row.append(InlineKeyboardButton(f"❎ {tag}", callback_data=f"menu:mute:unmute:{tag}"))
+                if len(row) == 2:
+                    rows.append(row)
+                    row = []
+            if row:
+                rows.append(row)
+
+            await update.message.reply_text(
+                "🔕 *选择要取消静音的标签：*",
+                reply_markup=InlineKeyboardMarkup(rows),
+                parse_mode="Markdown"
+            )
 
         # /help 指令 - 帮助信息
         async def cmd_help(update, context):
@@ -1472,8 +1516,8 @@ class TelegramNotifier(BaseNotifier):
                 "`/schedule` - ⏰ 查看/修改定时时间\n"
                 "`/block <tag>` - 🚫 屏蔽标签\n"
                 "`/unblock <tag>` - ✅ 取消屏蔽标签\n"
-                "`/mute <tag>` - 🔕 静音标签24小时\n"
-                "`/unmute <tag>` - 🔔 取消静音\n"
+                "`/mute [tag]` - 🔕 静音标签24小时（无参数进入交互式菜单）\n"
+                "`/unmute [tag]` - 🔔 取消静音（无参数进入选择列表）\n"
                 "`/block_artist <id>` - 🚫 屏蔽画师\n"
                 "`/unblock_artist <id>` - ✅ 取消屏蔽画师\n"
                 "`/batch` - 📦 批量模式设置\n"
