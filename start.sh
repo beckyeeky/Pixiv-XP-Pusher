@@ -60,7 +60,7 @@ fi
 # 运行
 if [[ "$MODE" == "once" ]]; then
     echo "[立即执行模式]"
-    python main.py --once
+    python3 main.py --once
 else
-    python launcher.py
+    python3 launcher.py
 fi
