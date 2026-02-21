@@ -319,9 +319,15 @@ class PixivClient:
                 if len(illusts) >= limit:
                     break
                 illust = self._parse_illust(item)
-                if since and illust.create_date < since:
-                    # 作品按时间倒序，早于since则停止
-                    return illusts
+                if since:
+                    # 确保时区一致：将 since 转换为 aware datetime
+                    since_aware = since
+                    if since.tzinfo is None:
+                        from datetime import timezone
+                        since_aware = since.replace(tzinfo=timezone.utc)
+                    if illust.create_date < since_aware:
+                        # 作品按时间倒序，早于since则停止
+                        return illusts
                 illusts.append(illust)
             
             next_qs = self.api.parse_qs(result.get("next_url"))
