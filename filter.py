@@ -190,6 +190,14 @@ class ContentFilter:
         # 批量预加载已推送 ID (性能优化: O(n) -> O(1) 数据库查询)
         all_ids = [illust.id for illust in illusts]
         pushed_ids = await db.get_pushed_ids_batch(all_ids)
+
+        # 预加载临时静音标签 (/mute)
+        muted_tags = set()
+        try:
+            muted_rows = await db.get_muted_tags(active_only=True)
+            muted_tags = {row[0].lower().strip() for row in muted_rows}
+        except Exception as e:
+            logger.warning(f"预加载静音标签失败: {e}")
         
         result = []
         filtered_by_time = 0
@@ -207,6 +215,19 @@ class ContentFilter:
             # 3. R-18G 排除
             if self._has_blacklisted_tag(illust):
                 continue
+
+            # 3.5 临时静音标签过滤 (/mute)
+            try:
+                if muted_tags:
+                    from utils import normalize_tag
+                    muted_hit = any(
+                        normalize_tag(t) in muted_tags
+                        for t in (illust.tags or [])
+                    )
+                    if muted_hit:
+                        continue
+            except Exception as e:
+                logger.warning(f"静音标签检查失败: {e}")
             
             # 4. AI 生成排除（增强版）
             if self.exclude_ai:

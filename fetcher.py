@@ -21,6 +21,7 @@ class ContentFetcher:
     def __init__(
         self,
         client: PixivClient,
+        config: Optional[dict] = None,
         bookmark_threshold: dict[str, int] = None,
         date_range_days: int = 7,
         subscribed_artists: Optional[list[int]] = None,
@@ -33,6 +34,7 @@ class ContentFetcher:
     ):
         self.client = client  # 主客户端 (搜索、排行榜)
         self.sync_client = sync_client or client  # 同步客户端 (订阅、关注)
+        self.config = config or {}
         self.bookmark_threshold = bookmark_threshold or {"search": 1000, "subscription": 0}
         self.date_range_days = date_range_days
         self.subscribed_artists = subscribed_artists or []

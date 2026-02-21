@@ -3,9 +3,12 @@ SQLite 数据层
 """
 import json
 import aiosqlite
+import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
 
@@ -135,6 +138,13 @@ async def init_db():
             -- Bot 快速屏蔽标签 (持久化)
             CREATE TABLE IF NOT EXISTS blocked_tags (
                 tag TEXT PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Bot 临时静音标签 (/mute) - 到期自动失效
+            CREATE TABLE IF NOT EXISTS muted_tags (
+                tag TEXT PRIMARY KEY,
+                until_ts TIMESTAMP NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             
@@ -1017,11 +1027,70 @@ async def get_all_blocked_tags(dislike_threshold: int = 3) -> list[str]:
 
 
 async def is_tag_blocked(tag: str) -> bool:
-    """检查标签是否被屏蔽"""
+    """检查标签是否被屏蔽 (仅手动 block)"""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT 1 FROM blocked_tags WHERE tag = ?",
             (tag.lower().strip(),)
+        )
+        return await cursor.fetchone() is not None
+
+
+# ============ 临时静音标签 (/mute) ==========
+async def mute_tag(tag: str, hours: int = 24) -> str:
+    """静音某个 tag 一段时间，返回到期时间字符串"""
+    tag = tag.lower().strip()
+    until_dt = datetime.now() + timedelta(hours=hours)
+    until_str = until_dt.strftime("%Y-%m-%d %H:%M:%S")
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO muted_tags (tag, until_ts) VALUES (?, ?) "
+            "ON CONFLICT(tag) DO UPDATE SET until_ts=excluded.until_ts",
+            (tag, until_str)
+        )
+        await db.commit()
+    return until_str
+
+
+async def unmute_tag(tag: str) -> bool:
+    """提前撤销静音"""
+    tag = tag.lower().strip()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("DELETE FROM muted_tags WHERE tag = ?", (tag,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_muted_tags(active_only: bool = True) -> list[tuple[str, str]]:
+    """获取静音 tag 列表: [(tag, until_ts), ...]"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        if active_only:
+            cursor = await db.execute(
+                "SELECT tag, until_ts FROM muted_tags WHERE until_ts > CURRENT_TIMESTAMP ORDER BY until_ts DESC"
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT tag, until_ts FROM muted_tags ORDER BY until_ts DESC"
+            )
+        rows = await cursor.fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+
+async def cleanup_expired_mutes() -> int:
+    """清理已过期的静音 tag，返回清理条数"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("DELETE FROM muted_tags WHERE until_ts <= CURRENT_TIMESTAMP")
+        await db.commit()
+        return cursor.rowcount
+
+
+async def is_tag_muted(tag: str) -> bool:
+    """检查 tag 是否处于静音期"""
+    tag = tag.lower().strip()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT 1 FROM muted_tags WHERE tag = ? AND until_ts > CURRENT_TIMESTAMP",
+            (tag,)
         )
         return await cursor.fetchone() is not None
 

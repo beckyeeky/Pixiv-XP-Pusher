@@ -52,7 +52,7 @@ def install_deps():
 
 def init_db():
     print_header("[3/8] 初始化数据库")
-    run_command('python -c "import asyncio; from database import init_db; asyncio.run(init_db())"')
+    run_command(f'"{sys.executable}" -c "import asyncio; from database import init_db; asyncio.run(init_db())"')
     print("   数据库已就绪")
     time.sleep(1)
 
@@ -63,7 +63,7 @@ def setup_token():
     
     choice = input("   是否获取 Token? (y/n): ").strip().lower()
     if choice == 'y':
-        run_command("python get_token.py")
+        run_command(f'"{sys.executable}" get_token.py')
 
 def setup_user_id():
     print_header("[5/8] 配置收藏分析目标")
@@ -212,17 +212,17 @@ def main_menu():
         
         if choice == '1':
             print("\n   🚀 正在立即启动任务，并在完成后转为后台常驻...")
-            run_command("python main.py --now")
+            run_command(f'"{sys.executable}" main.py --now')
             input("\n   按回车键继续...")
             
         elif choice == '2':
             print("\n   ⏰ 启动定时调度器 (Ctrl+C 停止)")
-            run_command("python main.py")
+            run_command(f'"{sys.executable}" main.py')
             input("\n   按回车键继续...")
 
         elif choice == '3':
             print("\n   🔧 执行单次推送调试...")
-            run_command("python main.py --once")
+            run_command(f'"{sys.executable}" main.py --once')
             input("\n   按回车键继续...")
             
         elif choice == '4':
@@ -252,7 +252,7 @@ def main_menu():
                 
                 # 前台运行推送服务
                 print("   Web 服务器已启动，现在启动推送服务...")
-                run_command("python main.py --now")
+                run_command(f'"{sys.executable}" main.py --now')
                 
             else:  # Linux/macOS
                 # 使用 & 后台运行 Web 服务器
@@ -262,10 +262,10 @@ def main_menu():
                 
                 # 前台运行推送服务
                 print("   Web 服务器已启动，现在启动推送服务...")
-                run_command("python main.py --now")
+                run_command(f'"{sys.executable}" main.py --now')
             
         elif choice == '6':
-            run_command("python get_token.py")
+            run_command(f'"{sys.executable}" get_token.py')
             input("\n   按回车键继续...")
             
         elif choice == '7':
