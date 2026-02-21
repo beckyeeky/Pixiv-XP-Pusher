@@ -592,6 +592,7 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
             fetcher = ContentFetcher(
                 client=client,
                 sync_client=sync_client,  # 新增：同步客户端
+                config=config,
                 bookmark_threshold=fetcher_cfg.get("bookmark_threshold", {"search": 1000, "subscription": 0}),
                 date_range_days=fetcher_cfg.get("date_range_days", 7),
                 subscribed_artists=list(manual_subs),

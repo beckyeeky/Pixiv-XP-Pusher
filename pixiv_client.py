@@ -224,7 +224,7 @@ class PixivClient:
         Args:
             tags: 搜索Tag（AND关系）
             bookmark_threshold: 收藏数阈值
-            date_range_days: 日期范围
+            date_range_days: 日期范围 (None 或 0 表示不限)
             limit: 返回数量
         """
         if not self._logged_in:
@@ -239,22 +239,26 @@ class PixivClient:
         total_fetched = 0
         filtered_count = 0
         
+        # 处理 date_range_days 可能为 None 的情况
+        effective_days = date_range_days if date_range_days is not None else 0
+        
         while len(illusts) < limit:
             async with self.rate_limiter:
                 if next_qs:
                     result = await self.api.search_illust(**next_qs)
                 else:
-                    # 动态计算日期范围
-                    if date_range_days > 0:
-                         start_date = (datetime.now() - timedelta(days=date_range_days)).strftime("%Y-%m-%d")
-                    
                     # 构建搜索参数
                     search_params = {
                         "word": query,
                         "search_target": "partial_match_for_tags",
                         "sort": "popular_desc",
-                        "start_date": start_date
                     }
+                    
+                    # 动态计算日期范围（仅在 > 0 时）
+                    if effective_days > 0:
+                        start_date = (datetime.now() - timedelta(days=effective_days)).strftime("%Y-%m-%d")
+                        search_params["start_date"] = start_date
+                    
                     # 添加内容类型过滤
                     if content_type in ["illust", "manga"]:
                         search_params["content_type"] = content_type
@@ -280,7 +284,7 @@ class PixivClient:
             if not next_qs:
                 break
         
-        logger.info(f"搜索 '{query}' (近{date_range_days}天): 获取 {total_fetched} -> 过滤 {filtered_count} -> 保留 {len(illusts)}")
+        logger.info(f"搜索 '{query}' ({f'近{effective_days}天' if effective_days > 0 else '不限时间'}): 获取 {total_fetched} -> 过滤 {filtered_count} -> 保留 {len(illusts)}")
         return illusts
     
     @retry_async(max_retries=3)
