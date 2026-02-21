@@ -137,6 +137,37 @@ sudo systemctl enable --now pixiv-web
 
 ---
 
+## 🐳 Docker Compose 部署 (推荐)
+
+如果你更习惯容器化部署，本项目也提供了开箱即用的 Docker 支持。这种方式同样实现了“双进程解耦”，且环境隔离更干净。
+
+### 1. 准备配置
+```bash
+# 克隆项目
+git clone https://github.com/beckyeeky/Pixiv-XP-Pusher.git
+cd Pixiv-XP-Pusher
+
+# 创建配置文件 (填入你的 Token 和配置)
+cp config.example.yaml config.yaml
+nano config.yaml
+```
+
+### 2. 启动服务
+```bash
+# 构建并后台启动
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+```
+
+### 3. 访问 Web 控制台
+Web UI 默认运行在容器的 `8000` 端口。
+- 访问地址: `http://你的VPS_IP:8000`
+- 注意：请确保你的 VPS 防火墙放行了 8000 端口。
+
+---
+
 ## ⚙️ 配置文件核心说明
 
 编辑项目根目录的 `config.yaml`（如果是初次运行，可复制 `config.example.yaml`）：
