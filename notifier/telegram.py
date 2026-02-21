@@ -652,6 +652,11 @@ class TelegramNotifier(BaseNotifier):
                 await self._handle_menu_callback(query, data)
                 return
             
+            # ===== 搜索向导回调处理 =====
+            if data.startswith("search_"):
+                await _handle_search_callback(query, data)
+                return
+            
             if data == "batch_like":
                 # 显示作品选择按钮
                 import database as db
@@ -805,6 +810,52 @@ class TelegramNotifier(BaseNotifier):
                 return
             
             text = message.text.strip()
+            chat_id = message.chat_id
+            
+            # ===== 处理搜索向导会话 =====
+            search_session = self._search_sessions.get(user_id)
+            if search_session:
+                step = search_session.get("step")
+                
+                if step == "input_batch":
+                    # 处理批次输入
+                    if not text.isdigit():
+                        await message.reply_text("❌ 请输入数字（1-10）")
+                        return
+                    batch_num = int(text)
+                    if batch_num < 1 or batch_num > 10:
+                        await message.reply_text("❌ 批次范围 1-10")
+                        return
+                    
+                    search_session["offset"] = (batch_num - 1) * 20
+                    search_session["step"] = "input_keywords"
+                    
+                    await message.reply_text(
+                        f"🔍 *交互式搜索向导*\n\n"
+                        f"第 3/3 步：请输入搜索关键词\n"
+                        f"📅 时间: {'不限' if search_session.get('date_range', 0) == 0 else f'近{search_session.get('date_range')}天'}\n"
+                        f"📄 批次: 第 {batch_num} 批 ({search_session['offset']+1}-{search_session['offset']+20})\n\n"
+                        f"输入格式：\n"
+                        f"• 单关键词: `白发`\n"
+                        f"• 多关键词: `白发|黑丝|红瞳`\n"
+                        f"（用 | 分隔，#号会自动去除）\n\n"
+                        f"直接回复此消息即可",
+                        parse_mode="Markdown"
+                    )
+                    return
+                
+                elif step == "input_keywords":
+                    # 处理关键词输入
+                    keywords = [k.strip().replace('#', '') for k in text.split("|") if k.strip()]
+                    if not keywords:
+                        await message.reply_text("❌ 请输入有效的搜索关键词")
+                        return
+                    
+                    date_range = search_session.get("date_range", 0)
+                    offset = search_session.get("offset", 0)
+                    
+                    await _do_search(user_id, chat_id, keywords, date_range, offset)
+                    return
             
             # ===== 处理等待输入 =====
             if self._pending_input and self._pending_input.get("chat_id") == message.chat_id:
@@ -937,91 +988,171 @@ class TelegramNotifier(BaseNotifier):
             finally:
                 typing_task.cancel()
                 
-        # /search 指令 - 定向关键词搜索
+        # 搜索会话状态存储
+        self._search_sessions = {}  # user_id -> {step, date_range, offset, keywords}
+        
+        # /search 指令 - 交互式定向搜图
         async def cmd_search(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
             
+            # 检查是否有直接参数（旧模式兼容）
             args = context.args
-            if not args:
-                await update.message.reply_text(
-                    "🔍 *定向搜图*\n\n"
-                    "用法: `/search 关键词1|关键词2|...`\n"
-                    "例: `/search 白发|黑丝`\n"
-                    "例: `/search white_hair`\n\n"
-                    "将搜索最多20张符合条件的图，打包成画册推送。",
-                    parse_mode="Markdown"
-                )
-                return
+            if args:
+                # 旧模式：直接搜索
+                search_input = " ".join(args)
+                keywords = [k.strip().replace('#', '') for k in search_input.split("|") if k.strip()]
+                if keywords:
+                    await _do_search(user_id, update.message.chat_id, keywords, date_range_days=0, offset=0)
+                    return
             
-            # 解析关键词（支持 | 分隔多个词）
-            search_input = " ".join(args)
-            keywords = [k.strip() for k in search_input.split("|") if k.strip()]
+            # 新模式：启动交互式向导
+            self._search_sessions[user_id] = {"step": "select_time"}
             
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📅 不限时间", callback_data="search_time:0")],
+                [InlineKeyboardButton("📅 最近一年", callback_data="search_time:365")],
+                [InlineKeyboardButton("📅 最近一月", callback_data="search_time:30")],
+                [InlineKeyboardButton("📅 最近一周", callback_data="search_time:7")],
+                [InlineKeyboardButton("❌ 取消", callback_data="search_cancel")]
+            ])
+            
+            await update.message.reply_text(
+                "🔍 *交互式搜索向导*\n\n"
+                "第 1/3 步：请选择时间范围\n"
+                "（默认按收藏数从高到低排序）",
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+        
+        async def _do_search(user_id: int, chat_id: int, keywords: list, date_range_days: int, offset: int):
+            """执行实际搜索"""
             if not keywords:
-                await update.message.reply_text("❌ 请输入有效的搜索关键词")
+                await self.bot.send_message(chat_id, "❌ 关键词不能为空")
                 return
             
-            await update.message.reply_text(f"🔍 正在搜索: {' | '.join(keywords)} ...")
+            await self.bot.send_message(
+                chat_id, 
+                f"🔍 搜索: {' | '.join(keywords)}\n"
+                f"📅 时间: {'不限' if date_range_days == 0 else f'近{date_range_days}天'}\n"
+                f"📄 批次: 第 {offset//20 + 1} 批 ({offset+1}-{offset+20})"
+            )
             
-            chat_id = update.message.chat_id
             typing_task = asyncio.create_task(self._keep_typing(chat_id))
             try:
                 if self.client:
-                    # 从配置读取内容类型过滤
                     filter_cfg = self._read_config().get("filter", {})
                     content_type = filter_cfg.get("content_type", "all")
                     
-                    # 搜索作品（最多50个候选）
+                    # 计算需要获取的数量（偏移 + 20）
+                    limit = offset + 20
+                    
+                    # 搜索作品
                     illusts = await self.client.search_illusts(
                         tags=keywords,
-                        bookmark_threshold=100,  # 基础质量门槛
-                        date_range_days=365,     # 近一年的作品
-                        limit=50,
-                        content_type=content_type  # 传递内容类型过滤
+                        bookmark_threshold=0,  # 不限收藏数，让用户看到更多
+                        date_range_days=date_range_days if date_range_days > 0 else None,
+                        limit=limit,
+                        content_type=content_type
                     )
                     
-                    if not illusts:
-                        await update.message.reply_text(f"❌ 未找到包含 {' | '.join(keywords)} 的作品")
+                    if not illusts or len(illusts) <= offset:
+                        await self.bot.send_message(chat_id, f"❌ 未找到足够的作品（仅找到 {len(illusts) if illusts else 0} 张）")
                         return
+                    
+                    # 截取指定批次
+                    batch = illusts[offset:offset+20]
                     
                     # 过滤已推送的
                     import database as db_mod
-                    filtered = []
-                    for ill in illusts:
-                        if not await db_mod.is_pushed(ill.id):
-                            filtered.append(ill)
-                        if len(filtered) >= 20:  # 最多20张
-                            break
+                    filtered = [ill for ill in batch if not await db_mod.is_pushed(ill.id)]
                     
                     if not filtered:
-                        await update.message.reply_text(f"⚠️ 找到了 {len(illusts)} 张图，但全都推送过了，试试其他关键词？")
+                        await self.bot.send_message(
+                            chat_id, 
+                            f"⚠️ 该批次 {len(batch)} 张图都已推送过\n"
+                            f"尝试获取下一批: /search 然后选择批次 {offset//20 + 2}"
+                        )
                         return
                     
-                    # 使用批量模式打包发送
-                    await update.message.reply_text(f"📦 找到 {len(filtered)} 张符合条件的作品，正在生成画册...")
+                    # 发送
+                    await self.bot.send_message(chat_id, f"📦 找到 {len(filtered)} 张符合条件的作品，生成画册...")
                     
                     original_mode = self.batch_mode
                     self.batch_mode = "telegraph"
-                    search_title = " | ".join(keywords)
+                    search_title = f"{' | '.join(keywords)} (第{offset//20+1}批)"
                     sent_ids = await self.send(filtered, search_title)
                     self.batch_mode = original_mode
                     
                     if sent_ids:
-                        await update.message.reply_text(f"✅ 搜索完成！共推送 {len(sent_ids)} 张图")
+                        msg = f"✅ 推送完成！共 {len(sent_ids)} 张\n"
+                        msg += f"\n继续获取下一批：\n/search 然后选批次 {offset//20 + 2}"
+                        await self.bot.send_message(chat_id, msg)
                     else:
-                        await update.message.reply_text("❌ 画册生成失败")
+                        await self.bot.send_message(chat_id, "❌ 画册生成失败")
                 else:
-                    await update.message.reply_text("⚠️ Pixiv 客户端未初始化")
+                    await self.bot.send_message(chat_id, "⚠️ Pixiv 客户端未初始化")
             except Exception as e:
                 logger.error(f"搜索失败: {e}")
-                await update.message.reply_text(f"❌ 搜索失败: {e}")
+                await self.bot.send_message(chat_id, f"❌ 搜索失败: {e}")
             finally:
                 typing_task.cancel()
+            
+            # 清理会话
+            if user_id in self._search_sessions:
+                del self._search_sessions[user_id]
         
-        # /schedule 指令
+        # 处理搜索向导的回调
+        async def _handle_search_callback(query, data: str):
+            user_id = query.from_user.id
+            chat_id = query.message.chat_id
+            
+            if data == "search_cancel":
+                if user_id in self._search_sessions:
+                    del self._search_sessions[user_id]
+                await query.edit_message_text("❌ 搜索已取消")
+                return
+            
+            if data.startswith("search_time:"):
+                days = int(data.split(":")[1])
+                self._search_sessions[user_id] = {
+                    "step": "input_batch",
+                    "date_range": days
+                }
+                
+                await query.edit_message_text(
+                    f"🔍 *交互式搜索向导*\n\n"
+                    f"第 2/3 步：请输入批次编号\n"
+                    f"📅 已选择: {'不限时间' if days == 0 else f'近{days}天'}\n\n"
+                    f"输入格式：数字 1-10\n"
+                    f"• 1 = 第1-20张（热门）\n"
+                    f"• 2 = 第21-40张\n"
+                    f"• 3 = 第41-60张\n"
+                    f"...\n\n"
+                    f"直接回复此消息即可",
+                    parse_mode="Markdown"
+                )
+            
+            elif data.startswith("search_batch:"):
+                batch_num = int(data.split(":")[1])
+                session = self._search_sessions.get(user_id, {})
+                session["offset"] = (batch_num - 1) * 20
+                session["step"] = "input_keywords"
+                
+                await query.edit_message_text(
+                    f"🔍 *交互式搜索向导*\n\n"
+                    f"第 3/3 步：请输入搜索关键词\n"
+                    f"📅 时间: {'不限' if session.get('date_range', 0) == 0 else f'近{session.get('date_range')}天'}\n"
+                    f"📄 批次: 第 {batch_num} 批\n\n"
+                    f"输入格式：\n"
+                    f"• 单关键词: `白发`\n"
+                    f"• 多关键词: `白发|黑丝|红瞳`\n"
+                    f"（用 | 分隔，会自动去掉#号）\n\n"
+                    f"直接回复此消息即可",
+                    parse_mode="Markdown"
+                )
         async def cmd_schedule(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
