@@ -739,8 +739,18 @@ class TelegramNotifier(BaseNotifier):
                 return
             
             # ===== 屏蔽管理回调处理 =====
-            if data.startswith(("block_", "unblock:")):
+            if data.startswith(("block_", "unblock:")) and not data.startswith(("block_artist", "unblock_artist")):
                 await _handle_block_callback(query, data)
+                return
+            
+            # ===== 画师屏蔽管理回调处理 =====
+            if data.startswith(("block_artist", "unblock_artist")):
+                await _handle_block_artist_callback(query, data)
+                return
+            
+            # ===== 定时任务设置回调处理 =====
+            if data.startswith("schedule_"):
+                await _handle_schedule_callback(query, data)
                 return
             
             if data == "batch_like":
@@ -992,6 +1002,47 @@ class TelegramNotifier(BaseNotifier):
                         # 更新配置
                         self._save_config_value("filter", "daily_limit", limit)
                         await message.reply_text(f"✅ 每日推送上限已设置为: `{limit}`", parse_mode="Markdown")
+                    
+                    elif input_type == "schedule_add":
+                        # 添加时间点
+                        import re
+                        if not re.match(r'^\d{1,2}:\d{2}$', text):
+                            await message.reply_text("❌ 格式错误，请使用 HH:MM (如 14:30)")
+                            return
+                        h, m = text.split(":")
+                        new_cron = f"{m} {h} * * *"
+                        
+                        # 读取当前配置
+                        config = self._read_config()
+                        current = config.get("schedule", "")
+                        
+                        if current and "," in current:
+                            # 已经是多个时间点，追加
+                            schedule_data = f"{current},{new_cron}"
+                        elif current:
+                            # 单个时间点，转为多个
+                            schedule_data = f"{current},{new_cron}"
+                        else:
+                            schedule_data = new_cron
+                        
+                        if self.on_action:
+                            await self.on_action("update_schedule", schedule_data)
+                            await message.reply_text(f"✅ 已添加推送时间: `{text}`", parse_mode="Markdown")
+                        else:
+                            await message.reply_text("⚠️ 未配置 Action 回调")
+                    
+                    elif input_type == "schedule_custom":
+                        # 自定义 Cron
+                        try:
+                            CronTrigger.from_crontab(text)
+                            if self.on_action:
+                                await self.on_action("update_schedule", text)
+                                await message.reply_text(f"✅ 定时任务已更新: `{text}`", parse_mode="Markdown")
+                            else:
+                                await message.reply_text("⚠️ 未配置 Action 回调")
+                        except ValueError:
+                            await message.reply_text("❌ 无效的 Cron 表达式，格式: `分 时 日 月 周`", parse_mode="Markdown")
+                        
                         
                 except Exception as e:
                     await message.reply_text(f"❌ 操作失败: {e}")
@@ -1320,52 +1371,172 @@ class TelegramNotifier(BaseNotifier):
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
-                
+            
             args = context.args
-            if not args:
-                await update.message.reply_text(
-                    "用法: /schedule <时间>\n"
-                    "例: `/schedule 9:30` (每天9:30)\n"
-                    "例: `/schedule 9:30,21:00` (每天两次)\n"
-                    "例: `/schedule 0 22 * * *` (Cron格式)", 
-                    parse_mode="Markdown"
-                )
+            if args:
+                # 有参数时直接设置（向后兼容）
+                input_str = " ".join(args)
+                
+                # 解析时间格式
+                import re
+                time_pattern = re.compile(r'^(\d{1,2}:\d{2})(,\d{1,2}:\d{2})*$')
+                
+                if time_pattern.match(input_str.replace(" ", "")):
+                    times = [t.strip() for t in input_str.replace(" ", "").split(",")]
+                    cron_list = []
+                    for t in times:
+                        h, m = t.split(":")
+                        cron_list.append(f"{m} {h} * * *")
+                    schedule_data = ",".join(cron_list)
+                    display_times = ", ".join(times)
+                else:
+                    try:
+                        CronTrigger.from_crontab(input_str)
+                        schedule_data = input_str
+                        display_times = input_str
+                    except ValueError:
+                        await update.message.reply_text("❌ 格式错误，请使用 `9:30` 或 Cron 表达式", parse_mode="Markdown")
+                        return
+                
+                try:
+                    if self.on_action:
+                        await self.on_action("update_schedule", schedule_data)
+                        await update.message.reply_text(f"✅ 定时任务已更新为: `{display_times}`", parse_mode="Markdown")
+                    else:
+                        await update.message.reply_text("⚠️ 内部错误: 未配置 Action 回调")
+                except Exception as e:
+                    await update.message.reply_text(f"❌ 设置失败: {e}")
                 return
             
-            input_str = " ".join(args)
+            # 无参数时显示交互式时间选择器
+            await _show_schedule_menu(update.message)
+        
+        async def _show_schedule_menu(message):
+            """显示定时任务设置菜单"""
+            # 读取当前配置
+            config = self._read_config()
+            schedule = config.get("schedule", "45 9/3 * * *")  # 默认
             
-            # 解析时间格式
-            import re
-            time_pattern = re.compile(r'^(\d{1,2}:\d{2})(,\d{1,2}:\d{2})*$')
+            # 解析 cron 为友好显示
+            display_time = _cron_to_friendly(schedule)
             
-            if time_pattern.match(input_str.replace(" ", "")):
-                # 友好格式: 9:30 或 9:30,21:00
-                times = [t.strip() for t in input_str.replace(" ", "").split(",")]
-                cron_list = []
-                for t in times:
-                    h, m = t.split(":")
-                    cron_list.append(f"{m} {h} * * *")
-                    
-                schedule_data = ",".join(cron_list)  # 多个 cron 用逗号分隔
-                display_times = ", ".join(times)
-            else:
-                # 尝试作为 Cron 格式解析
-                try:
-                    CronTrigger.from_crontab(input_str)
-                    schedule_data = input_str
-                    display_times = input_str
-                except ValueError:
-                    await update.message.reply_text("❌ 格式错误，请使用 `9:30` 或 Cron 表达式", parse_mode="Markdown")
-                    return
-                    
-            try:
-                if self.on_action:
-                    await self.on_action("update_schedule", schedule_data)
-                    await update.message.reply_text(f"✅ 定时任务已更新为: `{display_times}`", parse_mode="Markdown")
+            lines = [
+                "⏰ *推送时间设置*\n",
+                f"当前: `{display_time}`\n",
+                "选择预设时间或自定义:"
+            ]
+            
+            # 预设时间按钮
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🌅 早晨 9:30", callback_data="schedule_set:9:30"),
+                    InlineKeyboardButton("🌆 晚上 21:00", callback_data="schedule_set:21:00"),
+                ],
+                [
+                    InlineKeyboardButton("☀️ 早+晚 (9:30,21:00)", callback_data="schedule_set:9:30,21:00"),
+                ],
+                [
+                    InlineKeyboardButton("🕐 每小时推送", callback_data="schedule_set:0 * * * *"),
+                    InlineKeyboardButton("🕘 每3小时推送", callback_data="schedule_set:0 */3 * * *"),
+                ],
+                [
+                    InlineKeyboardButton("➕ 添加时间点", callback_data="schedule_add"),
+                    InlineKeyboardButton("📝 自定义Cron", callback_data="schedule_custom"),
+                ],
+                [InlineKeyboardButton("⬅️ 返回菜单", callback_data="menu:main")],
+            ])
+            
+            await message.reply_text(
+                "\n".join(lines),
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        
+        def _cron_to_friendly(cron_str: str) -> str:
+            """将 cron 表达式转换为友好显示"""
+            # 处理多个 cron（逗号分隔）
+            if "," in cron_str:
+                crons = cron_str.split(",")
+                return "; ".join([_cron_to_friendly(c) for c in crons])
+            
+            parts = cron_str.split()
+            if len(parts) != 5:
+                return cron_str  # 无法解析，返回原样
+            
+            m, h, dom, mon, dow = parts
+            
+            # 简单映射
+            if dom == "*" and mon == "*" and dow == "*":
+                if m == "0" and h == "*":
+                    return "每小时整点"
+                if m == "0" and h.startswith("*/"):
+                    interval = h[2:]
+                    return f"每{interval}小时整点"
+                if "," in h:
+                    hours = h.split(",")
+                    return f"每天 {', '.join([f'{h}:{m}' for h in hours])}"
+                if h.isdigit() and m.isdigit():
+                    return f"每天 {h}:{m.zfill(2)}"
+            
+            return cron_str  # 复杂表达式返回原样
+        
+        # 处理 schedule 相关回调
+        async def _handle_schedule_callback(query, data: str):
+            """处理定时任务设置回调"""
+            chat_id = query.message.chat_id
+            
+            if data == "schedule_add":
+                await query.edit_message_text(
+                    "⏰ 请回复要添加的时间点\n\n格式: `HH:MM` (24小时制)\n例: `14:30` 表示下午2点半",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 取消", callback_data="schedule_cancel")]]),
+                    parse_mode="Markdown"
+                )
+                self._pending_input = {"type": "schedule_add", "chat_id": chat_id}
+                return
+            
+            if data == "schedule_custom":
+                await query.edit_message_text(
+                    "📝 请回复 Cron 表达式\n\n格式: `分 时 日 月 周`\n例: `30 9,21 * * *` (每天9:30和21:30)",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 取消", callback_data="schedule_cancel")]]),
+                    parse_mode="Markdown"
+                )
+                self._pending_input = {"type": "schedule_custom", "chat_id": chat_id}
+                return
+            
+            if data == "schedule_cancel":
+                await _show_schedule_menu(query.message)
+                return
+            
+            if data.startswith("schedule_set:"):
+                time_str = data.split(":", 1)[1]
+                
+                # 转换为 cron
+                if ":" in time_str and "/" not in time_str:
+                    # 友好格式: 9:30 或 9:30,21:00
+                    times = time_str.split(",")
+                    cron_list = []
+                    for t in times:
+                        h, m = t.split(":")
+                        cron_list.append(f"{m} {h} * * *")
+                    schedule_data = ",".join(cron_list)
+                    display = time_str
                 else:
-                    await update.message.reply_text("⚠️ 内部错误: 未配置 Action 回调")
-            except Exception as e:
-                await update.message.reply_text(f"❌ 设置失败: {e}")
+                    # 已经是 cron
+                    schedule_data = time_str
+                    display = _cron_to_friendly(time_str)
+                
+                try:
+                    if self.on_action:
+                        await self.on_action("update_schedule", schedule_data)
+                        await query.edit_message_text(
+                            f"✅ 定时任务已更新为: `{display}`",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data="schedule_cancel")]]),
+                            parse_mode="Markdown"
+                        )
+                    else:
+                        await query.answer("⚠️ 未配置 Action 回调", show_alert=True)
+                except Exception as e:
+                    await query.answer(f"❌ 设置失败: {e}", show_alert=True)
         
         # /xp 指令 - 查看 XP 画像
         async def cmd_xp(update, context):
@@ -1833,32 +2004,79 @@ class TelegramNotifier(BaseNotifier):
                 return
             
             args = context.args
-            if not args:
-                # 无参数时显示当前屏蔽列表
-                from database import get_blocked_artists
-                blocked = await get_blocked_artists()
-                if blocked:
-                    lines = ["🚫 *当前屏蔽的画师:*"]
-                    for artist_id, name in blocked:
-                        lines.append(f"  • `{artist_id}` ({name})")
-                    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-                else:
-                    await update.message.reply_text("🚫 屏蔽列表为空\n用法: `/block_artist <画师ID>`", parse_mode="Markdown")
+            if args:
+                # 有参数时直接屏蔽（向后兼容）
+                try:
+                    artist_id = int(args[0])
+                    artist_name = " ".join(args[1:]).strip() if len(args) > 1 else None
+                    
+                    from database import block_artist
+                    await block_artist(artist_id, artist_name)
+                    await update.message.reply_text(f"✅ 已屏蔽画师: `{artist_id}`" + (f" ({artist_name})" if artist_name else ""), parse_mode="Markdown")
+                except ValueError:
+                    await update.message.reply_text("❌ 画师 ID 必须是数字")
+                except Exception as e:
+                    await update.message.reply_text(f"❌ 屏蔽失败: {e}")
                 return
             
-            try:
-                artist_id = int(args[0])
-                artist_name = " ".join(args[1:]).strip() if len(args) > 1 else None
-                
-                from database import block_artist
-                await block_artist(artist_id, artist_name)
-                await update.message.reply_text(f"✅ 已屏蔽画师: `{artist_id}`" + (f" ({artist_name})" if artist_name else ""), parse_mode="Markdown")
-            except ValueError:
-                await update.message.reply_text("❌ 画师 ID 必须是数字")
-            except Exception as e:
-                await update.message.reply_text(f"❌ 屏蔽失败: {e}")
+            # 无参数时显示交互式菜单
+            await _show_block_artist_menu(update.message)
         
-        # /unblock_artist 指令 - 取消屏蔽画师
+        async def _show_block_artist_menu(message, page: int = 0):
+            """显示画师屏蔽管理菜单"""
+            from database import get_blocked_artists
+            blocked = await get_blocked_artists()
+            
+            lines = ["🎨 *画师屏蔽管理*\n"]
+            
+            # 分页显示
+            per_page = 10
+            total_pages = (len(blocked) + per_page - 1) // per_page if blocked else 1
+            page = max(0, min(page, total_pages - 1))
+            
+            start = page * per_page
+            end = start + per_page
+            page_items = blocked[start:end]
+            
+            if blocked:
+                lines.append(f"当前屏蔽 *{len(blocked)}* 个画师 (第 {page+1}/{total_pages} 页):\n")
+            else:
+                lines.append("_暂无屏蔽画师_\n")
+            
+            # 构建按钮网格
+            rows = []
+            row = []
+            for artist_id, name in page_items:
+                display_name = name[:8] + ".." if len(name) > 8 else name
+                row.append(InlineKeyboardButton(f"❎ {display_name}", callback_data=f"block_artist_remove:{artist_id}"))
+                if len(row) == 2:
+                    rows.append(row)
+                    row = []
+            if row:
+                rows.append(row)
+            
+            # 分页按钮
+            nav_row = []
+            if page > 0:
+                nav_row.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"block_artist_page:{page-1}"))
+            if page < total_pages - 1:
+                nav_row.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"block_artist_page:{page+1}"))
+            if nav_row:
+                rows.append(nav_row)
+            
+            # 操作按钮
+            rows.append([InlineKeyboardButton("➕ 添加画师", callback_data="block_artist_add")])
+            rows.append([InlineKeyboardButton("⬅️ 返回菜单", callback_data="menu:main")])
+            
+            keyboard = InlineKeyboardMarkup(rows)
+            
+            await message.reply_text(
+                "\n".join(lines),
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        
+        # /unblock_artist 指令 - 交互式取消屏蔽画师
         async def cmd_unblock_artist(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
@@ -1866,23 +2084,139 @@ class TelegramNotifier(BaseNotifier):
                 return
             
             args = context.args
-            if not args:
-                await update.message.reply_text("用法: `/unblock_artist <画师ID>`", parse_mode="Markdown")
+            if args:
+                # 有参数时直接取消屏蔽（向后兼容）
+                try:
+                    artist_id = int(args[0])
+                    
+                    from database import unblock_artist
+                    result = await unblock_artist(artist_id)
+                    if result:
+                        await update.message.reply_text(f"✅ 已取消屏蔽画师: `{artist_id}`", parse_mode="Markdown")
+                    else:
+                        await update.message.reply_text(f"⚠️ 该画师未在屏蔽列表中: `{artist_id}`", parse_mode="Markdown")
+                except ValueError:
+                    await update.message.reply_text("❌ 画师 ID 必须是数字")
+                except Exception as e:
+                    await update.message.reply_text(f"❌ 取消屏蔽失败: {e}")
                 return
             
-            try:
-                artist_id = int(args[0])
-                
-                from database import unblock_artist
-                result = await unblock_artist(artist_id)
-                if result:
-                    await update.message.reply_text(f"✅ 已取消屏蔽画师: `{artist_id}`", parse_mode="Markdown")
-                else:
-                    await update.message.reply_text(f"⚠️ 该画师未在屏蔽列表中: `{artist_id}`", parse_mode="Markdown")
-            except ValueError:
-                await update.message.reply_text("❌ 画师 ID 必须是数字")
-            except Exception as e:
-                await update.message.reply_text(f"❌ 取消屏蔽失败: {e}")
+            # 无参数时显示交互式选择列表
+            await _show_unblock_artist_menu(update.message)
+        
+        async def _show_unblock_artist_menu(message, page: int = 0):
+            """显示取消画师屏蔽选择菜单"""
+            from database import get_blocked_artists
+            blocked = await get_blocked_artists()
+            
+            if not blocked:
+                await message.reply_text(
+                    "🎨 当前没有屏蔽的画师",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")]])
+                )
+                return
+            
+            lines = ["❎ *选择要取消屏蔽的画师*\n"]
+            
+            # 分页显示
+            per_page = 10
+            total_pages = (len(blocked) + per_page - 1) // per_page
+            page = max(0, min(page, total_pages - 1))
+            
+            start = page * per_page
+            end = start + per_page
+            page_items = blocked[start:end]
+            
+            lines.append(f"共 {len(blocked)} 个画师 (第 {page+1}/{total_pages} 页):\n")
+            
+            # 构建按钮网格
+            rows = []
+            row = []
+            for artist_id, name in page_items:
+                display_name = name[:8] + ".." if len(name) > 8 else name
+                row.append(InlineKeyboardButton(f"❎ {display_name}", callback_data=f"unblock_artist:{artist_id}"))
+                if len(row) == 2:
+                    rows.append(row)
+                    row = []
+            if row:
+                rows.append(row)
+            
+            # 分页按钮
+            nav_row = []
+            if page > 0:
+                nav_row.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"unblock_artist_page:{page-1}"))
+            if page < total_pages - 1:
+                nav_row.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"unblock_artist_page:{page+1}"))
+            if nav_row:
+                rows.append(nav_row)
+            
+            rows.append([InlineKeyboardButton("⬅️ 返回菜单", callback_data="menu:main")])
+            
+            keyboard = InlineKeyboardMarkup(rows)
+            
+            await message.reply_text(
+                "\n".join(lines),
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        
+        # 处理画师屏蔽相关回调
+        async def _handle_block_artist_callback(query, data: str):
+            """处理画师屏蔽管理相关回调"""
+            user_id = query.from_user.id
+            chat_id = query.message.chat_id
+            
+            if data == "block_artist_add":
+                await query.edit_message_text(
+                    "🎨 请回复要屏蔽的画师ID\n\n_可附带画师名称，格式: `12345 画师名`_",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 取消", callback_data="block_artist_cancel")]]),
+                    parse_mode="Markdown"
+                )
+                self._pending_input = {"type": "block_artist", "chat_id": chat_id}
+                return
+            
+            if data == "block_artist_cancel":
+                await _show_block_artist_menu(query.message)
+                return
+            
+            if data.startswith("block_artist_remove:"):
+                artist_id = int(data.split(":", 1)[1])
+                try:
+                    from database import unblock_artist
+                    await unblock_artist(artist_id)
+                    await query.answer(f"✅ 已取消屏蔽画师: {artist_id}")
+                except Exception as e:
+                    await query.answer(f"❌ 失败: {e}", show_alert=True)
+                    return
+                # 刷新菜单
+                await _show_block_artist_menu(query.message)
+                return
+            
+            if data.startswith("block_artist_page:"):
+                page = int(data.split(":", 1)[1])
+                await _show_block_artist_menu(query.message, page)
+                return
+            
+            if data.startswith("unblock_artist:"):
+                artist_id = int(data.split(":", 1)[1])
+                try:
+                    from database import unblock_artist
+                    result = await unblock_artist(artist_id)
+                    if result:
+                        await query.answer(f"✅ 已取消屏蔽画师: {artist_id}")
+                    else:
+                        await query.answer(f"⚠️ 未找到画师: {artist_id}")
+                except Exception as e:
+                    await query.answer(f"❌ 失败: {e}", show_alert=True)
+                    return
+                # 刷新菜单
+                await _show_unblock_artist_menu(query.message)
+                return
+            
+            if data.startswith("unblock_artist_page:"):
+                page = int(data.split(":", 1)[1])
+                await _show_unblock_artist_menu(query.message, page)
+                return
         
         self._app.add_handler(CommandHandler("push", cmd_push))
         self._app.add_handler(CommandHandler("schedule", cmd_schedule))
