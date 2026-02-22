@@ -159,11 +159,11 @@ class TelegramNotifier(BaseNotifier):
         while True:
             try:
                 task = await self.send_queue.get()
-                illusts, custom_title = task
+                illusts, custom_title, batch_mode = task
                 
                 try:
-                    # 调用原始发送逻辑
-                    await self._send_direct(illusts, custom_title)
+                    # 调用原始发送逻辑，使用任务指定的 batch_mode
+                    await self._send_direct(illusts, custom_title, batch_mode)
                 except Exception as e:
                     logger.error(f"推送任务执行失败: {e}")
                 
@@ -2598,20 +2598,23 @@ class TelegramNotifier(BaseNotifier):
         if not illusts:
             return []
         
-        # 将任务加入队列
-        await self.send_queue.put((illusts, custom_title))
-        logger.info(f"已将 {len(illusts)} 个作品加入推送队列")
+        # 将任务加入队列，同时捕获当前的 batch_mode 避免竞态
+        await self.send_queue.put((illusts, custom_title, self.batch_mode))
+        logger.info(f"已将 {len(illusts)} 个作品加入推送队列 (mode={self.batch_mode})")
         
         # 返回占位符，表示已接受 (避免阻塞调用方)
         return [-1]
 
-    async def _send_direct(self, illusts: list[Illust], custom_title: str = None) -> list[int]:
+    async def _send_direct(self, illusts: list[Illust], custom_title: str = None, batch_mode: str = None) -> list[int]:
         """直接发送推送 (内部方法)"""
         if not illusts:
             return []
         
+        # 使用传入的 batch_mode，若未指定则回退到 self.batch_mode
+        mode = batch_mode if batch_mode is not None else self.batch_mode
+        
         # Telegraph 批量模式
-        if self.batch_mode == "telegraph" and len(illusts) > 1:
+        if mode == "telegraph" and len(illusts) > 1:
             return await self._send_batch_telegraph(illusts, custom_title)
         
         # 逐条发送模式
