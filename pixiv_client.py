@@ -546,8 +546,23 @@ class PixivClient:
     
     def _parse_illust(self, data: dict) -> Illust:
         """解析API返回的作品数据"""
-        tags = [t["name"] for t in data.get("tags", [])]
+        raw_tags = data.get("tags", [])
+        tags = [t["name"] for t in raw_tags]
         
+        # 提取翻译并异步保存
+        try:
+            import database as db
+            tag_translations = []
+            for t in raw_tags:
+                if t.get("translated_name"):
+                    tag_translations.append((t["name"], t["translated_name"]))
+            
+            if tag_translations:
+                # Fire and forget - 保存标签翻译
+                asyncio.create_task(db.save_tag_translations(tag_translations))
+        except Exception as e:
+            logger.warning(f"保存标签翻译失败: {e}")
+
         # 获取所有页的原图URL
         image_urls = []
         if data.get("meta_single_page", {}).get("original_image_url"):

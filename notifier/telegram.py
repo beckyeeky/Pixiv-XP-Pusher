@@ -148,6 +148,35 @@ class TelegramNotifier(BaseNotifier):
             logger.info(f"Topic 分流规则: {list(self.topic_rules.keys())}")
         if self.batch_mode == "telegraph":
             logger.info("批量模式: Telegraph")
+        
+        # 推送队列
+        self.send_queue = asyncio.Queue()
+        self.worker_task = asyncio.create_task(self._process_queue())
+
+    async def _process_queue(self):
+        """推送队列消费者"""
+        logger.info("推送队列 worker 启动")
+        while True:
+            try:
+                task = await self.send_queue.get()
+                illusts, custom_title = task
+                
+                try:
+                    # 调用原始发送逻辑
+                    await self._send_direct(illusts, custom_title)
+                except Exception as e:
+                    logger.error(f"推送任务执行失败: {e}")
+                
+                self.send_queue.task_done()
+                
+                # 批次间歇，避免刷屏
+                await asyncio.sleep(2.0)
+            except asyncio.CancelledError:
+                logger.info("推送队列 worker 停止")
+                break
+            except Exception as e:
+                logger.error(f"推送队列 worker 异常: {e}")
+                await asyncio.sleep(5)
 
     async def _send_typing(self, chat_id: int):
         """发送 typing 状态"""
@@ -1377,6 +1406,26 @@ class TelegramNotifier(BaseNotifier):
             status_message_ids = []
             user_message_ids = []
             
+            # 扩展关键词 (通过翻译反查)
+            import database as db_mod
+            expanded_keywords = []
+            has_expansion = False
+            for k in keywords:
+                original = await db_mod.get_original_tag(k)
+                if original and original.lower() != k.lower():
+                    expanded_keywords.append(original)
+                    has_expansion = True
+                else:
+                    expanded_keywords.append(k)
+            
+            if has_expansion:
+                 expansion_msg = await self.bot.send_message(
+                     chat_id, 
+                     f"🔍 智能关联: {' | '.join(keywords)} → {' | '.join(expanded_keywords)}"
+                 )
+                 status_message_ids.append(expansion_msg.message_id)
+                 keywords = expanded_keywords
+            
             # 获取会话中的向导消息ID和用户输入消息ID
             session = self._search_sessions.get(user_id, {})
             status_message_ids = session.get("message_ids", []).copy()
@@ -2530,7 +2579,19 @@ class TelegramNotifier(BaseNotifier):
             logger.error(f"停止 Telegram 轮询时出错: {e}")
     
     async def send(self, illusts: list[Illust], custom_title: str = None) -> list[int]:
-        """发送推送"""
+        """发送推送 (异步队列)"""
+        if not illusts:
+            return []
+        
+        # 将任务加入队列
+        await self.send_queue.put((illusts, custom_title))
+        logger.info(f"已将 {len(illusts)} 个作品加入推送队列")
+        
+        # 返回占位符，表示已接受 (避免阻塞调用方)
+        return [-1]
+
+    async def _send_direct(self, illusts: list[Illust], custom_title: str = None) -> list[int]:
+        """直接发送推送 (内部方法)"""
         if not illusts:
             return []
         
@@ -2546,7 +2607,7 @@ class TelegramNotifier(BaseNotifier):
                 is_sent = await self._send_single(illust)
                 if is_sent:
                     success_ids.append(illust.id)
-                await asyncio.sleep(1)  # 避免触发限流
+                await asyncio.sleep(2.0)  # 避免触发限流 (增加到2s)
             except Exception as e:
                 logger.error(f"发送作品 {illust.id} 失败: {e}")
         

@@ -172,7 +172,7 @@ class AsyncRateLimiter:
 
 def retry_async(max_retries: int = 3, delay: float = 1.0, backoff: float = 2.0):
     """
-    异步重试装饰器
+    异步重试装饰器 (支持 429 Rate Limit 退避)
     """
     def decorator(func):
         @wraps(func)
@@ -185,12 +185,31 @@ def retry_async(max_retries: int = 3, delay: float = 1.0, backoff: float = 2.0):
                     return await func(*args, **kwargs)
                 except Exception as e:
                     last_exception = e
+                    error_msg = str(e)
+                    
+                    # 检查是否为 429 Too Many Requests
+                    is_rate_limit = "429" in error_msg or "Too Many Requests" in error_msg
+                    
                     if attempt < max_retries:
-                        logging.warning(
-                            f"{func.__name__} 失败 (尝试 {attempt + 1}/{max_retries + 1}): {e}"
-                        )
-                        await asyncio.sleep(current_delay)
-                        current_delay *= backoff
+                        wait_time = current_delay
+                        
+                        if is_rate_limit:
+                            # 遇到限流，大幅增加等待时间
+                            wait_time = max(10.0, current_delay * 2)
+                            logging.warning(
+                                f"{func.__name__} 触发限流 (尝试 {attempt + 1}/{max_retries + 1}): {e}，等待 {wait_time}s..."
+                            )
+                        else:
+                            logging.warning(
+                                f"{func.__name__} 失败 (尝试 {attempt + 1}/{max_retries + 1}): {e}，等待 {wait_time}s..."
+                            )
+                        
+                        await asyncio.sleep(wait_time)
+                        
+                        if is_rate_limit:
+                            current_delay = wait_time * 1.5  # 限流后指数退避
+                        else:
+                            current_delay *= backoff
             
             raise last_exception
         return wrapper
