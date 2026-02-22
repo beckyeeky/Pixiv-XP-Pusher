@@ -1128,17 +1128,25 @@ class TelegramNotifier(BaseNotifier):
             self._search_sessions[user_id]["message_ids"].append(msg.message_id)
         
         async def _do_search(user_id: int, chat_id: int, keywords: list, date_range_days: int, offset: int):
-            """执行实际搜索"""
+            """执行实际搜索（Streaming模式：中间状态消息自动删除）"""
             if not keywords:
                 await self.bot.send_message(chat_id, "❌ 关键词不能为空")
                 return
             
-            await self.bot.send_message(
+            # 收集所有需要删除的状态消息ID
+            status_message_ids = []
+            
+            # 获取会话中的向导消息ID并合并
+            session = self._search_sessions.get(user_id, {})
+            status_message_ids = session.get("message_ids", []).copy()
+            
+            msg = await self.bot.send_message(
                 chat_id, 
                 f"🔍 搜索: {' | '.join(keywords)}\n"
                 f"📅 时间: {'不限' if date_range_days == 0 else f'近{date_range_days}天'}\n"
                 f"📄 批次: 第 {offset//20 + 1} 批 ({offset+1}-{offset+20})"
             )
+            status_message_ids.append(msg.message_id)
             
             typing_task = asyncio.create_task(self._keep_typing(chat_id))
             try:
@@ -1152,7 +1160,7 @@ class TelegramNotifier(BaseNotifier):
                     # 搜索作品
                     illusts = await self.client.search_illusts(
                         tags=keywords,
-                        bookmark_threshold=0,  # 不限收藏数，让用户看到更多
+                        bookmark_threshold=0,
                         date_range_days=date_range_days if date_range_days > 0 else None,
                         limit=limit,
                         content_type=content_type
@@ -1177,14 +1185,22 @@ class TelegramNotifier(BaseNotifier):
                         )
                         return
                     
-                    # 发送
-                    await self.bot.send_message(chat_id, f"📦 找到 {len(filtered)} 张符合条件的作品，生成画册...")
+                    # 发送进度消息
+                    progress_msg = await self.bot.send_message(chat_id, f"📦 找到 {len(filtered)} 张符合条件的作品，生成画册...")
+                    status_message_ids.append(progress_msg.message_id)
                     
                     original_mode = self.batch_mode
                     self.batch_mode = "telegraph"
                     search_title = f"{' | '.join(keywords)} (第{offset//20+1}批)"
                     sent_ids = await self.send(filtered, search_title)
                     self.batch_mode = original_mode
+                    
+                    # Streaming清理：删除所有状态消息，只保留最终结果
+                    for msg_id in status_message_ids:
+                        try:
+                            await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                        except Exception:
+                            pass  # 忽略删除失败（可能消息已不存在）
                     
                     if sent_ids:
                         msg = f"✅ 推送完成！共 {len(sent_ids)} 张\n"
