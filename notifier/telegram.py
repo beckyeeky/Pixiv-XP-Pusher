@@ -733,6 +733,11 @@ class TelegramNotifier(BaseNotifier):
                 await self._handle_menu_callback(query, data)
                 return
             
+            # ===== 推送菜单回调处理 =====
+            if data.startswith("push"):
+                await _handle_push_callback(query, data)
+                return
+            
             # ===== 搜索向导回调处理 =====
             if data.startswith("search_"):
                 await _handle_search_callback(query, data)
@@ -908,6 +913,46 @@ class TelegramNotifier(BaseNotifier):
             text = message.text.strip()
             chat_id = message.chat_id
             
+            # ===== 处理 Push 会话 =====
+            push_session = self._push_sessions.get(user_id)
+            if push_session:
+                step = push_session.get("step")
+                
+                # 保存用户输入消息ID
+                if "user_message_ids" not in push_session:
+                    push_session["user_message_ids"] = []
+                push_session["user_message_ids"].append(message.message_id)
+                
+                if step == "input_artist_id":
+                    if not text.isdigit():
+                        await message.reply_text("❌ 画师ID必须是数字")
+                        return
+                    
+                    artist_id = int(text)
+                    # 删除消息并执行
+                    await _delete_push_messages(user_id, chat_id)
+                    if user_id in self._push_sessions:
+                        del self._push_sessions[user_id]
+                    
+                    # 执行画师推送
+                    await _handle_push_direct(user_id, chat_id, ["a", str(artist_id)])
+                    return
+                
+                elif step == "input_illust_id":
+                    if not text.isdigit():
+                        await message.reply_text("❌ 作品ID必须是数字")
+                        return
+                    
+                    illust_id = int(text)
+                    # 删除消息并执行
+                    await _delete_push_messages(user_id, chat_id)
+                    if user_id in self._push_sessions:
+                        del self._push_sessions[user_id]
+                    
+                    # 执行作品推送
+                    await _handle_push_direct(user_id, chat_id, [str(illust_id)])
+                    return
+            
             # ===== 处理搜索向导会话 =====
             search_session = self._search_sessions.get(user_id)
             if search_session:
@@ -1066,7 +1111,7 @@ class TelegramNotifier(BaseNotifier):
                 await self.handle_feedback(illust_id, "dislike", chat_id=message.chat_id)
                 await message.reply_text("👎 已记录不喜欢")
                 
-        # /push 指令 (支持 /push 或 /push <ID> 或 /push a <画师ID>)
+        # /push 指令 - 交互式推送菜单
         async def cmd_push(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
@@ -1075,78 +1120,212 @@ class TelegramNotifier(BaseNotifier):
                 return
             
             chat_id = update.message.chat_id
+            args = context.args
+            
+            # 有参数时直接处理（向后兼容）
+            if args:
+                await _handle_push_direct(user_id, chat_id, args)
+                return
+            
+            # 无参数时显示交互式菜单
+            self._push_sessions[user_id] = {"step": "select_mode", "message_ids": [], "user_message_ids": []}
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 今日精选推送", callback_data="push:today")],
+                [InlineKeyboardButton("🎨 画师作品集", callback_data="push:artist")],
+                [InlineKeyboardButton("📌 指定作品ID", callback_data="push:illust")],
+                [InlineKeyboardButton("❌ 取消", callback_data="push_cancel")],
+            ])
+            
+            msg = await update.message.reply_text(
+                "🚀 *推送模式选择*\n\n请选择要执行的推送类型:",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+            self._push_sessions[user_id]["message_ids"].append(msg.message_id)
+        
+        async def _handle_push_direct(user_id: int, chat_id: int, args: list):
+            """直接处理带参数的 push 命令"""
             typing_task = asyncio.create_task(self._keep_typing(chat_id))
             try:
-                args = context.args
-                if args and args[0].isdigit():
+                if args[0].isdigit():
                     # 推送指定作品
                     illust_id = int(args[0])
-                    await update.message.reply_text(f"🔍 正在获取作品 {illust_id}...")
+                    status_msg = await self.bot.send_message(chat_id, f"🔍 正在获取作品 {illust_id}...")
                     
                     try:
                         if self.client:
                             illust = await self.client.get_illust_detail(illust_id)
                             if illust:
-                                await update.message.reply_text(f"📨 正在推送: {illust.title}...")
+                                await self.bot.edit_message_text(
+                                    f"📨 正在推送: {illust.title}...",
+                                    chat_id=chat_id,
+                                    message_id=status_msg.message_id
+                                )
                                 sent = await self.send([illust])
+                                # 删除状态消息
+                                try:
+                                    await self.bot.delete_message(chat_id, status_msg.message_id)
+                                except:
+                                    pass
                                 if sent:
-                                    await update.message.reply_text(f"✅ 推送成功: {illust.title}")
+                                    await self.bot.send_message(chat_id, f"✅ 推送成功: {illust.title}")
                                 else:
-                                    await update.message.reply_text("❌ 推送失败")
+                                    await self.bot.send_message(chat_id, "❌ 推送失败")
                             else:
-                                await update.message.reply_text(f"❌ 未找到作品 {illust_id}")
+                                await self.bot.edit_message_text(
+                                    f"❌ 未找到作品 {illust_id}",
+                                    chat_id=chat_id,
+                                    message_id=status_msg.message_id
+                                )
                         else:
-                            await update.message.reply_text("⚠️ Pixiv 客户端未初始化")
+                            await self.bot.edit_message_text(
+                                "⚠️ Pixiv 客户端未初始化",
+                                chat_id=chat_id,
+                                message_id=status_msg.message_id
+                            )
                     except Exception as e:
                         logger.error(f"手动推送 {illust_id} 失败: {e}")
-                        await update.message.reply_text(f"❌ 推送失败: {e}")
-                elif args and len(args) > 1 and args[0] == "a" and args[1].isdigit():
+                        await self.bot.edit_message_text(
+                            f"❌ 推送失败: {e}",
+                            chat_id=chat_id,
+                            message_id=status_msg.message_id
+                        )
+                        
+                elif len(args) > 1 and args[0] == "a" and args[1].isdigit():
                     # 推送指定画师近1年的随机作品
                     artist_id = int(args[1])
-                    await update.message.reply_text(f"🔍 正在获取画师 {artist_id} 的作品库...")
+                    status_msg = await self.bot.send_message(chat_id, f"🔍 正在获取画师 {artist_id} 的作品库...")
                     
                     try:
                         if self.client:
                             from datetime import datetime, timedelta, timezone
                             import random
-                            # 限制获取最近100张（或者1年内的），避免API超时
-                            # 使用 UTC 时区避免 datetime 比较错误
                             one_year_ago = datetime.now(timezone.utc) - timedelta(days=365)
                             illusts = await self.client.get_user_illusts(artist_id, since=one_year_ago, limit=100)
                             
                             if illusts:
                                 sample_size = min(20, len(illusts))
                                 sampled = random.sample(illusts, sample_size)
-                                await update.message.reply_text(f"🎲 正在为您生成画师 {artist_id} 的精选集... (抽取了 {sample_size}/{len(illusts)} 张)")
+                                await self.bot.edit_message_text(
+                                    f"🎲 正在为您生成画师 {artist_id} 的精选集... (抽取了 {sample_size}/{len(illusts)} 张)",
+                                    chat_id=chat_id,
+                                    message_id=status_msg.message_id
+                                )
                                 
-                                # 临时强制开启批量模式进行聚合发送
                                 original_mode = self.batch_mode
                                 self.batch_mode = "telegraph"
                                 custom_title = f"画师 {artist_id} 精选集"
                                 sent_ids = await self.send(sampled, custom_title)
                                 self.batch_mode = original_mode
                                 
+                                # 删除状态消息
+                                try:
+                                    await self.bot.delete_message(chat_id, status_msg.message_id)
+                                except:
+                                    pass
+                                
                                 if sent_ids:
-                                    await update.message.reply_text(f"✅ 画师作品集生成完毕 (共 {len(sent_ids)} 张图)")
+                                    await self.bot.send_message(chat_id, f"✅ 画师作品集生成完毕 (共 {len(sent_ids)} 张图)")
                                 else:
-                                    await update.message.reply_text("❌ 生成画师作品集失败")
+                                    await self.bot.send_message(chat_id, "❌ 生成画师作品集失败")
                             else:
-                                await update.message.reply_text(f"❌ 未找到画师 {artist_id} 在近一年内的公开作品")
+                                await self.bot.edit_message_text(
+                                    f"❌ 未找到画师 {artist_id} 在近一年内的公开作品",
+                                    chat_id=chat_id,
+                                    message_id=status_msg.message_id
+                                )
                         else:
-                            await update.message.reply_text("⚠️ Pixiv 客户端未初始化")
+                            await self.bot.edit_message_text(
+                                "⚠️ Pixiv 客户端未初始化",
+                                chat_id=chat_id,
+                                message_id=status_msg.message_id
+                            )
                     except Exception as e:
                         logger.error(f"画师随机推送 {artist_id} 失败: {e}")
-                        await update.message.reply_text(f"❌ 推送失败: {e}")
+                        await self.bot.edit_message_text(
+                            f"❌ 推送失败: {e}",
+                            chat_id=chat_id,
+                            message_id=status_msg.message_id
+                        )
                 else:
                     # 触发全量推送任务
-                    await update.message.reply_text("🚀 收到指令，正在启动推送任务...")
+                    await self.bot.send_message(chat_id, "🚀 收到指令，正在启动推送任务...")
                     if self.on_action:
                         await self.on_action("run_task", None)
                     else:
-                        await update.message.reply_text("⚠️ 内部错误: 未配置 Action 回调")
+                        await self.bot.send_message(chat_id, "⚠️ 内部错误: 未配置 Action 回调")
             finally:
                 typing_task.cancel()
+        
+        # 处理 push 相关回调
+        async def _handle_push_callback(query, data: str):
+            """处理推送菜单回调"""
+            user_id = query.from_user.id
+            chat_id = query.message.chat_id
+            
+            if data == "push_cancel":
+                # 删除所有消息
+                await _delete_push_messages(user_id, chat_id)
+                if user_id in self._push_sessions:
+                    del self._push_sessions[user_id]
+                await query.answer("已取消")
+                return
+            
+            if data == "push:today":
+                # 今日精选推送
+                await query.edit_message_text("🚀 正在启动今日精选推送...")
+                if self.on_action:
+                    await self.on_action("run_task", None)
+                else:
+                    await query.edit_message_text("⚠️ 内部错误: 未配置 Action 回调")
+                if user_id in self._push_sessions:
+                    del self._push_sessions[user_id]
+                return
+            
+            if data == "push:artist":
+                session = self._push_sessions.get(user_id, {})
+                session["step"] = "input_artist_id"
                 
+                await query.edit_message_text(
+                    "🎨 *画师作品集*\n\n请输入画师ID:\n\n_例: `16419396`_",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 取消", callback_data="push_cancel")]]),
+                    parse_mode="Markdown"
+                )
+                return
+            
+            if data == "push:illust":
+                session = self._push_sessions.get(user_id, {})
+                session["step"] = "input_illust_id"
+                
+                await query.edit_message_text(
+                    "📌 *指定作品推送*\n\n请输入作品ID:\n\n_例: `12345678`_",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 取消", callback_data="push_cancel")]]),
+                    parse_mode="Markdown"
+                )
+                return
+        
+        async def _delete_push_messages(user_id: int, chat_id: int):
+            """删除 push 会话的所有消息"""
+            session = self._push_sessions.get(user_id)
+            if not session:
+                return
+            # 删除向导消息
+            for msg_id in session.get("message_ids", []):
+                try:
+                    await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                except:
+                    pass
+            # 删除用户输入消息
+            for msg_id in session.get("user_message_ids", []):
+                try:
+                    await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                except:
+                    pass
+        
+        # Push 会话状态存储
+        self._push_sessions = {}  # user_id -> {step, message_ids, user_message_ids}
+        
         # 搜索会话状态存储
         self._search_sessions = {}  # user_id -> {step, date_range, offset, keywords, message_ids, user_message_ids}
         
