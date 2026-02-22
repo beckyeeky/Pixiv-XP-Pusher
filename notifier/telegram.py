@@ -576,14 +576,15 @@ class TelegramNotifier(BaseNotifier):
                     parse_mode="Markdown"
                 )
             elif sub_action == "limit":
-                await query.edit_message_text(
+                msg = await query.edit_message_text(
                     "📊 请回复每日推送上限 (数字)\n\n_例如: 30_",
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton("⬅️ 取消", callback_data="menu:settings")
                     ]]),
                     parse_mode="Markdown"
                 )
-                self._pending_input = {"type": "set_limit", "chat_id": query.message.chat_id}
+                prompt_id = msg.message_id if hasattr(msg, "message_id") else query.message.message_id
+                self._pending_input = {"type": "set_limit", "chat_id": query.message.chat_id, "prompt_id": prompt_id}
             elif sub_action == "schedule":
                 if self.on_action:
                     await self.on_action("show_schedule", None)
@@ -1044,7 +1045,8 @@ class TelegramNotifier(BaseNotifier):
             
             # ===== 处理等待输入 =====
             if self._pending_input and self._pending_input.get("chat_id") == message.chat_id:
-                input_type = self._pending_input.get("type")
+                pending = self._pending_input
+                input_type = pending.get("type") if pending else None
                 self._pending_input = None  # 清除状态，避免死循环
                 
                 try:
@@ -1075,6 +1077,19 @@ class TelegramNotifier(BaseNotifier):
                         limit = int(text)
                         # 更新配置
                         self._save_config_value("filter", "daily_limit", limit)
+                        
+                        # 删除提示消息与用户输入消息（Streaming）
+                        try:
+                            prompt_id = pending.get("prompt_id") if isinstance(pending, dict) else None
+                            if prompt_id:
+                                await self.bot.delete_message(chat_id=message.chat_id, message_id=prompt_id)
+                        except Exception:
+                            pass
+                        try:
+                            await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
+                        except Exception:
+                            pass
+                        
                         await message.reply_text(f"✅ 每日推送上限已设置为: `{limit}`", parse_mode="Markdown")
                     
                     elif input_type == "schedule_add":

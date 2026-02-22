@@ -595,7 +595,7 @@ class PixivClient:
             view_count=data.get("total_view", 0),
             page_count=data.get("page_count", 1),
             image_urls=image_urls,
-            is_r18="R-18" in tags,
+            is_r18=("R-18" in tags or data.get("x_restrict", 0) == 1),
             ai_type=data.get("illust_ai_type", 0),
             create_date=create_date,
             type=data.get("type", "illust")

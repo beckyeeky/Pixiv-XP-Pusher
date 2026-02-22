@@ -242,13 +242,17 @@ class ContentFilter:
             # 支持 bool (旧配置) 和 str (新配置: safe, mixed, r18_only)
             mode_str = str(self.r18_mode).lower()
             
+            # R18 判定增强：标签显式 + 作品 x_restrict + 保险检查
+            has_r18_tag = any(t.lower().replace(" ", "") in ("r-18", "r18") for t in (illust.tags or []))
+            is_r18 = bool(getattr(illust, "is_r18", False) or getattr(illust, "x_restrict", 0) == 1 or has_r18_tag)
+            
             if mode_str in ("true", "r18_only", "pure"):
                 # 纯 18+ 模式：只允许 R-18
-                if not illust.is_r18:
+                if not is_r18:
                     continue
             elif mode_str in ("safe", "18-", "clean"):
                 # 净网模式：禁止 R-18
-                if illust.is_r18:
+                if is_r18:
                     continue
             else:
                 # 默认/mixed/neutral：不因 R-18 属性过滤，全凭匹配度
