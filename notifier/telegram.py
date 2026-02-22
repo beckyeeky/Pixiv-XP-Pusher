@@ -738,6 +738,11 @@ class TelegramNotifier(BaseNotifier):
                 await _handle_search_callback(query, data)
                 return
             
+            # ===== 屏蔽管理回调处理 =====
+            if data.startswith(("block_", "unblock:")):
+                await _handle_block_callback(query, data)
+                return
+            
             if data == "batch_like":
                 # 显示作品选择按钮
                 import database as db
@@ -898,6 +903,11 @@ class TelegramNotifier(BaseNotifier):
             if search_session:
                 step = search_session.get("step")
                 
+                # 保存用户输入消息ID用于后续删除
+                if "user_message_ids" not in search_session:
+                    search_session["user_message_ids"] = []
+                search_session["user_message_ids"].append(message.message_id)
+                
                 if step == "input_batch":
                     # 处理批次输入
                     if not text.isdigit():
@@ -942,7 +952,7 @@ class TelegramNotifier(BaseNotifier):
                     date_range = search_session.get("date_range", 0)
                     offset = search_session.get("offset", 0)
                     
-                    # 删除向导消息
+                    # 删除向导消息和用户输入消息
                     await _delete_search_guide_messages(user_id, chat_id)
                     
                     await _do_search(user_id, chat_id, keywords, date_range, offset)
@@ -1087,7 +1097,7 @@ class TelegramNotifier(BaseNotifier):
                 typing_task.cancel()
                 
         # 搜索会话状态存储
-        self._search_sessions = {}  # user_id -> {step, date_range, offset, keywords, message_ids}
+        self._search_sessions = {}  # user_id -> {step, date_range, offset, keywords, message_ids, user_message_ids}
         
         # /search 指令 - 交互式定向搜图
         async def cmd_search(update, context):
@@ -1107,7 +1117,7 @@ class TelegramNotifier(BaseNotifier):
                     return
             
             # 新模式：启动交互式向导
-            self._search_sessions[user_id] = {"step": "select_time", "message_ids": []}
+            self._search_sessions[user_id] = {"step": "select_time", "message_ids": [], "user_message_ids": []}
             
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📅 不限时间", callback_data="search_time:0")],
@@ -1135,10 +1145,12 @@ class TelegramNotifier(BaseNotifier):
             
             # 收集所有需要删除的状态消息ID
             status_message_ids = []
+            user_message_ids = []
             
-            # 获取会话中的向导消息ID并合并
+            # 获取会话中的向导消息ID和用户输入消息ID
             session = self._search_sessions.get(user_id, {})
             status_message_ids = session.get("message_ids", []).copy()
+            user_message_ids = session.get("user_message_ids", []).copy()
             
             msg = await self.bot.send_message(
                 chat_id, 
@@ -1195,12 +1207,17 @@ class TelegramNotifier(BaseNotifier):
                     sent_ids = await self.send(filtered, search_title)
                     self.batch_mode = original_mode
                     
-                    # Streaming清理：删除所有状态消息，只保留最终结果
+                    # Streaming清理：删除所有状态消息和用户输入，只保留最终结果
                     for msg_id in status_message_ids:
                         try:
                             await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
                         except Exception:
-                            pass  # 忽略删除失败（可能消息已不存在）
+                            pass
+                    for msg_id in user_message_ids:
+                        try:
+                            await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                        except Exception:
+                            pass
                     
                     if sent_ids:
                         msg = f"✅ 推送完成！共 {len(sent_ids)} 张\n"
@@ -1221,16 +1238,24 @@ class TelegramNotifier(BaseNotifier):
                 del self._search_sessions[user_id]
         
         async def _delete_search_guide_messages(user_id: int, chat_id: int):
-            """删除搜索向导的所有消息"""
+            """删除搜索向导的所有消息（包括用户输入）"""
             session = self._search_sessions.get(user_id)
             if not session:
                 return
+            # 删除向导消息
             message_ids = session.get("message_ids", [])
             for msg_id in message_ids:
                 try:
                     await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
                 except Exception as e:
                     logger.debug(f"删除向导消息 {msg_id} 失败: {e}")
+            # 删除用户输入消息
+            user_message_ids = session.get("user_message_ids", [])
+            for msg_id in user_message_ids:
+                try:
+                    await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                except Exception as e:
+                    logger.debug(f"删除用户消息 {msg_id} 失败: {e}")
         
         # 处理搜索向导的回调
         async def _handle_search_callback(query, data: str):
@@ -1404,7 +1429,7 @@ class TelegramNotifier(BaseNotifier):
             except Exception as e:
                 await update.message.reply_text(f"❌ 获取失败: {e}")
         
-        # /block 指令 - 快速屏蔽标签
+        # /block 指令 - 交互式标签屏蔽管理
         async def cmd_block(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
@@ -1412,26 +1437,78 @@ class TelegramNotifier(BaseNotifier):
                 return
             
             args = context.args
-            if not args:
-                # 无参数时显示当前屏蔽列表
-                from database import get_blocked_tags
-                blocked = await get_blocked_tags()
-                if blocked:
-                    await update.message.reply_text(f"🚫 当前屏蔽列表:\n`{', '.join(blocked)}`", parse_mode="Markdown")
-                else:
-                    await update.message.reply_text("🚫 屏蔽列表为空\n用法: `/block <tag>` 添加屏蔽", parse_mode="Markdown")
+            if args:
+                # 有参数时直接屏蔽（向后兼容）
+                tag = " ".join(args).strip()
+                try:
+                    from database import block_tag
+                    await block_tag(tag)
+                    await update.message.reply_text(f"✅ 已屏蔽标签: `{tag}`", parse_mode="Markdown")
+                except Exception as e:
+                    await update.message.reply_text(f"❌ 屏蔽失败: {e}")
                 return
             
-            tag = " ".join(args).strip()
-            
-            try:
-                from database import block_tag
-                await block_tag(tag)
-                await update.message.reply_text(f"✅ 已屏蔽标签: `{tag}`", parse_mode="Markdown")
-            except Exception as e:
-                await update.message.reply_text(f"❌ 屏蔽失败: {e}")
+            # 无参数时显示交互式菜单
+            await _show_block_menu(update.message)
         
-        # /unblock 指令 - 取消屏蔽标签
+        async def _show_block_menu(message, page: int = 0):
+            """显示标签屏蔽管理菜单"""
+            from database import get_blocked_tags
+            blocked = await get_blocked_tags()
+            
+            lines = ["🚫 *标签屏蔽管理*\n"]
+            
+            # 分页显示
+            per_page = 12
+            total_pages = (len(blocked) + per_page - 1) // per_page if blocked else 1
+            page = max(0, min(page, total_pages - 1))
+            
+            start = page * per_page
+            end = start + per_page
+            page_items = blocked[start:end]
+            
+            if blocked:
+                lines.append(f"当前屏蔽 *{len(blocked)}* 个标签 (第 {page+1}/{total_pages} 页):\n")
+            else:
+                lines.append("_暂无屏蔽标签_\n")
+            
+            # 构建按钮网格
+            rows = []
+            row = []
+            for tag in page_items:
+                # 标签名截断显示
+                display_tag = tag[:10] + ".." if len(tag) > 10 else tag
+                row.append(InlineKeyboardButton(f"❎ {display_tag}", callback_data=f"block_remove:{tag}"))
+                if len(row) == 3:
+                    rows.append(row)
+                    row = []
+            if row:
+                rows.append(row)
+            
+            # 分页按钮
+            nav_row = []
+            if page > 0:
+                nav_row.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"block_page:{page-1}"))
+            if page < total_pages - 1:
+                nav_row.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"block_page:{page+1}"))
+            if nav_row:
+                rows.append(nav_row)
+            
+            # 操作按钮
+            rows.append([
+                InlineKeyboardButton("➕ 添加标签", callback_data="block_add"),
+            ])
+            rows.append([InlineKeyboardButton("⬅️ 返回菜单", callback_data="menu:main")])
+            
+            keyboard = InlineKeyboardMarkup(rows)
+            
+            await message.reply_text(
+                "\n".join(lines),
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        
+        # /unblock 指令 - 交互式取消屏蔽
         async def cmd_unblock(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
@@ -1439,21 +1516,136 @@ class TelegramNotifier(BaseNotifier):
                 return
             
             args = context.args
-            if not args:
-                await update.message.reply_text("用法: `/unblock <tag>`", parse_mode="Markdown")
+            if args:
+                # 有参数时直接取消屏蔽（向后兼容）
+                tag = " ".join(args).strip()
+                try:
+                    from database import unblock_tag
+                    result = await unblock_tag(tag)
+                    if result:
+                        await update.message.reply_text(f"✅ 已取消屏蔽标签: `{tag}`", parse_mode="Markdown")
+                    else:
+                        await update.message.reply_text(f"⚠️ 该标签未在屏蔽列表中: `{tag}`", parse_mode="Markdown")
+                except Exception as e:
+                    await update.message.reply_text(f"❌ 取消屏蔽失败: {e}")
                 return
             
-            tag = " ".join(args).strip()
+            # 无参数时显示交互式选择列表
+            await _show_unblock_menu(update.message)
+        
+        async def _show_unblock_menu(message, page: int = 0):
+            """显示取消屏蔽选择菜单"""
+            from database import get_blocked_tags
+            blocked = await get_blocked_tags()
             
-            try:
-                from database import unblock_tag
-                result = await unblock_tag(tag)
-                if result:
-                    await update.message.reply_text(f"✅ 已取消屏蔽: `{tag}`", parse_mode="Markdown")
-                else:
-                    await update.message.reply_text(f"⚠️ 该标签未在屏蔽列表中: `{tag}`", parse_mode="Markdown")
-            except Exception as e:
-                await update.message.reply_text(f"❌ 取消屏蔽失败: {e}")
+            if not blocked:
+                await message.reply_text(
+                    "🚫 当前没有屏蔽的标签",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")]])
+                )
+                return
+            
+            lines = ["❎ *选择要取消屏蔽的标签*\n"]
+            
+            # 分页显示
+            per_page = 12
+            total_pages = (len(blocked) + per_page - 1) // per_page
+            page = max(0, min(page, total_pages - 1))
+            
+            start = page * per_page
+            end = start + per_page
+            page_items = blocked[start:end]
+            
+            lines.append(f"共 {len(blocked)} 个标签 (第 {page+1}/{total_pages} 页):\n")
+            
+            # 构建按钮网格
+            rows = []
+            row = []
+            for tag in page_items:
+                display_tag = tag[:10] + ".." if len(tag) > 10 else tag
+                row.append(InlineKeyboardButton(f"❎ {display_tag}", callback_data=f"unblock:{tag}"))
+                if len(row) == 3:
+                    rows.append(row)
+                    row = []
+            if row:
+                rows.append(row)
+            
+            # 分页按钮
+            nav_row = []
+            if page > 0:
+                nav_row.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"unblock_page:{page-1}"))
+            if page < total_pages - 1:
+                nav_row.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"unblock_page:{page+1}"))
+            if nav_row:
+                rows.append(nav_row)
+            
+            rows.append([InlineKeyboardButton("⬅️ 返回菜单", callback_data="menu:main")])
+            
+            keyboard = InlineKeyboardMarkup(rows)
+            
+            await message.reply_text(
+                "\n".join(lines),
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        
+        # 处理 block/unblock 回调
+        async def _handle_block_callback(query, data: str):
+            """处理屏蔽管理相关回调"""
+            user_id = query.from_user.id
+            chat_id = query.message.chat_id
+            
+            if data == "block_add":
+                await query.edit_message_text(
+                    "🚫 请回复要屏蔽的标签名称\n\n_支持 #号，自动归一化_",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 取消", callback_data="block_cancel")]]),
+                    parse_mode="Markdown"
+                )
+                self._pending_input = {"type": "block_tag", "chat_id": chat_id}
+                return
+            
+            if data == "block_cancel":
+                await _show_block_menu(query.message)
+                return
+            
+            if data.startswith("block_remove:"):
+                tag = data.split(":", 1)[1]
+                try:
+                    from database import unblock_tag
+                    await unblock_tag(tag)
+                    await query.answer(f"✅ 已取消屏蔽: {tag}")
+                except Exception as e:
+                    await query.answer(f"❌ 失败: {e}", show_alert=True)
+                    return
+                # 刷新菜单
+                await _show_block_menu(query.message)
+                return
+            
+            if data.startswith("block_page:"):
+                page = int(data.split(":", 1)[1])
+                await _show_block_menu(query.message, page)
+                return
+            
+            if data.startswith("unblock:"):
+                tag = data.split(":", 1)[1]
+                try:
+                    from database import unblock_tag
+                    result = await unblock_tag(tag)
+                    if result:
+                        await query.answer(f"✅ 已取消屏蔽: {tag}")
+                    else:
+                        await query.answer(f"⚠️ 未找到: {tag}")
+                except Exception as e:
+                    await query.answer(f"❌ 失败: {e}", show_alert=True)
+                    return
+                # 刷新菜单
+                await _show_unblock_menu(query.message)
+                return
+            
+            if data.startswith("unblock_page:"):
+                page = int(data.split(":", 1)[1])
+                await _show_unblock_menu(query.message, page)
+                return
         
         # /mute 指令 - 临时静音标签（默认24小时），交互式
         async def cmd_mute(update, context):
