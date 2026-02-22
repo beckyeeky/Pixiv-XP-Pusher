@@ -914,7 +914,7 @@ class TelegramNotifier(BaseNotifier):
                     dr = search_session.get("date_range", 0)
                     date_text = "不限" if dr == 0 else f"近{dr}天"
 
-                    await message.reply_text(
+                    msg = await message.reply_text(
                         f"🔍 *交互式搜索向导*\n\n"
                         f"第 3/3 步：请输入搜索关键词\n"
                         f"📅 时间: {date_text}\n"
@@ -926,6 +926,10 @@ class TelegramNotifier(BaseNotifier):
                         f"直接回复此消息即可",
                         parse_mode="Markdown"
                     )
+                    # 保存消息ID
+                    if "message_ids" not in search_session:
+                        search_session["message_ids"] = []
+                    search_session["message_ids"].append(msg.message_id)
                     return
                 
                 elif step == "input_keywords":
@@ -937,6 +941,9 @@ class TelegramNotifier(BaseNotifier):
                     
                     date_range = search_session.get("date_range", 0)
                     offset = search_session.get("offset", 0)
+                    
+                    # 删除向导消息
+                    await _delete_search_guide_messages(user_id, chat_id)
                     
                     await _do_search(user_id, chat_id, keywords, date_range, offset)
                     return
@@ -1080,7 +1087,7 @@ class TelegramNotifier(BaseNotifier):
                 typing_task.cancel()
                 
         # 搜索会话状态存储
-        self._search_sessions = {}  # user_id -> {step, date_range, offset, keywords}
+        self._search_sessions = {}  # user_id -> {step, date_range, offset, keywords, message_ids}
         
         # /search 指令 - 交互式定向搜图
         async def cmd_search(update, context):
@@ -1100,7 +1107,7 @@ class TelegramNotifier(BaseNotifier):
                     return
             
             # 新模式：启动交互式向导
-            self._search_sessions[user_id] = {"step": "select_time"}
+            self._search_sessions[user_id] = {"step": "select_time", "message_ids": []}
             
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📅 不限时间", callback_data="search_time:0")],
@@ -1110,13 +1117,15 @@ class TelegramNotifier(BaseNotifier):
                 [InlineKeyboardButton("❌ 取消", callback_data="search_cancel")]
             ])
             
-            await update.message.reply_text(
+            msg = await update.message.reply_text(
                 "🔍 *交互式搜索向导*\n\n"
                 "第 1/3 步：请选择时间范围\n"
                 "（默认按收藏数从高到低排序）",
                 parse_mode="Markdown",
                 reply_markup=keyboard
             )
+            # 保存消息ID用于后续删除
+            self._search_sessions[user_id]["message_ids"].append(msg.message_id)
         
         async def _do_search(user_id: int, chat_id: int, keywords: list, date_range_days: int, offset: int):
             """执行实际搜索"""
@@ -1195,22 +1204,40 @@ class TelegramNotifier(BaseNotifier):
             if user_id in self._search_sessions:
                 del self._search_sessions[user_id]
         
+        async def _delete_search_guide_messages(user_id: int, chat_id: int):
+            """删除搜索向导的所有消息"""
+            session = self._search_sessions.get(user_id)
+            if not session:
+                return
+            message_ids = session.get("message_ids", [])
+            for msg_id in message_ids:
+                try:
+                    await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                except Exception as e:
+                    logger.debug(f"删除向导消息 {msg_id} 失败: {e}")
+        
         # 处理搜索向导的回调
         async def _handle_search_callback(query, data: str):
             user_id = query.from_user.id
             chat_id = query.message.chat_id
             
             if data == "search_cancel":
+                # 删除所有向导消息
+                await _delete_search_guide_messages(user_id, chat_id)
                 if user_id in self._search_sessions:
                     del self._search_sessions[user_id]
-                await query.edit_message_text("❌ 搜索已取消")
+                await query.answer("搜索已取消")
                 return
             
             if data.startswith("search_time:"):
                 days = int(data.split(":")[1])
+                # 保留已有的 message_ids
+                session = self._search_sessions.get(user_id, {})
+                message_ids = session.get("message_ids", [])
                 self._search_sessions[user_id] = {
                     "step": "input_batch",
-                    "date_range": days
+                    "date_range": days,
+                    "message_ids": message_ids
                 }
                 
                 await query.edit_message_text(
