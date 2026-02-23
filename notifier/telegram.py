@@ -344,11 +344,17 @@ class TelegramNotifier(BaseNotifier):
         
         # 立即推送
         elif action == "push":
-            if self.on_action:
-                await query.edit_message_text("🚀 正在推送...", reply_markup=None)
-                await self.on_action("push", None)
-            else:
-                await query.edit_message_text("❌ 未配置动作处理")
+            # 显示与 /push 命令相同的交互式菜单
+            await query.edit_message_text(
+                "🚀 *推送模式选择*\n\n请选择要执行的推送类型:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📦 今日精选推送", callback_data="push:today")],
+                    [InlineKeyboardButton("🎨 画师作品集", callback_data="push:artist")],
+                    [InlineKeyboardButton("📌 指定作品ID", callback_data="push:illust")],
+                    [InlineKeyboardButton("⬅️ 取消", callback_data="menu:main")],
+                ]),
+                parse_mode="Markdown"
+            )
         
         # 统计
         elif action == "stats":
