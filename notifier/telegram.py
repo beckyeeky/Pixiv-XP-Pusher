@@ -2563,8 +2563,34 @@ class TelegramNotifier(BaseNotifier):
         logger.info("Telegram Bot 轮询已启动（已配置自动重连）")
         
         # 启动健康检查后台任务
-        asyncio.create_task(self._polling_health_check())
+        if not getattr(self, "_polling_health_task", None) or self._polling_health_task.done():
+            self._polling_health_task = asyncio.create_task(self._polling_health_check())
     
+    async def _restart_polling(self) -> bool:
+        """更稳健的轮询重启（带退避与重试）"""
+        max_retries = 3
+        delay = 2
+        for attempt in range(max_retries):
+            try:
+                await self.stop_polling()
+            except Exception as e:
+                logger.warning(f"stop_polling 出错: {e}")
+            
+            await asyncio.sleep(1)
+            
+            try:
+                await self.start_polling()
+                logger.info("✅ Telegram 轮询已重启")
+                self._consecutive_errors = 0
+                return True
+            except Exception as e:
+                logger.error(f"重启轮询失败 (尝试 {attempt+1}/{max_retries}): {e}")
+                await asyncio.sleep(delay)
+                delay *= 2
+        
+        logger.error("Telegram 轮询多次重启失败，进入失败保护")
+        return False
+
     async def _polling_health_check(self):
         """后台健康检查：监控轮询状态，自动重启"""
         await asyncio.sleep(60)  # 启动后等待一分钟再开始检查
@@ -2580,18 +2606,7 @@ class TelegramNotifier(BaseNotifier):
                 # 检查 updater 是否还在运行
                 if not self._app.updater.running:
                     logger.error("🔄 检测到 Telegram 轮询已停止，正在尝试重启...")
-                    
-                    try:
-                        # 重新启动轮询
-                        await self._app.updater.start_polling(
-                            poll_interval=1.0,
-                            timeout=30,
-                            drop_pending_updates=True,
-                        )
-                        self._consecutive_errors = 0
-                        logger.info("✅ Telegram 轮询已成功重启")
-                    except Exception as e:
-                        logger.error(f"❌ 重启轮询失败: {e}")
+                    await self._restart_polling()
                 else:
                     # 轮询正常运行，重置错误计数
                     if self._consecutive_errors > 0:
@@ -2607,6 +2622,9 @@ class TelegramNotifier(BaseNotifier):
     async def stop_polling(self):
         """停止 Bot 轮询（用于健康检查重启）"""
         try:
+            if self._polling_health_task and not self._polling_health_task.done():
+                self._polling_health_task.cancel()
+            
             if self._app:
                 if self._app.updater and self._app.updater.running:
                     await self._app.updater.stop()

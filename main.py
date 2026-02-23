@@ -4,19 +4,9 @@ import asyncio
 import logging
 import os
 import sys
-import socket
 from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-
-# 单实例检查 (Socket 锁)
-LOCK_SOCKET = "/tmp/pixiv_xp_pusher.lock"
-sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-try:
-    sock.bind(LOCK_SOCKET)
-except socket.error:
-    print("另一个实例已在运行，退出。", file=sys.stderr)
-    sys.exit(0)
 
 # Ensure project root in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -67,6 +57,8 @@ async def retry_async(coro_func, *args, max_retries: int = 3, delay: float = 5.0
 
 # 全局运行锁，防止任务并发
 _task_lock = asyncio.Lock()
+# 允许最多排队 30 个触发
+_queue_limit = asyncio.Semaphore(30)
 
 async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfiler, sync_client: PixivClient = None):
     """创建并配置推送器（支持多推送渠道）"""
@@ -548,11 +540,22 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
     if sync_client is None:
         sync_client = client
         
-    if _task_lock.locked():
-        logger.info("⏳ 推送任务正在运行中，本次触发已跳过或排队")
+    # 队列深度限制：最多排队 30 个触发
+    try:
+        await asyncio.wait_for(_queue_limit.acquire(), timeout=0)
+    except asyncio.TimeoutError:
+        logger.warning("⏳ 推送触发过于频繁，队列已满(30)，已拒绝本次触发")
+        return
+    except Exception as e:
+        logger.warning(f"⏳ 队列入队失败: {e}")
+        return
     
-    async with _task_lock:
-        logger.info("=== 开始推送任务 ===")
+    try:
+        if _task_lock.locked():
+            logger.info("⏳ 推送任务正在运行中，本次触发已入队等待")
+        
+        async with _task_lock:
+            logger.info("=== 开始推送任务 ===")
         
         # 刷新 Access Token (防止长时间运行后过期)
         try:
@@ -763,6 +766,11 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
             logger.error(f"任务执行出错: {e}", exc_info=True)
     
         logger.info("=== 推送任务结束 ===")
+    finally:
+        try:
+            _queue_limit.release()
+        except Exception:
+            pass
 
 
 async def run_once(config: dict):
