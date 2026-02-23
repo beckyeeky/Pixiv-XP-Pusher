@@ -49,6 +49,25 @@
 - **多语言标签检测拦截**：扩充了 AI 画作的拦截策略，通过引入中、日、英多语言的关键词检测，进一步净化推荐信息流。
 - **深度适配 DeepSeek**：全面推荐并适配了高性价比的 DeepSeek API 进行高效标签清洗，其对二次元语境的优秀理解力及宽松的风控策略使其成为最佳选择。
 
+### 6. 💬 Telegram Bot 交互式体验
+- **交互式菜单 (`/menu`)**：控制面板式操作，无需记忆复杂命令。
+- **交互式推送向导 (`/push`)**：选择今日精选、画师作品集或指定作品 ID 推送。
+- **交互式搜索 (`/search`)**：引导式时间范围与关键词选择，支持标签翻译智能关联。
+- **设置面板 (`/settings`)**：AI 过滤、R18 模式、每日上限、推送时间可视化配置。
+- **Streaming UX**：所有交互式命令完成后自动删除引导消息与用户输入，保持聊天整洁。
+
+### 7. 🔒 R18 内容智能遮罩
+- **Spoiler Mask**：自动检测标题、标签、画师名中的 R-18/R-18G/🔞 关键词，推送时自动添加 Telegram 原生模糊遮罩。
+
+### 8. 📚 标签翻译与智能关联
+- **自动保存翻译**：收集 Pixiv 标签的中日翻译并持久化存储。
+- **搜索扩展**：搜索关键词时自动关联原始标签，提升召回率。
+
+### 9. ⚡ 推送队列与限流
+- **异步队列**：Telegram 通知使用 `asyncio.Queue` 队列化处理，避免阻塞。
+- **深度限制**：队列最多保留 30 个触发，防止积压。
+- **指数退避**：HTTP 429 限流时自动退避重试。
+
 ---
 
 ## ✨ 基础功能特性
@@ -61,6 +80,29 @@
   - 盲盒探索 (从落选池中随机捞取潜力股，比例可调)
   - 关联连锁推荐 (点赞好图自动追溯相似作品)
 - 📱 **多渠道覆盖**: 支持 Telegram (MediaGroup 图集) 和 OneBot 协议 (QQ)。
+
+---
+
+### 🤖 Telegram Bot 命令列表
+
+| 命令 | 说明 |
+| :--- | :--- |
+| `/start`, `/menu` | 打开交互式控制面板 |
+| `/push` | 推送菜单（今日精选/画师作品集/指定ID）|
+| `/search` | 交互式搜索向导（时间范围+关键词）|
+| `/settings` | 设置菜单（AI过滤/R18模式/每日上限/推送时间）|
+| `/block` | 标签屏蔽管理（交互式/直接参数）|
+| `/unblock` | 解除标签屏蔽 |
+| `/mute` | 临时静音标签24小时 |
+| `/unmute` | 解除标签静音 |
+| `/block_artist` | 画师屏蔽管理 |
+| `/unblock_artist` | 解除画师屏蔽 |
+| `/batch` | 批量模式设置（Telegraph开关）|
+| `/xp` | 查看 XP 画像（Top Tags）|
+| `/stats` | 查看策略统计（MAB成功率）|
+| `/schedule` | 查看/修改推送时间 |
+| `/restart` | 通过 systemctl 重启服务 |
+| `/help` | 显示帮助信息 |
 
 ---
 
@@ -94,6 +136,8 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/Pixiv-XP-Pusher
+# 启动前清理残留锁文件，防止重启后启动失败
+ExecStartPre=/bin/rm -f /tmp/pixiv_xp_pusher.lock
 ExecStart=/usr/bin/python3 main.py --now
 Restart=always
 RestartSec=10
@@ -205,3 +249,9 @@ A: 请通过 `@userinfobot` 获取你的 Telegram User ID，并确保它填在�
 
 **Q: 为什么日志里提示 AI 洗标签一直失败，或者返回 400 Bad Request？**
 A: 检查 `profiler.ai.api_key` 和 `base_url` 是否有效。强烈推荐使用 **DeepSeek**（`deepseek-chat`）模型，不仅性价比极高，且不会因为处理合法二次元标签而触发严格的道德风控审查。
+
+**Q: systemd 服务反复重启或启动失败？**
+A: 检查是否有手动启动的进程占用锁文件，执行 `pkill -f "main.py"` 后重启服务。服务配置已包含 `ExecStartPre=/bin/rm -f /tmp/pixiv_xp_pusher.lock` 自动清理锁文件。
+
+**Q: R18 内容如何自动遮罩？**
+A: 系统会自动检测标题、标签、画师名中的 R-18/R-18G/🔞 关键词，推送时自动添加 Telegram 原生 Spoiler 模糊遮罩。用户需点击才能查看原图。
