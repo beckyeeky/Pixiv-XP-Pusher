@@ -29,13 +29,13 @@ async def _retry_on_flood(coro_func, max_retries=3):
     coro_func should be a callable that returns a coroutine (not the coroutine itself).
     """
     from telegram.error import RetryAfter, NetworkError, TimedOut
-    
+
     # 网络错误关键词（httpx 错误）
     network_error_keywords = [
         "ConnectError", "RemoteProtocolError", "disconnected",
         "TimeoutException", "ConnectionResetError", "ConnectionRefusedError"
     ]
-    
+
     for attempt in range(max_retries):
         try:
             return await coro_func()
@@ -64,14 +64,14 @@ async def _retry_on_flood(coro_func, max_retries=3):
                 await asyncio.sleep(wait_time)
             else:
                 raise  # Re-raise non-retryable errors
-    
+
     # Final attempt without catching
     return await coro_func()
 
 
 class TelegramNotifier(BaseNotifier):
     """Telegram Bot 推送"""
-    
+
     def __init__(
         self,
         bot_token: str,
@@ -105,14 +105,14 @@ class TelegramNotifier(BaseNotifier):
         from telegram.request import HTTPXRequest
         request = HTTPXRequest(proxy=proxy_url) if proxy_url else None
         self.bot = Bot(token=bot_token, request=request)
-        
+
         # 支持单个或多个 chat_id，并去重防止重复发送
         if isinstance(chat_ids, str):
             self.chat_ids = [chat_ids] if chat_ids else []
         else:
             # 去重：转换为 set 再转回 list
             self.chat_ids = list(dict.fromkeys(str(c) for c in chat_ids if c))
-        
+
         self.client = client
         self.multi_page_mode = multi_page_mode
         # 允许的用户（空=所有人）
@@ -127,11 +127,11 @@ class TelegramNotifier(BaseNotifier):
         # 消息ID -> illust_id 映射（用于回复快捷反馈）
         self._message_illust_map: dict[int, int] = {}
         self.thread_id = thread_id  # 默认 Topic
-        
+
         # Topic 智能分流
         self.topic_rules = topic_rules or {}
         self.topic_tag_mapping = topic_tag_mapping or {}
-        
+
         # 批量模式
         self.batch_mode = batch_mode
         self.batch_show_title = batch_show_title
@@ -139,7 +139,7 @@ class TelegramNotifier(BaseNotifier):
         self.batch_show_tags = batch_show_tags
         self._telegraph = None  # Telegraph 客户端（延迟初始化）
         self._pending_input = None  # 等待用户输入的状态
-        
+
         # 日志
         logger.info(f"Telegram 推送目标: {', '.join(self.chat_ids) or '无'}")
         if self.allowed_users:
@@ -148,7 +148,7 @@ class TelegramNotifier(BaseNotifier):
             logger.info(f"Topic 分流规则: {list(self.topic_rules.keys())}")
         if self.batch_mode == "telegraph":
             logger.info("批量模式: Telegraph")
-        
+
         # 推送队列
         self.send_queue = asyncio.Queue()
         self.worker_task = asyncio.create_task(self._process_queue())
@@ -160,15 +160,15 @@ class TelegramNotifier(BaseNotifier):
             try:
                 task = await self.send_queue.get()
                 illusts, custom_title, batch_mode = task
-                
+
                 try:
                     # 调用原始发送逻辑，使用任务指定的 batch_mode
                     await self._send_direct(illusts, custom_title, batch_mode)
                 except Exception as e:
                     logger.error(f"推送任务执行失败: {e}")
-                
+
                 self.send_queue.task_done()
-                
+
                 # 批次间歇，避免刷屏
                 await asyncio.sleep(2.0)
             except asyncio.CancelledError:
@@ -198,20 +198,20 @@ class TelegramNotifier(BaseNotifier):
         """根据作品标签匹配 Topic ID"""
         if not self.topic_rules:
             return self.thread_id  # 使用默认 topic
-        
+
         illust_tags_lower = {t.lower() for t in illust.tags}
-        
+
         # 优先检查 R18
         if illust.is_r18 and "r18" in self.topic_rules:
             return self.topic_rules["r18"]
-        
+
         # 检查标签映射
         for category, tags in self.topic_tag_mapping.items():
             if category in self.topic_rules:
                 for tag in tags:
                     if tag.lower() in illust_tags_lower:
                         return self.topic_rules[category]
-        
+
         # 返回默认 topic
         return self.topic_rules.get("default", self.thread_id)
 
@@ -234,14 +234,14 @@ class TelegramNotifier(BaseNotifier):
                 InlineKeyboardButton("⚙️ 设置", callback_data="menu:settings"),
             ],
         ])
-    
+
     def _build_batch_menu(self) -> InlineKeyboardMarkup:
         """构建批量设置菜单"""
         mode_text = "📦 批量" if self.batch_mode == "telegraph" else "📄 逐条"
         title_icon = "✅" if self.batch_show_title else "❌"
         artist_icon = "✅" if self.batch_show_artist else "❌"
         tags_icon = "✅" if self.batch_show_tags else "❌"
-        
+
         return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(f"📄 逐条", callback_data="menu:batch:single"),
@@ -254,7 +254,7 @@ class TelegramNotifier(BaseNotifier):
             ],
             [InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")],
         ])
-    
+
     def _build_settings_menu(self, config: dict) -> InlineKeyboardMarkup:
         """构建设置菜单"""
         return InlineKeyboardMarkup([
@@ -268,7 +268,7 @@ class TelegramNotifier(BaseNotifier):
             ],
             [InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")],
         ])
-    
+
     def _build_block_menu(self) -> InlineKeyboardMarkup:
         """构建屏蔽管理菜单"""
         return InlineKeyboardMarkup([
@@ -296,23 +296,23 @@ class TelegramNotifier(BaseNotifier):
         """保存配置值 _save_config_value("filter", "daily_limit", 30)"""
         import yaml
         import os
-        
+
         if len(args) < 2: return
         keys = args[:-1]
         value = args[-1]
-        
+
         config_path = "config.yaml"
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f) or {}
-            
+
             # Navigate to leaf
             current = config
             for key in keys[:-1]:
                 if key not in current: current[key] = {}
                 current = current[key]
             current[keys[-1]] = value
-            
+
             with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(config, f, allow_unicode=True, sort_keys=False)
             logger.info(f"配置已更新: {keys} = {value}")
@@ -329,11 +329,11 @@ class TelegramNotifier(BaseNotifier):
     async def _handle_menu_callback(self, query, data: str):
         """处理菜单回调"""
         import database as db
-        
+
         parts = data.split(":")
         action = parts[1] if len(parts) > 1 else ""
         sub_action = parts[2] if len(parts) > 2 else ""
-        
+
         # 主菜单
         if action == "main":
             await query.edit_message_text(
@@ -341,7 +341,7 @@ class TelegramNotifier(BaseNotifier):
                 reply_markup=self._build_main_menu(),
                 parse_mode="Markdown"
             )
-        
+
         # 立即推送
         elif action == "push":
             # 显示与 /push 命令相同的交互式菜单
@@ -355,15 +355,15 @@ class TelegramNotifier(BaseNotifier):
                 ]),
                 parse_mode="Markdown"
             )
-        
+
         # 统计
         elif action == "stats":
             stats = await db.get_all_strategy_stats()
             lines = ["📊 *策略表现*\n"]
             strategy_names = {
-                "xp_search": "XP搜索", 
-                "search": "XP搜索(旧)", 
-                "subscription": "订阅更新", 
+                "xp_search": "XP搜索",
+                "search": "XP搜索(旧)",
+                "subscription": "订阅更新",
                 "ranking": "排行榜",
                 "related": "关联推荐"
             }
@@ -373,24 +373,24 @@ class TelegramNotifier(BaseNotifier):
                     name = name.replace("_", "\\_")
                 rate = f"{data['rate']:.1%}" if data['total'] > 0 else "N/A"
                 lines.append(f"• *{name}*: {data['success']}/{data['total']} ({rate})")
-            
+
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")
             ]])
             await query.edit_message_text("\n".join(lines), reply_markup=keyboard, parse_mode="Markdown")
-        
+
         # XP画像
         elif action == "xp":
             top_tags = await db.get_top_xp_tags(15)
             lines = ["🎯 *XP 画像 Top 15*\n"]
             for i, (tag, weight) in enumerate(top_tags, 1):
                 lines.append(f"{i}. `{tag}` ({weight:.2f})")
-            
+
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")
             ]])
             await query.edit_message_text("\n".join(lines), reply_markup=keyboard, parse_mode="Markdown")
-        
+
         # 批量设置
         elif action == "batch":
             if not sub_action:
@@ -417,7 +417,7 @@ class TelegramNotifier(BaseNotifier):
                 self.batch_show_tags = not self.batch_show_tags
                 self._save_batch_config()
                 await query.edit_message_reply_markup(reply_markup=self._build_batch_menu())
-        
+
         # 静音管理
         elif action == "mute":
             import database as db
@@ -450,7 +450,7 @@ class TelegramNotifier(BaseNotifier):
                 muted = await db.get_muted_tags(active_only=True)
                 if not muted:
                     await query.edit_message_text(
-                        "🔕 当前没有静音标签", 
+                        "🔕 当前没有静音标签",
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data="menu:mute")]]),
                         parse_mode="Markdown"
                     )
@@ -507,7 +507,7 @@ class TelegramNotifier(BaseNotifier):
             elif sub_action == "list":
                 blocked_tags = await db.get_blocked_tags()
                 blocked_artists = await db.get_blocked_artists()
-                
+
                 lines = ["📋 *屏蔽列表*\n"]
                 if blocked_tags:
                     lines.append("🏷️ 标签:")
@@ -519,7 +519,7 @@ class TelegramNotifier(BaseNotifier):
                         lines.append(f"  • {name} (`{artist_id}`)")
                 if not blocked_tags and not blocked_artists:
                     lines.append("_暂无屏蔽_")
-                
+
                 keyboard = InlineKeyboardMarkup([[
                     InlineKeyboardButton("⬅️ 返回", callback_data="menu:block")
                 ]])
@@ -543,11 +543,11 @@ class TelegramNotifier(BaseNotifier):
                     parse_mode="Markdown"
                 )
                 self._pending_input = {"type": "block_artist", "chat_id": query.message.chat_id}
-        
+
         # 设置
         elif action == "settings" or action == "set":
             config = self._read_config()
-            
+
             if not sub_action:
                 await query.edit_message_text(
                     "⚙️ *设置*\n\n_部分设置修改后需重启生效_",
@@ -573,7 +573,7 @@ class TelegramNotifier(BaseNotifier):
                     next_mode = modes[(modes.index(current) + 1) % len(modes)]
                 except:
                     next_mode = "mixed"
-                
+
                 self._save_config_value("filter", "r18_mode", next_mode)
                 config = self._read_config()
                 await query.edit_message_text(
@@ -626,14 +626,14 @@ class TelegramNotifier(BaseNotifier):
             if len(image_data) > max_size:
                 logger.warning(f"图片过大 ({len(image_data)} bytes) 且未安装 Pillow，无法压缩，发送可能失败。请 pip install Pillow")
             return image_data
-            
+
         try:
             # 必须检查尺寸 (Telegram 限制 width + height <= 10000)
             # 即使文件大小很小，尺寸超标也会报 Photo_invalid_dimensions
             with Image.open(BytesIO(image_data)) as img:
                 w, h = img.size
                 need_resize = False
-                
+
                 # 检查尺寸 (优先使用配置的 max_image_size)
                 max_dim = self.max_image_size
                 if w > max_dim or h > max_dim:
@@ -656,10 +656,10 @@ class TelegramNotifier(BaseNotifier):
                 # 如果没有调整尺寸且文件大小也合格，直接返回原图
                 if not need_resize and len(image_data) <= max_size:
                     return image_data
-                
+
                 # 开始压缩处理
                 logger.info(f"正在处理图片 (原始大小: {len(image_data)/1024/1024:.2f}MB, 尺寸: {w}x{h})...")
-                
+
                 # 转换色彩空间
                 if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
                     bg = Image.new('RGB', img.size, (255, 255, 255))
@@ -669,9 +669,9 @@ class TelegramNotifier(BaseNotifier):
                     img = bg
                 elif img.mode != 'RGB':
                     img = img.convert('RGB')
-                    
+
                 output = BytesIO()
-                
+
                 # 策略1：降低 JPEG 质量 (从配置的 quality 到 50)
                 quality = self.image_quality
                 min_quality = 50
@@ -684,7 +684,7 @@ class TelegramNotifier(BaseNotifier):
                         logger.info(f"压缩成功: 质量={quality}, 大小={size/1024/1024:.2f}MB")
                         return output.getvalue()
                     quality -= 10
-                
+
                 # 策略2：继续缩放 (质量已降到50但仍超标)
                 scale = 0.8
                 while scale >= 0.3:
@@ -698,21 +698,21 @@ class TelegramNotifier(BaseNotifier):
                         logger.info(f"压缩成功: 缩放={scale:.1f}, 大小={size/1024/1024:.2f}MB")
                         return output.getvalue()
                     scale -= 0.2
-                    
+
                 logger.warning("压缩失败：图片实在太大了")
                 return image_data
 
         except Exception as e:
             logger.error(f"处理图片出错: {e}")
             return image_data
-    
+
     async def start_polling(self):
         """启动Bot轮询（用于接收反馈）"""
         from telegram.ext import MessageHandler, filters, CommandHandler
         from apscheduler.triggers.cron import CronTrigger
-        
+
         from telegram.request import HTTPXRequest
-        
+
         # 增加超时以减少 "Server disconnected" 错误
         # 长轮询需要更长的 read_timeout（Telegram 服务端默认最多等待 50 秒）
         request_kwargs = {
@@ -723,23 +723,23 @@ class TelegramNotifier(BaseNotifier):
         }
         if self.proxy_url:
             request_kwargs["proxy"] = self.proxy_url
-        
+
         request = HTTPXRequest(**request_kwargs)
         builder = Application.builder().token(self.bot.token).request(request)
-        
+
         self._app = builder.build()
-        
+
         # 处理按钮回调
         async def callback_handler(update, context):
             query = update.callback_query
             user_id = query.from_user.id
-            
+
             # 权限验证
             # 权限验证
             if self.allowed_users and user_id not in self.allowed_users:
                 await query.answer(f"❌ 无权限 (ID: {user_id})", show_alert=True)
                 return
-            
+
             # 检测回调是否过期（Telegram 限制回调查询必须在 48 秒内响应）
             is_query_expired = False
             try:
@@ -751,9 +751,9 @@ class TelegramNotifier(BaseNotifier):
                     logger.warning(f"回调查询已过期 (用户 {user_id})，将使用消息回复方式确认")
                 else:
                     logger.debug(f"回调应答失败: {e}")
-            
+
             data = query.data
-            
+
             if data.startswith("retry_ai:"):
                 # 处理重试动作
                 if self.on_action:
@@ -763,67 +763,67 @@ class TelegramNotifier(BaseNotifier):
                 else:
                     await query.message.reply_text("❌ 未配置动作处理")
                 return
-            
+
             # ===== 菜单回调处理 =====
             if data.startswith("menu:"):
                 await self._handle_menu_callback(query, data)
                 return
-            
+
             # ===== 推送菜单回调处理 =====
             if data.startswith("push"):
                 await _handle_push_callback(query, data)
                 return
-            
+
             # ===== 搜索向导回调处理 =====
             if data.startswith("search_"):
                 await _handle_search_callback(query, data)
                 return
-            
+
             # ===== 屏蔽管理回调处理 =====
             if data.startswith(("block_", "unblock:")) and not data.startswith(("block_artist", "unblock_artist")):
                 await _handle_block_callback(query, data)
                 return
-            
+
             # ===== 画师屏蔽管理回调处理 =====
             if data.startswith(("block_artist", "unblock_artist")):
                 await _handle_block_artist_callback(query, data)
                 return
-            
+
             # ===== 定时任务设置回调处理 =====
             if data.startswith("schedule_"):
                 await _handle_schedule_callback(query, data)
                 return
-            
+
             if data == "batch_like":
                 # 显示作品选择按钮
                 import database as db
                 illust_ids = await db.get_batch_all_illust_ids(
-                    query.message.message_id, 
+                    query.message.message_id,
                     str(query.message.chat_id)
                 )
                 if illust_ids:
                     keyboard = self._build_batch_select_keyboard("like", len(illust_ids))
                     await query.edit_message_reply_markup(reply_markup=keyboard)
                 return
-            
+
             if data == "batch_dislike":
                 import database as db
                 illust_ids = await db.get_batch_all_illust_ids(
-                    query.message.message_id, 
+                    query.message.message_id,
                     str(query.message.chat_id)
                 )
                 if illust_ids:
                     keyboard = self._build_batch_select_keyboard("dislike", len(illust_ids))
                     await query.edit_message_reply_markup(reply_markup=keyboard)
                 return
-            
+
             if data.startswith("batch_select:"):
                 # 格式: batch_select:like:3
                 import database as db
                 parts = data.split(":")
                 action = parts[1]  # like or dislike
                 index = int(parts[2])  # 1-based
-                
+
                 illust_id = await db.get_batch_illust_id(
                     query.message.message_id,
                     str(query.message.chat_id),
@@ -833,7 +833,7 @@ class TelegramNotifier(BaseNotifier):
                     await self.handle_feedback(illust_id, action, chat_id=query.message.chat_id)
                     emoji = "❤️" if action == "like" else "👎"
                     await query.message.reply_text(f"{emoji} 已记录 #{index} 的反馈")
-                
+
                 # 恢复原始按钮
                 keyboard = InlineKeyboardMarkup([
                     [
@@ -843,24 +843,24 @@ class TelegramNotifier(BaseNotifier):
                 ])
                 await query.edit_message_reply_markup(reply_markup=keyboard)
                 return
-            
+
             if data.startswith("batch_all:"):
                 # 格式: batch_all:like
                 import database as db
                 action = data.split(":")[1]
-                
+
                 illust_ids = await db.get_batch_all_illust_ids(
                     query.message.message_id,
                     str(query.message.chat_id)
                 )
                 for illust_id in illust_ids:
                     await self.handle_feedback(illust_id, action, chat_id=query.message.chat_id)
-                
+
                 emoji = "❤️" if action == "like" else "👎"
                 await query.message.reply_text(f"{emoji} 已对全部 {len(illust_ids)} 个作品记录反馈")
                 await query.edit_message_reply_markup(reply_markup=None)
                 return
-            
+
             if data == "batch_cancel":
                 # 恢复原始按钮
                 keyboard = InlineKeyboardMarkup([
@@ -892,7 +892,7 @@ class TelegramNotifier(BaseNotifier):
                                             new_text = "✅ 已关注"
                                         elif action == "dislike" and "不喜欢" in btn.text:
                                             new_text = "✅ 已屏蔽"
-                                        
+
                                         # 保持原有的 callback_data 或 url
                                         if btn.callback_data:
                                             new_btn = InlineKeyboardButton(new_text, callback_data=btn.callback_data)
@@ -900,7 +900,7 @@ class TelegramNotifier(BaseNotifier):
                                             new_btn = InlineKeyboardButton(new_text, url=btn.url)
                                         new_row.append(new_btn)
                                     new_keyboard.append(new_row)
-                                
+
                                 try:
                                     await query.edit_message_reply_markup(
                                         reply_markup=InlineKeyboardMarkup(new_keyboard)
@@ -933,72 +933,72 @@ class TelegramNotifier(BaseNotifier):
 
                     except Exception as e:
                         logger.error(f"处理反馈流程异常: {e}")
-        
+
         # 处理回复消息（1=喜欢, 2=不喜欢, 或输入内容）
         async def reply_handler(update, context):
             message = update.message
             if not message:
                 return
-            
+
             user_id = message.from_user.id
-            
+
             # 权限验证
             if self.allowed_users and user_id not in self.allowed_users:
                 return
-            
+
             text = message.text.strip()
             chat_id = message.chat_id
-            
+
             # ===== 处理 Push 会话 =====
             push_session = self._push_sessions.get(user_id)
             if push_session:
                 step = push_session.get("step")
-                
+
                 # 保存用户输入消息ID
                 if "user_message_ids" not in push_session:
                     push_session["user_message_ids"] = []
                 push_session["user_message_ids"].append(message.message_id)
-                
+
                 if step == "input_artist_id":
                     if not text.isdigit():
                         await message.reply_text("❌ 画师ID必须是数字")
                         return
-                    
+
                     artist_id = int(text)
                     # 删除消息并执行
                     await _delete_push_messages(user_id, chat_id)
                     if user_id in self._push_sessions:
                         del self._push_sessions[user_id]
-                    
+
                     # 执行画师推送
                     await _handle_push_direct(user_id, chat_id, ["a", str(artist_id)])
                     return
-                
+
                 elif step == "input_illust_id":
                     if not text.isdigit():
                         await message.reply_text("❌ 作品ID必须是数字")
                         return
-                    
+
                     illust_id = int(text)
                     # 删除消息并执行
                     await _delete_push_messages(user_id, chat_id)
                     if user_id in self._push_sessions:
                         del self._push_sessions[user_id]
-                    
+
                     # 执行作品推送
                     await _handle_push_direct(user_id, chat_id, [str(illust_id)])
                     return
-            
+
             # ===== 处理搜索向导会话 =====
             search_session = self._search_sessions.get(user_id)
             if search_session:
                 step = search_session.get("step")
-                
+
                 # 保存用户输入消息ID用于后续删除
                 if "user_message_ids" not in search_session:
                     search_session["user_message_ids"] = []
                 search_session["user_message_ids"].append(message.message_id)
-                
+
                 if step == "input_batch":
                     # 处理批次输入
                     if not text.isdigit():
@@ -1008,10 +1008,10 @@ class TelegramNotifier(BaseNotifier):
                     if batch_num < 1 or batch_num > 10:
                         await message.reply_text("❌ 批次范围 1-10")
                         return
-                    
+
                     search_session["offset"] = (batch_num - 1) * 20
                     search_session["step"] = "input_keywords"
-                    
+
                     dr = search_session.get("date_range", 0)
                     date_text = "不限" if dr == 0 else f"近{dr}天"
 
@@ -1032,29 +1032,29 @@ class TelegramNotifier(BaseNotifier):
                         search_session["message_ids"] = []
                     search_session["message_ids"].append(msg.message_id)
                     return
-                
+
                 elif step == "input_keywords":
                     # 处理关键词输入
                     keywords = [k.strip().replace('#', '') for k in text.split("|") if k.strip()]
                     if not keywords:
                         await message.reply_text("❌ 请输入有效的搜索关键词")
                         return
-                    
+
                     date_range = search_session.get("date_range", 0)
                     offset = search_session.get("offset", 0)
-                    
+
                     # 删除向导消息和用户输入消息
                     await _delete_search_guide_messages(user_id, chat_id)
-                    
+
                     await _do_search(user_id, chat_id, keywords, date_range, offset)
                     return
-            
+
             # ===== 处理等待输入 =====
             if self._pending_input and self._pending_input.get("chat_id") == message.chat_id:
                 pending = self._pending_input
                 input_type = pending.get("type") if pending else None
                 self._pending_input = None  # 清除状态，避免死循环
-                
+
                 try:
                     if input_type == "block_tag":
                         from database import block_tag
@@ -1065,7 +1065,7 @@ class TelegramNotifier(BaseNotifier):
                         except Exception:
                             pass
                         await message.reply_text(f"✅ 已屏蔽标签: `{text}`", parse_mode="Markdown")
-                        
+
                     elif input_type == "mute_tag":
                         from utils import normalize_tag
                         from database import mute_tag
@@ -1077,7 +1077,7 @@ class TelegramNotifier(BaseNotifier):
                         except Exception:
                             pass
                         await message.reply_text(f"🔕 已静音标签: `{tag}`\n⏳ 截止: `{until_ts}`", parse_mode="Markdown")
-                        
+
                     elif input_type == "block_artist":
                         if not text.isdigit():
                             await message.reply_text("❌ 画师ID必须是数字")
@@ -1090,7 +1090,7 @@ class TelegramNotifier(BaseNotifier):
                         except Exception:
                             pass
                         await message.reply_text(f"✅ 已屏蔽画师: `{text}`", parse_mode="Markdown")
-                        
+
                     elif input_type == "set_limit":
                         if not text.isdigit():
                             await message.reply_text("❌ 必须输入数字")
@@ -1098,7 +1098,7 @@ class TelegramNotifier(BaseNotifier):
                         limit = int(text)
                         # 更新配置
                         self._save_config_value("filter", "daily_limit", limit)
-                        
+
                         # 删除提示消息与用户输入消息（Streaming）
                         try:
                             prompt_id = pending.get("prompt_id") if isinstance(pending, dict) else None
@@ -1110,9 +1110,9 @@ class TelegramNotifier(BaseNotifier):
                             await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
                         except Exception:
                             pass
-                        
+
                         await message.reply_text(f"✅ 每日推送上限已设置为: `{limit}`", parse_mode="Markdown")
-                    
+
                     elif input_type == "schedule_add":
                         # 添加时间点
                         import re
@@ -1121,11 +1121,11 @@ class TelegramNotifier(BaseNotifier):
                             return
                         h, m = text.split(":")
                         new_cron = f"{m} {h} * * *"
-                        
+
                         # 读取当前配置
                         config = self._read_config()
                         current = config.get("schedule", "")
-                        
+
                         if current and "," in current:
                             # 已经是多个时间点，追加
                             schedule_data = f"{current},{new_cron}"
@@ -1134,7 +1134,7 @@ class TelegramNotifier(BaseNotifier):
                             schedule_data = f"{current},{new_cron}"
                         else:
                             schedule_data = new_cron
-                        
+
                         if self.on_action:
                             await self.on_action("update_schedule", schedule_data)
                             # 删除用户输入消息
@@ -1145,7 +1145,7 @@ class TelegramNotifier(BaseNotifier):
                             await message.reply_text(f"✅ 已添加推送时间: `{text}`", parse_mode="Markdown")
                         else:
                             await message.reply_text("⚠️ 未配置 Action 回调")
-                    
+
                     elif input_type == "schedule_custom":
                         # 自定义 Cron
                         try:
@@ -1162,23 +1162,23 @@ class TelegramNotifier(BaseNotifier):
                                 await message.reply_text("⚠️ 未配置 Action 回调")
                         except ValueError:
                             await message.reply_text("❌ 无效的 Cron 表达式，格式: `分 时 日 月 周`", parse_mode="Markdown")
-                        
-                        
+
+
                 except Exception as e:
                     await message.reply_text(f"❌ 操作失败: {e}")
-                
+
                 return
 
             if not message.reply_to_message:
                 return
-            
+
             reply_msg_id = message.reply_to_message.message_id
-            
+
             # 查找对应的 illust_id
             illust_id = self._message_illust_map.get(reply_msg_id)
             if not illust_id:
                 return
-            
+
             if text == "1":
                 await self.handle_feedback(illust_id, "like", chat_id=message.chat_id)
                 await message.reply_text("❤️ 已记录喜欢")
@@ -1192,31 +1192,31 @@ class TelegramNotifier(BaseNotifier):
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
-            
+
             # 保存用户消息ID用于删除
             user_msg_id = update.message.message_id
             chat_id = update.message.chat_id
-            
+
             await update.message.reply_text("🔄 正在通过 systemctl 重启服务...")
             logger.info(f"用户 {user_id} 触发 systemctl 重启")
-            
+
             # 删除用户的 /restart 命令
             try:
                 await self.bot.delete_message(chat_id=chat_id, message_id=user_msg_id)
             except Exception as e:
                 logger.debug(f"删除重启命令失败: {e}")
-            
+
             # 使用 systemctl 重启服务（systemd 管理）
             import subprocess
             import asyncio
             # 延迟一点点确保消息发送出去
             await asyncio.sleep(1)
             try:
-                subprocess.Popen(["systemctl", "restart", "pixiv-pusher"], 
+                subprocess.Popen(["systemctl", "restart", "pixiv-pusher"],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception as e:
                 logger.error(f"systemctl 重启失败: {e}")
-        
+
         # /push 指令 - 交互式推送菜单
         async def cmd_push(update, context):
             user_id = update.message.from_user.id
@@ -1224,32 +1224,38 @@ class TelegramNotifier(BaseNotifier):
                 logger.warning(f"用户 {user_id} 尝试执行 /push 但被拒绝 (Allowed: {self.allowed_users})")
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
-            
+
             chat_id = update.message.chat_id
             args = context.args
-            
+
+            # 删除用户的 /push 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /push 命令失败: {e}")
+
             # 有参数时直接处理（向后兼容）
             if args:
                 await _handle_push_direct(user_id, chat_id, args)
                 return
-            
+
             # 无参数时显示交互式菜单
             self._push_sessions[user_id] = {"step": "select_mode", "message_ids": [], "user_message_ids": []}
-            
+
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📦 今日精选推送", callback_data="push:today")],
                 [InlineKeyboardButton("🎨 画师作品集", callback_data="push:artist")],
                 [InlineKeyboardButton("📌 指定作品ID", callback_data="push:illust")],
                 [InlineKeyboardButton("❌ 取消", callback_data="push_cancel")],
             ])
-            
+
             msg = await update.message.reply_text(
                 "🚀 *推送模式选择*\n\n请选择要执行的推送类型:",
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
             self._push_sessions[user_id]["message_ids"].append(msg.message_id)
-        
+
         async def _handle_push_direct(user_id: int, chat_id: int, args: list):
             """直接处理带参数的 push 命令"""
             typing_task = asyncio.create_task(self._keep_typing(chat_id))
@@ -1258,7 +1264,7 @@ class TelegramNotifier(BaseNotifier):
                     # 推送指定作品
                     illust_id = int(args[0])
                     status_msg = await self.bot.send_message(chat_id, f"🔍 正在获取作品 {illust_id}...")
-                    
+
                     try:
                         if self.client:
                             illust = await self.client.get_illust_detail(illust_id)
@@ -1297,19 +1303,19 @@ class TelegramNotifier(BaseNotifier):
                             chat_id=chat_id,
                             message_id=status_msg.message_id
                         )
-                        
+
                 elif len(args) > 1 and args[0] == "a" and args[1].isdigit():
                     # 推送指定画师近1年的随机作品
                     artist_id = int(args[1])
                     status_msg = await self.bot.send_message(chat_id, f"🔍 正在获取画师 {artist_id} 的作品库...")
-                    
+
                     try:
                         if self.client:
                             from datetime import datetime, timedelta, timezone
                             import random
                             one_year_ago = datetime.now(timezone.utc) - timedelta(days=365)
                             illusts = await self.client.get_user_illusts(artist_id, since=one_year_ago, limit=100)
-                            
+
                             if illusts:
                                 sample_size = min(20, len(illusts))
                                 sampled = random.sample(illusts, sample_size)
@@ -1318,19 +1324,19 @@ class TelegramNotifier(BaseNotifier):
                                     chat_id=chat_id,
                                     message_id=status_msg.message_id
                                 )
-                                
+
                                 original_mode = self.batch_mode
                                 self.batch_mode = "telegraph"
                                 custom_title = f"画师 {artist_id} 精选集"
                                 sent_ids = await self.send(sampled, custom_title)
                                 self.batch_mode = original_mode
-                                
+
                                 # 删除状态消息
                                 try:
                                     await self.bot.delete_message(chat_id, status_msg.message_id)
                                 except:
                                     pass
-                                
+
                                 if sent_ids:
                                     await self.bot.send_message(chat_id, f"✅ 画师作品集生成完毕 (共 {sample_size} 张图，已加入队列)")
                                 else:
@@ -1363,13 +1369,13 @@ class TelegramNotifier(BaseNotifier):
                         await self.bot.send_message(chat_id, "⚠️ 内部错误: 未配置 Action 回调")
             finally:
                 typing_task.cancel()
-        
+
         # 处理 push 相关回调
         async def _handle_push_callback(query, data: str):
             """处理推送菜单回调"""
             user_id = query.from_user.id
             chat_id = query.message.chat_id
-            
+
             if data == "push_cancel":
                 # 删除所有消息
                 await _delete_push_messages(user_id, chat_id)
@@ -1377,7 +1383,7 @@ class TelegramNotifier(BaseNotifier):
                     del self._push_sessions[user_id]
                 await query.answer("已取消")
                 return
-            
+
             if data == "push:today":
                 # 今日精选推送
                 await query.edit_message_text("🚀 正在启动今日精选推送...")
@@ -1388,29 +1394,29 @@ class TelegramNotifier(BaseNotifier):
                 if user_id in self._push_sessions:
                     del self._push_sessions[user_id]
                 return
-            
+
             if data == "push:artist":
                 session = self._push_sessions.get(user_id, {})
                 session["step"] = "input_artist_id"
-                
+
                 await query.edit_message_text(
                     "🎨 *画师作品集*\n\n请输入画师ID:\n\n_例: `16419396`_",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 取消", callback_data="push_cancel")]]),
                     parse_mode="Markdown"
                 )
                 return
-            
+
             if data == "push:illust":
                 session = self._push_sessions.get(user_id, {})
                 session["step"] = "input_illust_id"
-                
+
                 await query.edit_message_text(
                     "📌 *指定作品推送*\n\n请输入作品ID:\n\n_例: `12345678`_",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 取消", callback_data="push_cancel")]]),
                     parse_mode="Markdown"
                 )
                 return
-        
+
         async def _delete_push_messages(user_id: int, chat_id: int):
             """删除 push 会话的所有消息"""
             session = self._push_sessions.get(user_id)
@@ -1428,20 +1434,28 @@ class TelegramNotifier(BaseNotifier):
                     await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
                 except:
                     pass
-        
+
         # Push 会话状态存储
         self._push_sessions = {}  # user_id -> {step, message_ids, user_message_ids}
-        
+
         # 搜索会话状态存储
         self._search_sessions = {}  # user_id -> {step, date_range, offset, keywords, message_ids, user_message_ids}
-        
+
         # /search 指令 - 交互式定向搜图
         async def cmd_search(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
-            
+
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /search 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /search 命令失败: {e}")
+
             # 检查是否有直接参数（旧模式兼容）
             args = context.args
             if args:
@@ -1449,12 +1463,12 @@ class TelegramNotifier(BaseNotifier):
                 search_input = " ".join(args)
                 keywords = [k.strip().replace('#', '') for k in search_input.split("|") if k.strip()]
                 if keywords:
-                    await _do_search(user_id, update.message.chat_id, keywords, date_range_days=0, offset=0)
+                    await _do_search(user_id, chat_id, keywords, date_range_days=0, offset=0)
                     return
-            
+
             # 新模式：启动交互式向导
             self._search_sessions[user_id] = {"step": "select_time", "message_ids": [], "user_message_ids": []}
-            
+
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📅 不限时间", callback_data="search_time:0")],
                 [InlineKeyboardButton("📅 最近一年", callback_data="search_time:365")],
@@ -1462,7 +1476,7 @@ class TelegramNotifier(BaseNotifier):
                 [InlineKeyboardButton("📅 最近一周", callback_data="search_time:7")],
                 [InlineKeyboardButton("❌ 取消", callback_data="search_cancel")]
             ])
-            
+
             msg = await update.message.reply_text(
                 "🔍 *交互式搜索向导*\n\n"
                 "第 1/3 步：请选择时间范围\n"
@@ -1472,17 +1486,17 @@ class TelegramNotifier(BaseNotifier):
             )
             # 保存消息ID用于后续删除
             self._search_sessions[user_id]["message_ids"].append(msg.message_id)
-        
+
         async def _do_search(user_id: int, chat_id: int, keywords: list, date_range_days: int, offset: int):
             """执行实际搜索（Streaming模式：中间状态消息自动删除）"""
             if not keywords:
                 await self.bot.send_message(chat_id, "❌ 关键词不能为空")
                 return
-            
+
             # 收集所有需要删除的状态消息ID
             status_message_ids = []
             user_message_ids = []
-            
+
             # 扩展关键词 (通过翻译反查)
             import database as db_mod
             expanded_keywords = []
@@ -1494,37 +1508,37 @@ class TelegramNotifier(BaseNotifier):
                     has_expansion = True
                 else:
                     expanded_keywords.append(k)
-            
+
             if has_expansion:
                  expansion_msg = await self.bot.send_message(
-                     chat_id, 
+                     chat_id,
                      f"🔍 智能关联: {' | '.join(keywords)} → {' | '.join(expanded_keywords)}"
                  )
                  status_message_ids.append(expansion_msg.message_id)
                  keywords = expanded_keywords
-            
+
             # 获取会话中的向导消息ID和用户输入消息ID
             session = self._search_sessions.get(user_id, {})
             status_message_ids = session.get("message_ids", []).copy()
             user_message_ids = session.get("user_message_ids", []).copy()
-            
+
             msg = await self.bot.send_message(
-                chat_id, 
+                chat_id,
                 f"🔍 搜索: {' | '.join(keywords)}\n"
                 f"📅 时间: {'不限' if date_range_days == 0 else f'近{date_range_days}天'}\n"
                 f"📄 批次: 第 {offset//20 + 1} 批 ({offset+1}-{offset+20})"
             )
             status_message_ids.append(msg.message_id)
-            
+
             typing_task = asyncio.create_task(self._keep_typing(chat_id))
             try:
                 if self.client:
                     filter_cfg = self._read_config().get("filter", {})
                     content_type = filter_cfg.get("content_type", "all")
-                    
+
                     # 计算需要获取的数量（偏移 + 20）
                     limit = offset + 20
-                    
+
                     # 搜索作品
                     illusts = await self.client.search_illusts(
                         tags=keywords,
@@ -1533,36 +1547,36 @@ class TelegramNotifier(BaseNotifier):
                         limit=limit,
                         content_type=content_type
                     )
-                    
+
                     if not illusts or len(illusts) <= offset:
                         await self.bot.send_message(chat_id, f"❌ 未找到足够的作品（仅找到 {len(illusts) if illusts else 0} 张）")
                         return
-                    
+
                     # 截取指定批次
                     batch = illusts[offset:offset+20]
-                    
+
                     # 过滤已推送的
                     import database as db_mod
                     filtered = [ill for ill in batch if not await db_mod.is_pushed(ill.id)]
-                    
+
                     if not filtered:
                         await self.bot.send_message(
-                            chat_id, 
+                            chat_id,
                             f"⚠️ 该批次 {len(batch)} 张图都已推送过\n"
                             f"尝试获取下一批: /search 然后选择批次 {offset//20 + 2}"
                         )
                         return
-                    
+
                     # 发送进度消息
                     progress_msg = await self.bot.send_message(chat_id, f"📦 找到 {len(filtered)} 张符合条件的作品，生成画册...")
                     status_message_ids.append(progress_msg.message_id)
-                    
+
                     original_mode = self.batch_mode
                     self.batch_mode = "telegraph"
                     search_title = f"{' | '.join(keywords)} (第{offset//20+1}批)"
                     sent_ids = await self.send(filtered, search_title)
                     self.batch_mode = original_mode
-                    
+
                     # Streaming清理：删除所有状态消息和用户输入，只保留最终结果
                     for msg_id in status_message_ids:
                         try:
@@ -1574,7 +1588,7 @@ class TelegramNotifier(BaseNotifier):
                             await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
                         except Exception:
                             pass
-                    
+
                     if sent_ids:
                         msg = f"✅ 推送完成！共 {len(sent_ids)} 张\n"
                         msg += f"\n继续获取下一批：\n/search 然后选批次 {offset//20 + 2}"
@@ -1588,11 +1602,11 @@ class TelegramNotifier(BaseNotifier):
                 await self.bot.send_message(chat_id, f"❌ 搜索失败: {e}")
             finally:
                 typing_task.cancel()
-            
+
             # 清理会话
             if user_id in self._search_sessions:
                 del self._search_sessions[user_id]
-        
+
         async def _delete_search_guide_messages(user_id: int, chat_id: int):
             """删除搜索向导的所有消息（包括用户输入）"""
             session = self._search_sessions.get(user_id)
@@ -1612,12 +1626,12 @@ class TelegramNotifier(BaseNotifier):
                     await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
                 except Exception as e:
                     logger.debug(f"删除用户消息 {msg_id} 失败: {e}")
-        
+
         # 处理搜索向导的回调
         async def _handle_search_callback(query, data: str):
             user_id = query.from_user.id
             chat_id = query.message.chat_id
-            
+
             if data == "search_cancel":
                 # 删除所有向导消息
                 await _delete_search_guide_messages(user_id, chat_id)
@@ -1625,7 +1639,7 @@ class TelegramNotifier(BaseNotifier):
                     del self._search_sessions[user_id]
                 await query.answer("搜索已取消")
                 return
-            
+
             if data.startswith("search_time:"):
                 days = int(data.split(":")[1])
                 # 保留已有的 message_ids
@@ -1636,7 +1650,7 @@ class TelegramNotifier(BaseNotifier):
                     "date_range": days,
                     "message_ids": message_ids
                 }
-                
+
                 await query.edit_message_text(
                     f"🔍 *交互式搜索向导*\n\n"
                     f"第 2/3 步：请输入批次编号\n"
@@ -1649,13 +1663,13 @@ class TelegramNotifier(BaseNotifier):
                     f"直接回复此消息即可",
                     parse_mode="Markdown"
                 )
-            
+
             elif data.startswith("search_batch:"):
                 batch_num = int(data.split(":")[1])
                 session = self._search_sessions.get(user_id, {})
                 session["offset"] = (batch_num - 1) * 20
                 session["step"] = "input_keywords"
-                
+
                 dr = session.get("date_range", 0)
                 date_text = "不限" if dr == 0 else f"近{dr}天"
 
@@ -1676,16 +1690,24 @@ class TelegramNotifier(BaseNotifier):
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
-            
+
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /schedule 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /schedule 命令失败: {e}")
+
             args = context.args
             if args:
                 # 有参数时直接设置（向后兼容）
                 input_str = " ".join(args)
-                
+
                 # 解析时间格式
                 import re
                 time_pattern = re.compile(r'^(\d{1,2}:\d{2})(,\d{1,2}:\d{2})*$')
-                
+
                 if time_pattern.match(input_str.replace(" ", "")):
                     times = [t.strip() for t in input_str.replace(" ", "").split(",")]
                     cron_list = []
@@ -1702,7 +1724,7 @@ class TelegramNotifier(BaseNotifier):
                     except ValueError:
                         await update.message.reply_text("❌ 格式错误，请使用 `9:30` 或 Cron 表达式", parse_mode="Markdown")
                         return
-                
+
                 try:
                     if self.on_action:
                         await self.on_action("update_schedule", schedule_data)
@@ -1712,25 +1734,25 @@ class TelegramNotifier(BaseNotifier):
                 except Exception as e:
                     await update.message.reply_text(f"❌ 设置失败: {e}")
                 return
-            
+
             # 无参数时显示交互式时间选择器
             await _show_schedule_menu(update.message)
-        
+
         async def _show_schedule_menu(message):
             """显示定时任务设置菜单"""
             # 读取当前配置
             config = self._read_config()
             schedule = config.get("schedule", "45 9/3 * * *")  # 默认
-            
+
             # 解析 cron 为友好显示
             display_time = _cron_to_friendly(schedule)
-            
+
             lines = [
                 "⏰ *推送时间设置*\n",
                 f"当前: `{display_time}`\n",
                 "选择预设时间或自定义:"
             ]
-            
+
             # 预设时间按钮
             keyboard = InlineKeyboardMarkup([
                 [
@@ -1750,26 +1772,26 @@ class TelegramNotifier(BaseNotifier):
                 ],
                 [InlineKeyboardButton("⬅️ 返回菜单", callback_data="menu:main")],
             ])
-            
+
             await message.reply_text(
                 "\n".join(lines),
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
-        
+
         def _cron_to_friendly(cron_str: str) -> str:
             """将 cron 表达式转换为友好显示"""
             # 处理多个 cron（逗号分隔）
             if "," in cron_str:
                 crons = cron_str.split(",")
                 return "; ".join([_cron_to_friendly(c) for c in crons])
-            
+
             parts = cron_str.split()
             if len(parts) != 5:
                 return cron_str  # 无法解析，返回原样
-            
+
             m, h, dom, mon, dow = parts
-            
+
             # 简单映射
             if dom == "*" and mon == "*" and dow == "*":
                 if m == "0" and h == "*":
@@ -1782,14 +1804,14 @@ class TelegramNotifier(BaseNotifier):
                     return f"每天 {', '.join([f'{h}:{m}' for h in hours])}"
                 if h.isdigit() and m.isdigit():
                     return f"每天 {h}:{m.zfill(2)}"
-            
+
             return cron_str  # 复杂表达式返回原样
-        
+
         # 处理 schedule 相关回调
         async def _handle_schedule_callback(query, data: str):
             """处理定时任务设置回调"""
             chat_id = query.message.chat_id
-            
+
             if data == "schedule_add":
                 await query.edit_message_text(
                     "⏰ 请回复要添加的时间点\n\n格式: `HH:MM` (24小时制)\n例: `14:30` 表示下午2点半",
@@ -1798,7 +1820,7 @@ class TelegramNotifier(BaseNotifier):
                 )
                 self._pending_input = {"type": "schedule_add", "chat_id": chat_id}
                 return
-            
+
             if data == "schedule_custom":
                 await query.edit_message_text(
                     "📝 请回复 Cron 表达式\n\n格式: `分 时 日 月 周`\n例: `30 9,21 * * *` (每天9:30和21:30)",
@@ -1807,14 +1829,14 @@ class TelegramNotifier(BaseNotifier):
                 )
                 self._pending_input = {"type": "schedule_custom", "chat_id": chat_id}
                 return
-            
+
             if data == "schedule_cancel":
                 await _show_schedule_menu(query.message)
                 return
-            
+
             if data.startswith("schedule_set:"):
                 time_str = data.split(":", 1)[1]
-                
+
                 # 转换为 cron
                 if ":" in time_str and "/" not in time_str:
                     # 友好格式: 9:30 或 9:30,21:00
@@ -1829,7 +1851,7 @@ class TelegramNotifier(BaseNotifier):
                     # 已经是 cron
                     schedule_data = time_str
                     display = _cron_to_friendly(time_str)
-                
+
                 try:
                     if self.on_action:
                         await self.on_action("update_schedule", schedule_data)
@@ -1842,76 +1864,100 @@ class TelegramNotifier(BaseNotifier):
                         await query.answer("⚠️ 未配置 Action 回调", show_alert=True)
                 except Exception as e:
                     await query.answer(f"❌ 设置失败: {e}", show_alert=True)
-        
+
         # /xp 指令 - 查看 XP 画像
         async def cmd_xp(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
-            
+
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /xp 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /xp 命令失败: {e}")
+
             try:
                 from database import get_top_xp_tags
                 top_tags = await get_top_xp_tags(15)
-                
+
                 if not top_tags:
                     await update.message.reply_text("📊 暂无 XP 画像数据")
                     return
-                
+
                 lines = ["🎯 *您的 XP 画像 Top 15*\n"]
                 for i, (tag, weight) in enumerate(top_tags, 1):
                     bar = "█" * min(int(weight), 10)
                     # Tag 用反引号包裹防止解析错误
                     lines.append(f"{i}. `{tag}` {bar} ({weight:.1f})")
-                
+
                 await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
             except Exception as e:
                 await update.message.reply_text(f"❌ 获取失败: {e}")
-        
+
         # /stats 指令 - 查看 MAB 策略统计
         async def cmd_stats(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
-            
+
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /stats 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /stats 命令失败: {e}")
+
             try:
                 from database import get_all_strategy_stats
                 stats = await get_all_strategy_stats()
-                
+
                 if not stats:
                     await update.message.reply_text("📊 暂无策略统计数据")
                     return
-                
+
                 lines = ["📈 *MAB 策略表现*\n"]
                 # 映射必须覆盖 fetcher.py 中所有的 key
                 strategy_names = {
-                    "xp_search": "XP搜索", 
-                    "search": "XP搜索(旧)", 
-                    "subscription": "订阅更新", 
+                    "xp_search": "XP搜索",
+                    "search": "XP搜索(旧)",
+                    "subscription": "订阅更新",
                     "ranking": "排行榜"
                 }
-                
+
                 for strategy, data in stats.items():
                     name = strategy_names.get(strategy, strategy)
                     # 如果 fallback 到原始 key，必须转义下划线以免 markdown 解析错误
                     if name == strategy and "_" in name:
                         name = name.replace("_", "\\_")
-                        
+
                     rate_pct = data["rate"] * 100
                     lines.append(f"• *{name}*: {data['success']}/{data['total']} ({rate_pct:.1f}%)")
-                
+
                 await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
             except Exception as e:
                 await update.message.reply_text(f"❌ 获取失败: {e}")
-        
+
         # /block 指令 - 交互式标签屏蔽管理
         async def cmd_block(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
-            
+
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /block 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /block 命令失败: {e}")
+
             args = context.args
             if args:
                 # 有参数时直接屏蔽（向后兼容）
@@ -1923,31 +1969,31 @@ class TelegramNotifier(BaseNotifier):
                 except Exception as e:
                     await update.message.reply_text(f"❌ 屏蔽失败: {e}")
                 return
-            
+
             # 无参数时显示交互式菜单
             await _show_block_menu(update.message)
-        
+
         async def _show_block_menu(message, page: int = 0):
             """显示标签屏蔽管理菜单"""
             from database import get_blocked_tags
             blocked = await get_blocked_tags()
-            
+
             lines = ["🚫 *标签屏蔽管理*\n"]
-            
+
             # 分页显示
             per_page = 12
             total_pages = (len(blocked) + per_page - 1) // per_page if blocked else 1
             page = max(0, min(page, total_pages - 1))
-            
+
             start = page * per_page
             end = start + per_page
             page_items = blocked[start:end]
-            
+
             if blocked:
                 lines.append(f"当前屏蔽 *{len(blocked)}* 个标签 (第 {page+1}/{total_pages} 页):\n")
             else:
                 lines.append("_暂无屏蔽标签_\n")
-            
+
             # 构建按钮网格
             rows = []
             row = []
@@ -1960,7 +2006,7 @@ class TelegramNotifier(BaseNotifier):
                     row = []
             if row:
                 rows.append(row)
-            
+
             # 分页按钮
             nav_row = []
             if page > 0:
@@ -1969,28 +2015,36 @@ class TelegramNotifier(BaseNotifier):
                 nav_row.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"block_page:{page+1}"))
             if nav_row:
                 rows.append(nav_row)
-            
+
             # 操作按钮
             rows.append([
                 InlineKeyboardButton("➕ 添加标签", callback_data="block_add"),
             ])
             rows.append([InlineKeyboardButton("⬅️ 返回菜单", callback_data="menu:main")])
-            
+
             keyboard = InlineKeyboardMarkup(rows)
-            
+
             await message.reply_text(
                 "\n".join(lines),
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
-        
+
         # /unblock 指令 - 交互式取消屏蔽
         async def cmd_unblock(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
-            
+
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /unblock 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /unblock 命令失败: {e}")
+
             args = context.args
             if args:
                 # 有参数时直接取消屏蔽（向后兼容）
@@ -2005,35 +2059,35 @@ class TelegramNotifier(BaseNotifier):
                 except Exception as e:
                     await update.message.reply_text(f"❌ 取消屏蔽失败: {e}")
                 return
-            
+
             # 无参数时显示交互式选择列表
             await _show_unblock_menu(update.message)
-        
+
         async def _show_unblock_menu(message, page: int = 0):
             """显示取消屏蔽选择菜单"""
             from database import get_blocked_tags
             blocked = await get_blocked_tags()
-            
+
             if not blocked:
                 await message.reply_text(
                     "🚫 当前没有屏蔽的标签",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")]])
                 )
                 return
-            
+
             lines = ["❎ *选择要取消屏蔽的标签*\n"]
-            
+
             # 分页显示
             per_page = 12
             total_pages = (len(blocked) + per_page - 1) // per_page
             page = max(0, min(page, total_pages - 1))
-            
+
             start = page * per_page
             end = start + per_page
             page_items = blocked[start:end]
-            
+
             lines.append(f"共 {len(blocked)} 个标签 (第 {page+1}/{total_pages} 页):\n")
-            
+
             # 构建按钮网格
             rows = []
             row = []
@@ -2045,7 +2099,7 @@ class TelegramNotifier(BaseNotifier):
                     row = []
             if row:
                 rows.append(row)
-            
+
             # 分页按钮
             nav_row = []
             if page > 0:
@@ -2054,23 +2108,23 @@ class TelegramNotifier(BaseNotifier):
                 nav_row.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"unblock_page:{page+1}"))
             if nav_row:
                 rows.append(nav_row)
-            
+
             rows.append([InlineKeyboardButton("⬅️ 返回菜单", callback_data="menu:main")])
-            
+
             keyboard = InlineKeyboardMarkup(rows)
-            
+
             await message.reply_text(
                 "\n".join(lines),
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
-        
+
         # 处理 block/unblock 回调
         async def _handle_block_callback(query, data: str):
             """处理屏蔽管理相关回调"""
             user_id = query.from_user.id
             chat_id = query.message.chat_id
-            
+
             if data == "block_add":
                 await query.edit_message_text(
                     "🚫 请回复要屏蔽的标签名称\n\n_支持 #号，自动归一化_",
@@ -2079,11 +2133,11 @@ class TelegramNotifier(BaseNotifier):
                 )
                 self._pending_input = {"type": "block_tag", "chat_id": chat_id}
                 return
-            
+
             if data == "block_cancel":
                 await _show_block_menu(query.message)
                 return
-            
+
             if data.startswith("block_remove:"):
                 tag = data.split(":", 1)[1]
                 try:
@@ -2096,12 +2150,12 @@ class TelegramNotifier(BaseNotifier):
                 # 刷新菜单
                 await _show_block_menu(query.message)
                 return
-            
+
             if data.startswith("block_page:"):
                 page = int(data.split(":", 1)[1])
                 await _show_block_menu(query.message, page)
                 return
-            
+
             if data.startswith("unblock:"):
                 tag = data.split(":", 1)[1]
                 try:
@@ -2117,18 +2171,26 @@ class TelegramNotifier(BaseNotifier):
                 # 刷新菜单
                 await _show_unblock_menu(query.message)
                 return
-            
+
             if data.startswith("unblock_page:"):
                 page = int(data.split(":", 1)[1])
                 await _show_unblock_menu(query.message, page)
                 return
-        
+
         # /mute 指令 - 临时静音标签（默认24小时），交互式
         async def cmd_mute(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
+
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /mute 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /mute 命令失败: {e}")
 
             args = context.args
             import database as db
@@ -2170,6 +2232,14 @@ class TelegramNotifier(BaseNotifier):
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
+
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /unmute 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /unmute 命令失败: {e}")
 
             args = context.args
             import database as db
@@ -2215,6 +2285,14 @@ class TelegramNotifier(BaseNotifier):
 
         # /help 指令 - 帮助信息
         async def cmd_help(update, context):
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /help 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /help 命令失败: {e}")
+
             help_text = (
                 "*🤖 Bot 指令帮助*\n\n"
                 "`/menu` - 📋 打开控制面板\n"
@@ -2236,29 +2314,45 @@ class TelegramNotifier(BaseNotifier):
                 "*💡 推荐使用 /menu 菜单操作*"
             )
             await update.message.reply_text(help_text, parse_mode="Markdown")
-        
+
         # /menu 和 /start 指令 - 打开控制面板
         async def cmd_menu(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
-            
+
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /menu 或 /start 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /menu 命令失败: {e}")
+
             await update.message.reply_text(
                 "🤖 *XP Pusher 控制面板*",
                 reply_markup=self._build_main_menu(),
                 parse_mode="Markdown"
             )
-        
+
         # /batch 指令 - 批量模式设置
         async def cmd_batch(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
-            
+
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /batch 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /batch 命令失败: {e}")
+
             args = context.args
-            
+
             if not args:
                 # 显示当前状态
                 mode_emoji = "📦" if self.batch_mode == "telegraph" else "📄"
@@ -2277,9 +2371,9 @@ class TelegramNotifier(BaseNotifier):
                 )
                 await update.message.reply_text(status, parse_mode="Markdown")
                 return
-            
+
             cmd = args[0].lower()
-            
+
             if cmd == "on":
                 self.batch_mode = "telegraph"
                 await update.message.reply_text("✅ 批量模式已开启 (Telegraph)")
@@ -2300,21 +2394,29 @@ class TelegramNotifier(BaseNotifier):
                 await update.message.reply_text(f"✅ {cmd} 显示已{'开启' if value else '关闭'}")
             else:
                 await update.message.reply_text("❌ 未知参数，使用 `/batch` 查看帮助", parse_mode="Markdown")
-        
+
         # /block_artist 指令 - 屏蔽画师
         async def cmd_block_artist(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
-            
+
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /block_artist 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /block_artist 命令失败: {e}")
+
             args = context.args
             if args:
                 # 有参数时直接屏蔽（向后兼容）
                 try:
                     artist_id = int(args[0])
                     artist_name = " ".join(args[1:]).strip() if len(args) > 1 else None
-                    
+
                     from database import block_artist
                     await block_artist(artist_id, artist_name)
                     await update.message.reply_text(f"✅ 已屏蔽画师: `{artist_id}`" + (f" ({artist_name})" if artist_name else ""), parse_mode="Markdown")
@@ -2323,31 +2425,31 @@ class TelegramNotifier(BaseNotifier):
                 except Exception as e:
                     await update.message.reply_text(f"❌ 屏蔽失败: {e}")
                 return
-            
+
             # 无参数时显示交互式菜单
             await _show_block_artist_menu(update.message)
-        
+
         async def _show_block_artist_menu(message, page: int = 0):
             """显示画师屏蔽管理菜单"""
             from database import get_blocked_artists
             blocked = await get_blocked_artists()
-            
+
             lines = ["🎨 *画师屏蔽管理*\n"]
-            
+
             # 分页显示
             per_page = 10
             total_pages = (len(blocked) + per_page - 1) // per_page if blocked else 1
             page = max(0, min(page, total_pages - 1))
-            
+
             start = page * per_page
             end = start + per_page
             page_items = blocked[start:end]
-            
+
             if blocked:
                 lines.append(f"当前屏蔽 *{len(blocked)}* 个画师 (第 {page+1}/{total_pages} 页):\n")
             else:
                 lines.append("_暂无屏蔽画师_\n")
-            
+
             # 构建按钮网格
             rows = []
             row = []
@@ -2359,7 +2461,7 @@ class TelegramNotifier(BaseNotifier):
                     row = []
             if row:
                 rows.append(row)
-            
+
             # 分页按钮
             nav_row = []
             if page > 0:
@@ -2368,19 +2470,19 @@ class TelegramNotifier(BaseNotifier):
                 nav_row.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"block_artist_page:{page+1}"))
             if nav_row:
                 rows.append(nav_row)
-            
+
             # 操作按钮
             rows.append([InlineKeyboardButton("➕ 添加画师", callback_data="block_artist_add")])
             rows.append([InlineKeyboardButton("⬅️ 返回菜单", callback_data="menu:main")])
-            
+
             keyboard = InlineKeyboardMarkup(rows)
-            
+
             await message.reply_text(
                 "\n".join(lines),
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
-        
+
         # /unblock_artist 指令 - 交互式取消屏蔽画师
         async def cmd_unblock_artist(update, context):
             user_id = update.message.from_user.id
@@ -2388,12 +2490,20 @@ class TelegramNotifier(BaseNotifier):
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
             
+            chat_id = update.message.chat_id
+            
+            # 删除用户的 /unblock_artist 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /unblock_artist 命令失败: {e}")
+            
             args = context.args
             if args:
                 # 有参数时直接取消屏蔽（向后兼容）
                 try:
                     artist_id = int(args[0])
-                    
+
                     from database import unblock_artist
                     result = await unblock_artist(artist_id)
                     if result:
@@ -2405,35 +2515,35 @@ class TelegramNotifier(BaseNotifier):
                 except Exception as e:
                     await update.message.reply_text(f"❌ 取消屏蔽失败: {e}")
                 return
-            
+
             # 无参数时显示交互式选择列表
             await _show_unblock_artist_menu(update.message)
-        
+
         async def _show_unblock_artist_menu(message, page: int = 0):
             """显示取消画师屏蔽选择菜单"""
             from database import get_blocked_artists
             blocked = await get_blocked_artists()
-            
+
             if not blocked:
                 await message.reply_text(
                     "🎨 当前没有屏蔽的画师",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")]])
                 )
                 return
-            
+
             lines = ["❎ *选择要取消屏蔽的画师*\n"]
-            
+
             # 分页显示
             per_page = 10
             total_pages = (len(blocked) + per_page - 1) // per_page
             page = max(0, min(page, total_pages - 1))
-            
+
             start = page * per_page
             end = start + per_page
             page_items = blocked[start:end]
-            
+
             lines.append(f"共 {len(blocked)} 个画师 (第 {page+1}/{total_pages} 页):\n")
-            
+
             # 构建按钮网格
             rows = []
             row = []
@@ -2445,7 +2555,7 @@ class TelegramNotifier(BaseNotifier):
                     row = []
             if row:
                 rows.append(row)
-            
+
             # 分页按钮
             nav_row = []
             if page > 0:
@@ -2454,23 +2564,23 @@ class TelegramNotifier(BaseNotifier):
                 nav_row.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"unblock_artist_page:{page+1}"))
             if nav_row:
                 rows.append(nav_row)
-            
+
             rows.append([InlineKeyboardButton("⬅️ 返回菜单", callback_data="menu:main")])
-            
+
             keyboard = InlineKeyboardMarkup(rows)
-            
+
             await message.reply_text(
                 "\n".join(lines),
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
-        
+
         # 处理画师屏蔽相关回调
         async def _handle_block_artist_callback(query, data: str):
             """处理画师屏蔽管理相关回调"""
             user_id = query.from_user.id
             chat_id = query.message.chat_id
-            
+
             if data == "block_artist_add":
                 await query.edit_message_text(
                     "🎨 请回复要屏蔽的画师ID\n\n_可附带画师名称，格式: `12345 画师名`_",
@@ -2479,11 +2589,11 @@ class TelegramNotifier(BaseNotifier):
                 )
                 self._pending_input = {"type": "block_artist", "chat_id": chat_id}
                 return
-            
+
             if data == "block_artist_cancel":
                 await _show_block_artist_menu(query.message)
                 return
-            
+
             if data.startswith("block_artist_remove:"):
                 artist_id = int(data.split(":", 1)[1])
                 try:
@@ -2496,12 +2606,12 @@ class TelegramNotifier(BaseNotifier):
                 # 刷新菜单
                 await _show_block_artist_menu(query.message)
                 return
-            
+
             if data.startswith("block_artist_page:"):
                 page = int(data.split(":", 1)[1])
                 await _show_block_artist_menu(query.message, page)
                 return
-            
+
             if data.startswith("unblock_artist:"):
                 artist_id = int(data.split(":", 1)[1])
                 try:
@@ -2517,12 +2627,12 @@ class TelegramNotifier(BaseNotifier):
                 # 刷新菜单
                 await _show_unblock_artist_menu(query.message)
                 return
-            
+
             if data.startswith("unblock_artist_page:"):
                 page = int(data.split(":", 1)[1])
                 await _show_unblock_artist_menu(query.message, page)
                 return
-        
+
         self._app.add_handler(CommandHandler("push", cmd_push))
         self._app.add_handler(CommandHandler("restart", cmd_restart))
         self._app.add_handler(CommandHandler("schedule", cmd_schedule))
@@ -2541,19 +2651,19 @@ class TelegramNotifier(BaseNotifier):
         self._app.add_handler(CommandHandler("help", cmd_help))
         self._app.add_handler(CallbackQueryHandler(callback_handler))
         self._app.add_handler(MessageHandler(filters.REPLY & filters.TEXT, reply_handler))
-        
+
         # 添加错误处理器，捕获轮询过程中的错误
         async def error_handler(update, context):
             """处理 Bot 轮询过程中的错误"""
             logger.error(f"Telegram 轮询错误: {context.error}")
             # 对于网络错误，updater 会自动重试，这里只做记录
-            
+
         self._app.add_error_handler(error_handler)
-        
+
         # 真正启动 Bot (非阻塞模式)
         await self._app.initialize()
         await self._app.start()
-        
+
         # 注册菜单指令 (需在启动后)
         try:
             from telegram import BotCommand
@@ -2575,15 +2685,15 @@ class TelegramNotifier(BaseNotifier):
             logger.info("✅ Telegram 指令菜单已注册")
         except Exception as e:
             logger.error(f"注册指令菜单失败: {e}")
-        
+
         # 轮询级别的错误回调（非异步）
         self._consecutive_errors = 0
-        
+
         def polling_error_callback(error):
             """处理轮询过程中的网络错误（updater 会自动重试）"""
             self._consecutive_errors += 1
             logger.warning(f"Telegram 轮询网络错误 (第 {self._consecutive_errors} 次): {error}")
-        
+
         # 启动轮询，配置更健壮的参数
         await self._app.updater.start_polling(
             poll_interval=1.0,           # 轮询间隔（秒）
@@ -2592,11 +2702,11 @@ class TelegramNotifier(BaseNotifier):
             error_callback=polling_error_callback,  # 轮询错误回调
         )
         logger.info("Telegram Bot 轮询已启动（已配置自动重连）")
-        
+
         # 启动健康检查后台任务
         if not getattr(self, "_polling_health_task", None) or self._polling_health_task.done():
             self._polling_health_task = asyncio.create_task(self._polling_health_check())
-    
+
     async def _restart_polling(self) -> bool:
         """更稳健的轮询重启（带退避与重试）"""
         max_retries = 3
@@ -2606,9 +2716,9 @@ class TelegramNotifier(BaseNotifier):
                 await self.stop_polling()
             except Exception as e:
                 logger.warning(f"stop_polling 出错: {e}")
-            
+
             await asyncio.sleep(1)
-            
+
             try:
                 await self.start_polling()
                 logger.info("✅ Telegram 轮询已重启")
@@ -2618,22 +2728,22 @@ class TelegramNotifier(BaseNotifier):
                 logger.error(f"重启轮询失败 (尝试 {attempt+1}/{max_retries}): {e}")
                 await asyncio.sleep(delay)
                 delay *= 2
-        
+
         logger.error("Telegram 轮询多次重启失败，进入失败保护")
         return False
 
     async def _polling_health_check(self):
         """后台健康检查：监控轮询状态，自动重启"""
         await asyncio.sleep(60)  # 启动后等待一分钟再开始检查
-        
+
         while True:
             try:
                 await asyncio.sleep(60)  # 每分钟检查一次
-                
+
                 if not self._app or not self._app.updater:
                     logger.warning("Telegram 应用实例不存在，跳过健康检查")
                     continue
-                
+
                 # 检查 updater 是否还在运行
                 if not self._app.updater.running:
                     logger.error("🔄 检测到 Telegram 轮询已停止，正在尝试重启...")
@@ -2643,46 +2753,46 @@ class TelegramNotifier(BaseNotifier):
                     if self._consecutive_errors > 0:
                         logger.info(f"Telegram 轮询恢复正常 (之前累计 {self._consecutive_errors} 次错误)")
                         self._consecutive_errors = 0
-                        
+
             except asyncio.CancelledError:
                 logger.info("健康检查任务已取消")
                 break
             except Exception as e:
                 logger.error(f"健康检查异常: {e}")
-    
+
     async def stop_polling(self):
         """停止 Bot 轮询（用于健康检查重启）"""
         try:
             if self._polling_health_task and not self._polling_health_task.done():
                 self._polling_health_task.cancel()
-            
+
             if self._app:
                 if self._app.updater and self._app.updater.running:
                     await self._app.updater.stop()
                     logger.info("Telegram updater 已停止")
-                
+
                 # 停止 application
                 if self._app.running:
                     await self._app.stop()
                     logger.info("Telegram application 已停止")
-                
+
                 # 关闭 application
                 await self._app.shutdown()
                 logger.info("Telegram application 已关闭")
-                
+
                 self._app = None
         except Exception as e:
             logger.error(f"停止 Telegram 轮询时出错: {e}")
-    
+
     async def send(self, illusts: list[Illust], custom_title: str = None) -> list[int]:
         """发送推送 (异步队列)"""
         if not illusts:
             return []
-        
+
         # 将任务加入队列，同时捕获当前的 batch_mode 避免竞态
         await self.send_queue.put((illusts, custom_title, self.batch_mode))
         logger.info(f"已将 {len(illusts)} 个作品加入推送队列 (mode={self.batch_mode})")
-        
+
         # 返回占位符，表示已接受 (避免阻塞调用方)
         return [-1]
 
@@ -2690,17 +2800,17 @@ class TelegramNotifier(BaseNotifier):
         """直接发送推送 (内部方法)"""
         if not illusts:
             return []
-        
+
         # 使用传入的 batch_mode，若未指定则回退到 self.batch_mode
         mode = batch_mode if batch_mode is not None else self.batch_mode
-        
+
         # Telegraph 批量模式
         if mode == "telegraph" and len(illusts) > 1:
             return await self._send_batch_telegraph(illusts, custom_title)
-        
+
         # 逐条发送模式
         success_ids = []
-        
+
         for illust in illusts:
             try:
                 is_sent = await self._send_single(illust)
@@ -2709,9 +2819,9 @@ class TelegramNotifier(BaseNotifier):
                 await asyncio.sleep(2.0)  # 避免触发限流 (增加到2s)
             except Exception as e:
                 logger.error(f"发送作品 {illust.id} 失败: {e}")
-        
+
         return success_ids
-    
+
     async def _init_telegraph(self):
         """延迟初始化 Telegraph 客户端"""
         if self._telegraph is None:
@@ -2723,17 +2833,17 @@ class TelegramNotifier(BaseNotifier):
             except Exception as e:
                 logger.error(f"Telegraph 初始化失败: {e}")
                 self._telegraph = False  # 标记为失败，避免重复尝试
-    
+
     async def _send_batch_telegraph(self, illusts: list[Illust], custom_title: str = None) -> list[int]:
         """Telegraph 批量发送模式"""
         import database as db
-        
+
         # 初始化 Telegraph
         await self._init_telegraph()
         if not self._telegraph:
             logger.warning("Telegraph 不可用，降级为逐条发送")
             return await self._send_batch_fallback(illusts)
-        
+
         typing_task = None
         if self.chat_ids:
             typing_task = asyncio.create_task(self._keep_typing(int(self.chat_ids[0])))
@@ -2745,10 +2855,10 @@ class TelegramNotifier(BaseNotifier):
             else:
                 header = f"📚 今日推送 ({len(illusts)}张)"
                 page_title = f"Pixiv 推送 - {len(illusts)}张"
-            
+
             lines = [header + "\n"]
             import html
-            
+
             # 创建 Telegraph 页面
             telegraph_url = None
             try:
@@ -2762,9 +2872,9 @@ class TelegramNotifier(BaseNotifier):
             except Exception as e:
                 logger.warning(f"创建 Telegraph 页面失败: {e}")
                 lines.append(f"\n🔗 <i>(详情页创建失败)</i>")
-            
+
             text = "\n".join(lines)
-            
+
             # 构建反馈按钮
             keyboard = InlineKeyboardMarkup([
                 [
@@ -2772,7 +2882,7 @@ class TelegramNotifier(BaseNotifier):
                     InlineKeyboardButton("👎 不喜欢", callback_data="batch_dislike"),
                 ]
             ])
-            
+
             # 发送消息
             success_ids = []
             for chat_id in self.chat_ids:
@@ -2792,12 +2902,12 @@ class TelegramNotifier(BaseNotifier):
                         logger.info(f"Telegraph 批量消息已发送: {len(illusts)} 个作品")
                 except Exception as e:
                     logger.error(f"发送批量消息到 {chat_id} 失败: {e}")
-            
+
             return success_ids
         finally:
             if typing_task:
                 typing_task.cancel()
-    
+
     async def _upload_image(self, session, url: str) -> str | None:
         """下载并上传图片到 Telegraph"""
         try:
@@ -2805,18 +2915,18 @@ class TelegramNotifier(BaseNotifier):
             import aiohttp
             from PIL import Image
             import io
-            
+
             # 1. 下载
             image_data = await download_image_with_referer(
-                session, 
-                url, 
+                session,
+                url,
                 semaphore=self.client.download_semaphore if self.client else None,
                 proxy=self.proxy_url
             )
             if not image_data:
                 logger.warning(f"下载失败: {url}")
                 return None
-            
+
             # 2. 转换与压缩 (Telegraph 限制 5MB，且要求格式正确)
             # 我们统一转换为 JPEG 以避免 PNG/WebP 兼容问题
             try:
@@ -2830,28 +2940,28 @@ class TelegramNotifier(BaseNotifier):
                         img = bg
                     elif img.mode != 'RGB':
                         img = img.convert('RGB')
-                    
+
                     # 尺寸限制 (Telegraph 虽无明确尺寸限制但过大会失败)
                     if max(img.size) > 2560: # 2K
                          img.thumbnail((2560, 2560), Image.Resampling.LANCZOS)
-                    
+
                     output = io.BytesIO()
                     img.save(output, format="JPEG", quality=90, optimize=True)
-                    
+
                     # 再次检查大小，确保 < 5MB
                     if output.tell() > 5 * 1024 * 1024:
                          output.seek(0)
                          output.truncate()
                          img.save(output, format="JPEG", quality=75, optimize=True)
-                    
+
                     image_data = output.getvalue()
             except Exception as e:
                 logger.warning(f"图片转换失败 {url}: {e}，尝试直接上传")
-            
+
             # 3. 上传
             data = aiohttp.FormData()
             data.add_field('file', image_data, filename='image.jpeg', content_type='image/jpeg')
-            
+
             async with session.post('https://telegra.ph/upload', data=data) as resp:
                 if resp.status == 200:
                     json_resp = await resp.json()
@@ -2872,10 +2982,10 @@ class TelegramNotifier(BaseNotifier):
         import aiohttp
         import asyncio
         import html
-        
+
         # 准备结果容器 (为了保持顺序)
         results = [None] * len(illusts)
-        
+
         async def process_one(idx, illust, sem, session):
             async with sem:
                 img_src = None
@@ -2885,38 +2995,38 @@ class TelegramNotifier(BaseNotifier):
                     target_url = illust.image_urls[0].replace("original", "medium") if "original" in illust.image_urls[0] else illust.image_urls[0]
                     # 如果原图太大，Telegraph 也会拒收 (限制 5MB)
                     # 这里的 target_url 是 pixiv 的 url
-                    
+
                     src_path = await self._upload_image(session, target_url)
                     if src_path:
                         img_src = f"https://telegra.ph{src_path}"
                     else:
                         # 失败回退到反代
                         img_src = get_pixiv_cat_url(illust.id)
-                
+
                 # 构建 HTML 片段
                 parts = []
                 if img_src:
                     parts.append(f'<img src="{img_src}"/>')
-                
+
                 safe_title = html.escape(illust.title)
                 safe_user = html.escape(illust.user_name)
-                
+
                 parts.append(f'<h4>#{idx} {safe_title}</h4>')
                 parts.append(f'<p>画师: <a href="https://pixiv.net/users/{illust.user_id}">{safe_user}</a></p>')
                 parts.append(f'<p>❤️ {illust.bookmark_count} | 👁 {illust.view_count}</p>')
                 parts.append(f'<p><a href="https://pixiv.net/i/{illust.id}">Pixiv 原图</a></p>')
                 parts.append('<hr/>')
-                
+
                 results[idx-1] = "".join(parts)
-        
+
         # 限制并发
         sem = asyncio.Semaphore(5)
         async with aiohttp.ClientSession() as session:
             tasks = [process_one(i, ill, sem, session) for i, ill in enumerate(illusts, 1)]
             await asyncio.gather(*tasks)
-        
+
         return "".join([r for r in results if r])
-    
+
     async def _send_batch_fallback(self, illusts: list[Illust]) -> list[int]:
         """批量模式降级：逐条发送"""
         success_ids = []
@@ -2928,7 +3038,7 @@ class TelegramNotifier(BaseNotifier):
             except Exception as e:
                 logger.error(f"发送作品 {illust.id} 失败: {e}")
         return success_ids
-    
+
     def _build_batch_select_keyboard(self, action: str, count: int) -> InlineKeyboardMarkup:
         """构建作品选择按钮"""
         rows = []
@@ -2941,23 +3051,23 @@ class TelegramNotifier(BaseNotifier):
                     callback_data=f"batch_select:{action}:{j + 1}"
                 ))
             rows.append(row)
-        
+
         # 添加全选和取消按钮
         rows.append([
-            InlineKeyboardButton("✅ 全部" + ("喜欢" if action == "like" else "不喜欢"), 
+            InlineKeyboardButton("✅ 全部" + ("喜欢" if action == "like" else "不喜欢"),
                                callback_data=f"batch_all:{action}"),
             InlineKeyboardButton("❌ 取消", callback_data="batch_cancel"),
         ])
-        
+
         return InlineKeyboardMarkup(rows)
-        
+
     async def send_text(self, text: str, buttons: list[tuple[str, str]] | None = None) -> bool:
         """发送文本消息到所有目标"""
         markup = None
         if buttons:
             kb = [[InlineKeyboardButton(label, callback_data=data)] for label, data in buttons]
             markup = InlineKeyboardMarkup(kb)
-        
+
         success = True
         for chat_id in self.chat_ids:
             try:
@@ -2966,39 +3076,39 @@ class TelegramNotifier(BaseNotifier):
                 logger.error(f"Telegram 发送文本到 {chat_id} 失败: {e}")
                 success = False
         return success
-    
+
     async def push_illusts(
-        self, 
-        illusts: list, 
-        message_prefix: str = "", 
+        self,
+        illusts: list,
+        message_prefix: str = "",
         reply_to_message_id: int | None = None
     ) -> dict[int, int]:
         """
         推送作品列表（用于连锁推荐等场景）
-        
+
         Args:
             illusts: 作品列表
             message_prefix: 消息前缀，会添加到 caption 开头
             reply_to_message_id: 要回复的消息 ID（用于形成消息链）
-        
+
         Returns:
             dict[illust_id, message_id]: 成功发送的作品 ID 到消息 ID 的映射
         """
         if not illusts:
             return {}
-        
+
         result_map = {}  # illust_id -> message_id
-        
+
         for illust in illusts:
             try:
                 # 构建 caption
                 caption = self.format_message(illust)
                 if message_prefix:
                     caption = f"{message_prefix}\n\n{caption}"
-                
+
                 keyboard = self._build_keyboard(illust)
                 topic_id = self._resolve_topic_id(illust)
-                
+
                 # 下载图片
                 image_data = None
                 if self.client and illust.image_urls:
@@ -3008,13 +3118,13 @@ class TelegramNotifier(BaseNotifier):
                             image_data = self._compress_image(image_data)
                     except Exception as e:
                         logger.warning(f"下载图片失败: {e}")
-                
+
                 # 发送到第一个 chat_id（通常连锁推送只发给触发者所在的 chat）
                 # 如果需要广播给所有 chat，可以改为遍历
                 chat_id = self.chat_ids[0] if self.chat_ids else None
                 if not chat_id:
                     continue
-                
+
                 sent_message = None
                 try:
                     if image_data:
@@ -3043,37 +3153,37 @@ class TelegramNotifier(BaseNotifier):
                             read_timeout=60,
                             write_timeout=60
                         ))
-                    
+
                     if sent_message:
                         self._message_illust_map[sent_message.message_id] = illust.id
                         result_map[illust.id] = sent_message.message_id
                         logger.info(f"🔗 连锁推送成功: {illust.id} -> msg_id={sent_message.message_id}")
-                        
+
                 except Exception as e:
                     logger.error(f"连锁推送到 {chat_id} 失败: {e}")
-                
+
                 await asyncio.sleep(1)  # 避免触发限流
-                
+
             except Exception as e:
                 logger.error(f"处理连锁作品 {illust.id} 失败: {e}")
-        
+
         return result_map
-    
+
     async def _send_single(self, illust: Illust) -> bool:
         """发送单个作品"""
         caption = self.format_message(illust)
         keyboard = self._build_keyboard(illust)
-        
+
         # 动态 Topic ID
         topic_id = self._resolve_topic_id(illust)
-        
+
         if getattr(illust, 'type', 'illust') == 'ugoira':
             return await self._send_video(illust, caption, keyboard, topic_id)
-        
+
         # 多页逻辑
         if illust.page_count > self.max_pages:
             # 超过阈值：强制降级为封面模式
-            # 在 caption 之后追加“长篇内容”提示
+            # 在 caption 之后追加"长篇内容"提示
             long_caption = caption.replace("🎨", "📚 [长篇精选] 🎨")
             long_caption += f"\n\n<i>(本作品共 {illust.page_count} 页，仅展示封面)</i>"
             return await self._send_photo(illust, long_caption, keyboard, topic_id)
@@ -3084,7 +3194,7 @@ class TelegramNotifier(BaseNotifier):
         else:
             # 多图打包模式 (2 到 max_pages 页)
             return await self._send_media_group(illust, caption, keyboard, topic_id)
-    
+
     async def _send_photo(self, illust: Illust, caption: str, keyboard: InlineKeyboardMarkup, topic_id: int | None = None) -> bool:
         """发送单张图片到所有目标"""
         any_success = False
@@ -3097,7 +3207,7 @@ class TelegramNotifier(BaseNotifier):
                     image_data = self._compress_image(image_data)
             except Exception as e:
                 logger.warning(f"下载图片失败: {e}")
-        
+
         # 检测是否为 R18 内容（标签、标题、画师名）
         r18_keywords = ("r-18", "r18", "r-18g", "🔞")
         text_to_check = " ".join([
@@ -3107,7 +3217,7 @@ class TelegramNotifier(BaseNotifier):
         ])
         has_r18_keyword = any(kw in text_to_check for kw in r18_keywords)
         is_r18 = bool(getattr(illust, "is_r18", False) or has_r18_keyword)
-        
+
         # 发送到所有 chat_id
         for chat_id in self.chat_ids:
             sent_message = None
@@ -3138,26 +3248,26 @@ class TelegramNotifier(BaseNotifier):
                         write_timeout=60,
                         has_spoiler=is_r18
                     ))
-                
+
                 if sent_message:
                     self._message_illust_map[sent_message.message_id] = illust.id
                     any_success = True
             except Exception as e:
                 logger.error(f"发送到 {chat_id} 失败: {e}")
-        
+
         # 限制映射大小，避免内存泄漏
         if len(self._message_illust_map) > 200:
             oldest_keys = list(self._message_illust_map.keys())[:100]
             for k in oldest_keys:
                 del self._message_illust_map[k]
-        
+
         return any_success
 
     async def _send_video(self, illust: Illust, caption: str, keyboard: InlineKeyboardMarkup, topic_id: int | None = None) -> bool:
         """发送动图视频 (优先PixivCat，失败则尝试本地转码)"""
         any_success = False
         video_url = f"https://pixiv.cat/{illust.id}.mp4"
-        
+
         # 检测是否为 R18 内容（标签、标题、画师名）
         r18_keywords = ("r-18", "r18", "r-18g", "🔞")
         text_to_check = " ".join([
@@ -3167,17 +3277,17 @@ class TelegramNotifier(BaseNotifier):
         ])
         has_r18_keyword = any(kw in text_to_check for kw in r18_keywords)
         is_r18 = bool(getattr(illust, "is_r18", False) or has_r18_keyword)
-        
+
         # 缓存本地转码结果，避免重复下载转换
         local_mp4_bytes = None
-        
+
         for chat_id in self.chat_ids:
             try:
                 # 1. 如果已有本地数据，直接发送
                 if local_mp4_bytes:
                     video_file = BytesIO(local_mp4_bytes)
                     video_file.name = f"{illust.id}.mp4"
-                    
+
                     await _retry_on_flood(lambda: self.bot.send_animation(
                         chat_id=chat_id,
                         animation=video_file,
@@ -3212,7 +3322,7 @@ class TelegramNotifier(BaseNotifier):
                 except Exception:
                     # 如果 URL 发送失败，进入转码流程
                     pass
-                
+
                 # 3. 尝试本地转码 (仅当反代失败且尚未转码时)
                 if not local_mp4_bytes and self.client:
                     logger.info(f"反代链接不可用，尝试本地转码作品 {illust.id}...")
@@ -3222,7 +3332,7 @@ class TelegramNotifier(BaseNotifier):
                             u_meta = meta['ugoira_metadata']
                             zip_url = u_meta['zip_urls']['medium']
                             frames = u_meta['frames']
-                            
+
                             logger.info(f"正在下载动图包: {zip_url}")
                             zip_data = await self.client.download_image(zip_url)
                             if zip_data:
@@ -3236,7 +3346,7 @@ class TelegramNotifier(BaseNotifier):
                 if local_mp4_bytes:
                     video_file = BytesIO(local_mp4_bytes)
                     video_file.name = f"{illust.id}.mp4"
-                    
+
                     sent = await _retry_on_flood(lambda: self.bot.send_animation(
                         chat_id=chat_id,
                         animation=video_file,
@@ -3252,7 +3362,7 @@ class TelegramNotifier(BaseNotifier):
                         self._message_illust_map[sent.message_id] = illust.id
                         any_success = True
                     continue
-                    
+
                 # 5. 最终降级：发送封面
                 raise Exception("所有动图发送方式均失败")
 
@@ -3266,12 +3376,12 @@ class TelegramNotifier(BaseNotifier):
                 except:
                    pass
         return any_success
-    
+
     async def _send_media_group(self, illust: Illust, caption: str, keyboard: InlineKeyboardMarkup, topic_id: int | None = None) -> bool:
         """发送多图到所有目标"""
         media = []
         any_success = False
-        
+
         # 检测是否为 R18 内容（标签、标题、画师名）
         r18_keywords = ("r-18", "r18", "r-18g", "🔞")
         text_to_check = " ".join([
@@ -3281,7 +3391,7 @@ class TelegramNotifier(BaseNotifier):
         ])
         has_r18_keyword = any(kw in text_to_check for kw in r18_keywords)
         is_r18 = bool(getattr(illust, "is_r18", False) or has_r18_keyword)
-        
+
         # 限制在 max_pages 以内 (且不能超过 TG API 的 10 张限制)
         limit = min(self.max_pages, 10, len(illust.image_urls))
         for i, url in enumerate(illust.image_urls[:limit]):
@@ -3293,7 +3403,7 @@ class TelegramNotifier(BaseNotifier):
                     photo = BytesIO(image_data)
                 else:
                     photo = get_pixiv_cat_url(illust.id, i)
-                
+
                 media.append(InputMediaPhoto(
                     media=photo,
                     caption=caption if i == 0 else None,
@@ -3302,7 +3412,7 @@ class TelegramNotifier(BaseNotifier):
                 ))
             except Exception as e:
                 logger.warning(f"获取第{i+1}页失败: {e}")
-        
+
         if media:
             for chat_id in self.chat_ids:
                 try:
@@ -3315,7 +3425,7 @@ class TelegramNotifier(BaseNotifier):
                         connect_timeout=60
                     ))
                     any_success = True  # 图片发送成功即视为成功
-                    
+
                     # MediaGroup不支持按钮，单独发送 (允许失败)
                     try:
                         await _retry_on_flood(lambda: self.bot.send_message(
@@ -3326,22 +3436,22 @@ class TelegramNotifier(BaseNotifier):
                         ))
                     except Exception as e:
                         logger.warning(f"发送操作按钮到 {chat_id} 失败: {e}")
-                        
+
                 except Exception as e:
                     logger.error(f"发送 MediaGroup 到 {chat_id} 失败: {e}")
         return any_success
-    
+
     def format_message(self, illust: Illust) -> str:
         """格式化消息"""
         display_tags_list = getattr(illust, 'display_tags', illust.tags)
         tags = " ".join(f"#{t}" for t in display_tags_list[:5])
         r18_mark = "🔞 " if illust.is_r18 else ""
         ugoira_mark = "🎞️ " if getattr(illust, 'type', 'illust') == 'ugoira' else ""
-        
+
         # 获取匹配度（如果有）
         match_score = getattr(illust, 'match_score', None)
         match_line = f"🎯 匹配度: {match_score*100:.0f}%\n" if match_score is not None else ""
-        
+
         return (
             f"{r18_mark}{ugoira_mark}🎨 <b>{illust.title}</b>\n"
             f"👤 {illust.user_name} (ID: {illust.user_id})\n"
@@ -3350,7 +3460,7 @@ class TelegramNotifier(BaseNotifier):
             f"🏷️ {tags}\n"
             f"🔗 <a href=\"https://pixiv.net/i/{illust.id}\">原图链接</a>"
         )
-    
+
     def _build_keyboard(self, illust: Illust) -> InlineKeyboardMarkup:
         """构建反馈按钮 (Vivi增强版)"""
         return InlineKeyboardMarkup([
@@ -3363,7 +3473,7 @@ class TelegramNotifier(BaseNotifier):
                 InlineKeyboardButton("🔗 Pixiv", url=f"https://www.pixiv.net/artworks/{illust.id}")
             ]
         ])
-    
+
     async def handle_feedback(self, illust_id: int, action: str, chat_id: int | None = None) -> bool:
         """处理反馈回调 (Vivi增强版: 同步Pixiv操作)"""
         typing_task = None
@@ -3373,7 +3483,7 @@ class TelegramNotifier(BaseNotifier):
             # 1. 调用原有的XP更新逻辑
             if self.on_feedback:
                 await self.on_feedback(illust_id, action)
-            
+
             # 2. 同步到Pixiv API
             if self.client:
                 try:
@@ -3386,13 +3496,13 @@ class TelegramNotifier(BaseNotifier):
                         try:
                             result = await self.client.api.user_follow_add(user_id, restrict='public')
                             logger.info(f"[Pixiv] user_follow_add API调用完成，user_id={user_id}, result={result}")
-                            
+
                             # 验证是否真的关注了
                             await asyncio.sleep(1)  # 等待API同步
                             user_detail = await self.client.api.user_detail(user_id)
                             is_followed = user_detail.get('user', {}).get('is_followed', False)
                             logger.info(f"[Pixiv] 验证关注状态: user_id={user_id}, is_followed={is_followed}")
-                            
+
                             if is_followed:
                                 logger.info(f"[Pixiv] 关注画师成功(已验证): {user_id}")
                             else:
@@ -3403,10 +3513,10 @@ class TelegramNotifier(BaseNotifier):
                             logger.error(traceback.format_exc())
                 except Exception as e:
                     logger.error(f"[Pixiv] 操作失败: {e}")
-            
+
             return True
         finally:
             if typing_task:
                 typing_task.cancel()
-    
+
 
