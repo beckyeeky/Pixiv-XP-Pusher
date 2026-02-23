@@ -3073,9 +3073,15 @@ class TelegramNotifier(BaseNotifier):
             except Exception as e:
                 logger.warning(f"下载图片失败: {e}")
         
-        # 检测是否为 R18 内容
-        has_r18_tag = any(t.lower().replace(" ", "") in ("r-18", "r18", "r-18g") for t in (illust.tags or []))
-        is_r18 = bool(getattr(illust, "is_r18", False) or has_r18_tag)
+        # 检测是否为 R18 内容（标签、标题、画师名）
+        r18_keywords = ("r-18", "r18", "r-18g", "🔞")
+        text_to_check = " ".join([
+            " ".join(t.lower() for t in (illust.tags or [])),
+            (illust.title or "").lower(),
+            (illust.user_name or "").lower()
+        ])
+        has_r18_keyword = any(kw in text_to_check for kw in r18_keywords)
+        is_r18 = bool(getattr(illust, "is_r18", False) or has_r18_keyword)
         
         # 发送到所有 chat_id
         for chat_id in self.chat_ids:
@@ -3127,6 +3133,16 @@ class TelegramNotifier(BaseNotifier):
         any_success = False
         video_url = f"https://pixiv.cat/{illust.id}.mp4"
         
+        # 检测是否为 R18 内容（标签、标题、画师名）
+        r18_keywords = ("r-18", "r18", "r-18g", "🔞")
+        text_to_check = " ".join([
+            " ".join(t.lower() for t in (illust.tags or [])),
+            (illust.title or "").lower(),
+            (illust.user_name or "").lower()
+        ])
+        has_r18_keyword = any(kw in text_to_check for kw in r18_keywords)
+        is_r18 = bool(getattr(illust, "is_r18", False) or has_r18_keyword)
+        
         # 缓存本地转码结果，避免重复下载转换
         local_mp4_bytes = None
         
@@ -3145,7 +3161,8 @@ class TelegramNotifier(BaseNotifier):
                         parse_mode="HTML",
                         message_thread_id=topic_id,
                         read_timeout=60,
-                        write_timeout=60
+                        write_timeout=60,
+                        has_spoiler=is_r18
                     ))
                     any_success = True
                     continue
@@ -3160,7 +3177,8 @@ class TelegramNotifier(BaseNotifier):
                         parse_mode="HTML",
                         message_thread_id=topic_id,
                         read_timeout=60,
-                        write_timeout=60
+                        write_timeout=60,
+                        has_spoiler=is_r18
                     ))
                     if sent:
                         self._message_illust_map[sent.message_id] = illust.id
@@ -3202,7 +3220,8 @@ class TelegramNotifier(BaseNotifier):
                         parse_mode="HTML",
                         message_thread_id=topic_id,
                         read_timeout=120,
-                        write_timeout=120
+                        write_timeout=120,
+                        has_spoiler=is_r18
                     ))
                     if sent:
                         self._message_illust_map[sent.message_id] = illust.id
@@ -3228,6 +3247,16 @@ class TelegramNotifier(BaseNotifier):
         media = []
         any_success = False
         
+        # 检测是否为 R18 内容（标签、标题、画师名）
+        r18_keywords = ("r-18", "r18", "r-18g", "🔞")
+        text_to_check = " ".join([
+            " ".join(t.lower() for t in (illust.tags or [])),
+            (illust.title or "").lower(),
+            (illust.user_name or "").lower()
+        ])
+        has_r18_keyword = any(kw in text_to_check for kw in r18_keywords)
+        is_r18 = bool(getattr(illust, "is_r18", False) or has_r18_keyword)
+        
         # 限制在 max_pages 以内 (且不能超过 TG API 的 10 张限制)
         limit = min(self.max_pages, 10, len(illust.image_urls))
         for i, url in enumerate(illust.image_urls[:limit]):
@@ -3243,7 +3272,8 @@ class TelegramNotifier(BaseNotifier):
                 media.append(InputMediaPhoto(
                     media=photo,
                     caption=caption if i == 0 else None,
-                    parse_mode="HTML" if i == 0 else None
+                    parse_mode="HTML" if i == 0 else None,
+                    has_spoiler=is_r18
                 ))
             except Exception as e:
                 logger.warning(f"获取第{i+1}页失败: {e}")
