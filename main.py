@@ -4,9 +4,19 @@ import asyncio
 import logging
 import os
 import sys
+import socket
 from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+# 单实例检查 (Socket 锁)
+LOCK_SOCKET = "/tmp/pixiv_xp_pusher.lock"
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    sock.bind(LOCK_SOCKET)
+except socket.error:
+    print("另一个实例已在运行，退出。", file=sys.stderr)
+    sys.exit(0)
 
 # Ensure project root in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
