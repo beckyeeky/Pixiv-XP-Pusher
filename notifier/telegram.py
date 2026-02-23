@@ -1270,7 +1270,7 @@ class TelegramNotifier(BaseNotifier):
                                     pass
                                 
                                 if sent_ids:
-                                    await self.bot.send_message(chat_id, f"✅ 画师作品集生成完毕 (共 {len(sent_ids)} 张图)")
+                                    await self.bot.send_message(chat_id, f"✅ 画师作品集生成完毕 (共 {sample_size} 张图，已加入队列)")
                                 else:
                                     await self.bot.send_message(chat_id, "❌ 生成画师作品集失败")
                             else:
