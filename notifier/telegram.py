@@ -1162,8 +1162,18 @@ class TelegramNotifier(BaseNotifier):
                 await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
                 return
             
+            # 保存用户消息ID用于删除
+            user_msg_id = update.message.message_id
+            chat_id = update.message.chat_id
+            
             await update.message.reply_text("🔄 正在重启服务...")
             logger.info(f"用户 {user_id} 触发重启")
+            
+            # 删除用户的 /restart 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=user_msg_id)
+            except Exception as e:
+                logger.debug(f"删除重启命令失败: {e}")
             
             # 使用 execv 重启自身（替换当前进程）
             import os
