@@ -1166,8 +1166,8 @@ class TelegramNotifier(BaseNotifier):
             user_msg_id = update.message.message_id
             chat_id = update.message.chat_id
             
-            await update.message.reply_text("🔄 正在重启服务...")
-            logger.info(f"用户 {user_id} 触发重启")
+            await update.message.reply_text("🔄 正在通过 systemctl 重启服务...")
+            logger.info(f"用户 {user_id} 触发 systemctl 重启")
             
             # 删除用户的 /restart 命令
             try:
@@ -1175,12 +1175,16 @@ class TelegramNotifier(BaseNotifier):
             except Exception as e:
                 logger.debug(f"删除重启命令失败: {e}")
             
-            # 使用 execv 重启自身（替换当前进程）
-            import os
-            import sys
+            # 使用 systemctl 重启服务（systemd 管理）
+            import subprocess
+            import asyncio
             # 延迟一点点确保消息发送出去
             await asyncio.sleep(1)
-            os.execl(sys.executable, sys.executable, *sys.argv)
+            try:
+                subprocess.Popen(["systemctl", "restart", "pixiv-pusher"], 
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                logger.error(f"systemctl 重启失败: {e}")
         
         # /push 指令 - 交互式推送菜单
         async def cmd_push(update, context):
