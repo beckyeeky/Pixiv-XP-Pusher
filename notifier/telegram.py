@@ -3073,6 +3073,10 @@ class TelegramNotifier(BaseNotifier):
             except Exception as e:
                 logger.warning(f"下载图片失败: {e}")
         
+        # 检测是否为 R18 内容
+        has_r18_tag = any(t.lower().replace(" ", "") in ("r-18", "r18", "r-18g") for t in (illust.tags or []))
+        is_r18 = bool(getattr(illust, "is_r18", False) or has_r18_tag)
+        
         # 发送到所有 chat_id
         for chat_id in self.chat_ids:
             sent_message = None
@@ -3086,7 +3090,8 @@ class TelegramNotifier(BaseNotifier):
                         parse_mode="HTML",
                         message_thread_id=topic_id,
                         read_timeout=60,
-                        write_timeout=60
+                        write_timeout=60,
+                        has_spoiler=is_r18
                     ))
                 else:
                     # Fallback: 使用反代链接
@@ -3099,7 +3104,8 @@ class TelegramNotifier(BaseNotifier):
                         parse_mode="HTML",
                         message_thread_id=self.thread_id,
                         read_timeout=60,
-                        write_timeout=60
+                        write_timeout=60,
+                        has_spoiler=is_r18
                     ))
                 
                 if sent_message:
