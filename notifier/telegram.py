@@ -1154,7 +1154,24 @@ class TelegramNotifier(BaseNotifier):
             elif text == "2":
                 await self.handle_feedback(illust_id, "dislike", chat_id=message.chat_id)
                 await message.reply_text("👎 已记录不喜欢")
-                
+
+        # /restart 指令 - 重启服务
+        async def cmd_restart(update, context):
+            user_id = update.message.from_user.id
+            if self.allowed_users and user_id not in self.allowed_users:
+                await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
+                return
+            
+            await update.message.reply_text("🔄 正在重启服务...")
+            logger.info(f"用户 {user_id} 触发重启")
+            
+            # 使用 execv 重启自身（替换当前进程）
+            import os
+            import sys
+            # 延迟一点点确保消息发送出去
+            await asyncio.sleep(1)
+            os.execl(sys.executable, sys.executable, *sys.argv)
+        
         # /push 指令 - 交互式推送菜单
         async def cmd_push(update, context):
             user_id = update.message.from_user.id
@@ -2462,6 +2479,7 @@ class TelegramNotifier(BaseNotifier):
                 return
         
         self._app.add_handler(CommandHandler("push", cmd_push))
+        self._app.add_handler(CommandHandler("restart", cmd_restart))
         self._app.add_handler(CommandHandler("schedule", cmd_schedule))
         self._app.add_handler(CommandHandler("xp", cmd_xp))
         self._app.add_handler(CommandHandler("stats", cmd_stats))
