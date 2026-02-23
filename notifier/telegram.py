@@ -1059,6 +1059,11 @@ class TelegramNotifier(BaseNotifier):
                     if input_type == "block_tag":
                         from database import block_tag
                         await block_tag(text)
+                        # 删除用户输入消息
+                        try:
+                            await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
+                        except Exception:
+                            pass
                         await message.reply_text(f"✅ 已屏蔽标签: `{text}`", parse_mode="Markdown")
                         
                     elif input_type == "mute_tag":
@@ -1066,6 +1071,11 @@ class TelegramNotifier(BaseNotifier):
                         from database import mute_tag
                         tag = normalize_tag(text.replace('#', ''))
                         until_ts = await mute_tag(tag, hours=24)
+                        # 删除用户输入消息
+                        try:
+                            await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
+                        except Exception:
+                            pass
                         await message.reply_text(f"🔕 已静音标签: `{tag}`\n⏳ 截止: `{until_ts}`", parse_mode="Markdown")
                         
                     elif input_type == "block_artist":
@@ -1074,6 +1084,11 @@ class TelegramNotifier(BaseNotifier):
                             return
                         from database import block_artist
                         await block_artist(int(text))
+                        # 删除用户输入消息
+                        try:
+                            await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
+                        except Exception:
+                            pass
                         await message.reply_text(f"✅ 已屏蔽画师: `{text}`", parse_mode="Markdown")
                         
                     elif input_type == "set_limit":
@@ -1122,6 +1137,11 @@ class TelegramNotifier(BaseNotifier):
                         
                         if self.on_action:
                             await self.on_action("update_schedule", schedule_data)
+                            # 删除用户输入消息
+                            try:
+                                await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
+                            except Exception:
+                                pass
                             await message.reply_text(f"✅ 已添加推送时间: `{text}`", parse_mode="Markdown")
                         else:
                             await message.reply_text("⚠️ 未配置 Action 回调")
@@ -1132,6 +1152,11 @@ class TelegramNotifier(BaseNotifier):
                             CronTrigger.from_crontab(text)
                             if self.on_action:
                                 await self.on_action("update_schedule", text)
+                                # 删除用户输入消息
+                                try:
+                                    await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
+                                except Exception:
+                                    pass
                                 await message.reply_text(f"✅ 定时任务已更新: `{text}`", parse_mode="Markdown")
                             else:
                                 await message.reply_text("⚠️ 未配置 Action 回调")
