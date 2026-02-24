@@ -59,6 +59,8 @@ async def retry_async(coro_func, *args, max_retries: int = 3, delay: float = 5.0
 _task_lock = asyncio.Lock()
 # 允许最多排队 30 个触发
 _queue_limit = asyncio.Semaphore(30)
+# 强制模式标记（跳过队列限制）
+_force_mode = False
 
 async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfiler, sync_client: PixivClient = None):
     """创建并配置推送器（支持多推送渠道）"""
@@ -541,15 +543,18 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
     if sync_client is None:
         sync_client = client
         
-    # 队列深度限制：最多排队 30 个触发
-    try:
-        await asyncio.wait_for(_queue_limit.acquire(), timeout=0)
-    except asyncio.TimeoutError:
-        logger.warning("⏳ 推送触发过于频繁，队列已满(30)，已拒绝本次触发")
-        return
-    except Exception as e:
-        logger.warning(f"⏳ 队列入队失败: {e}")
-        return
+    # 队列深度限制：最多排队 30 个触发（强制模式跳过）
+    if not _force_mode:
+        try:
+            await asyncio.wait_for(_queue_limit.acquire(), timeout=0)
+        except asyncio.TimeoutError:
+            logger.warning("⏳ 推送触发过于频繁，队列已满(30)，已拒绝本次触发")
+            return
+        except Exception as e:
+            logger.warning(f"⏳ 队列入队失败: {e}")
+            return
+    else:
+        logger.info("🚀 强制模式：跳过队列限制")
     
     try:
         if _task_lock.locked():
@@ -768,10 +773,11 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
     
         logger.info("=== 推送任务结束 ===")
     finally:
-        try:
-            _queue_limit.release()
-        except Exception:
-            pass
+        if not _force_mode:
+            try:
+                _queue_limit.release()
+            except Exception:
+                pass
 
 
 async def run_once(config: dict):
@@ -1065,8 +1071,13 @@ def main():
     parser.add_argument("--now", action="store_true", help="启动时立即执行一次，然后保持后台运行（调度模式）")
     parser.add_argument("--reset-xp", action="store_true", help="重置 XP 数据")
     parser.add_argument("--test", action="store_true", help="快速测试模式")
+    parser.add_argument("--force", action="store_true", help="强制触发，跳过队列限制")
     parser.add_argument("--config", type=str, default=str(CONFIG_PATH), help="配置文件路径")
     args = parser.parse_args()
+    
+    # 全局标记强制模式
+    global _force_mode
+    _force_mode = args.force
     
     setup_logging()
     
