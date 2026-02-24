@@ -45,6 +45,10 @@ pixiv_tokens.json
 geckodriver.log
 *.log
 
+# Runtime artifacts
+bot.pid
+masked_sample.jpg
+
 # Mac
 .DS_Store
 

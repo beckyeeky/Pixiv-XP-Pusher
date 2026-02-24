@@ -6,7 +6,7 @@ import asyncio
 import logging
 import random
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -26,6 +26,7 @@ class Illust:
     user_id: int
     user_name: str
     tags: list[str]
+    tags_translated: list[str] = field(default_factory=list)
     bookmark_count: int
     view_count: int
     page_count: int
@@ -548,6 +549,7 @@ class PixivClient:
         """解析API返回的作品数据"""
         raw_tags = data.get("tags", [])
         tags = [t["name"] for t in raw_tags]
+        tags_translated = [(t.get("translated_name") or "").strip() for t in raw_tags]
         
         # 提取翻译并异步保存
         try:
@@ -598,6 +600,7 @@ class PixivClient:
             user_id=data.get("user", {}).get("id", 0),
             user_name=data.get("user", {}).get("name", ""),
             tags=tags,
+            tags_translated=tags_translated,
             bookmark_count=data.get("total_bookmarks", 0),
             view_count=data.get("total_view", 0),
             page_count=data.get("page_count", 1),

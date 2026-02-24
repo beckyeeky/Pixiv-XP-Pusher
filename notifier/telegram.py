@@ -1576,6 +1576,7 @@ class TelegramNotifier(BaseNotifier):
                         tag_translations = []
                         for ill in batch:
                             for tag_name, tag_trans in zip(ill.tags or [], ill.tags_translated or []):
+                                tag_trans = (tag_trans or "").strip()
                                 if tag_trans and tag_name:
                                     tag_translations.append((tag_name, tag_trans))
                         if tag_translations:

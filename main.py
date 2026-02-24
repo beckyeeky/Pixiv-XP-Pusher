@@ -216,6 +216,7 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                 user_id=cached.get("user_id", 0),
                 user_name=cached.get("user_name", ""),
                 tags=cached.get("tags", []),
+                tags_translated=[],
                 bookmark_count=0,
                 view_count=0,
                 page_count=1,

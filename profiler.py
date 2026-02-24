@@ -665,6 +665,7 @@ class XPProfiler:
                 user_id=user_id,
                 user_name="",
                 tags=cleaned_tags,
+                tags_translated=[],
                 bookmark_count=0,
                 view_count=0,
                 page_count=1,
