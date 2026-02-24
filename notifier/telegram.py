@@ -1972,6 +1972,80 @@ class TelegramNotifier(BaseNotifier):
             except Exception as e:
                 await update.message.reply_text(f"❌ 获取失败: {e}")
 
+        # /status 指令 - 查看系统状态
+        async def cmd_status(update, context):
+            user_id = update.message.from_user.id
+            if self.allowed_users and user_id not in self.allowed_users:
+                await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
+                return
+
+            chat_id = update.message.chat_id
+
+            # 删除用户的 /status 命令
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /status 命令失败: {e}")
+
+            # 获取队列状态
+            queue_info = "未知"
+            try:
+                if self.on_action:
+                    # 通过回调获取队列状态
+                    import asyncio
+                    future = asyncio.Future()
+                    
+                    async def _get_status():
+                        try:
+                            result = await self.on_action("get_status", None)
+                            future.set_result(result)
+                        except Exception as e:
+                            future.set_result(None)
+                    
+                    asyncio.create_task(_get_status())
+                    # 等待最多2秒
+                    try:
+                        status_data = await asyncio.wait_for(future, timeout=2.0)
+                        if status_data:
+                            queue_info = f"{status_data.get('queue_used', '?')}/30"
+                        else:
+                            queue_info = "无法获取"
+                    except asyncio.TimeoutError:
+                        queue_info = "获取超时"
+                else:
+                    queue_info = "未配置回调"
+            except Exception as e:
+                queue_info = f"获取失败: {e}"
+
+            # 读取配置信息
+            try:
+                from config import load_config
+                cfg = load_config()
+                filter_cfg = cfg.get("filter", {})
+                fetcher_cfg = cfg.get("fetcher", {})
+                
+                daily_limit = filter_cfg.get("daily_limit", 20)
+                date_range = fetcher_cfg.get("date_range_days", 7)
+                bookmark_threshold = fetcher_cfg.get("bookmark_threshold", {}).get("search", 1000)
+                match_threshold = fetcher_cfg.get("match_score", {}).get("min_threshold", 0.4)
+                exclude_ai = filter_cfg.get("exclude_ai", True)
+                r18_mode = filter_cfg.get("r18_mode", "mixed")
+                
+                lines = [
+                    "📊 *系统状态*\n",
+                    f"*推送队列*: `{queue_info}`",
+                    f"*每日上限*: `{daily_limit}`",
+                    f"*时间范围*: `{date_range}` 天",
+                    f"*收藏阈值*: `{bookmark_threshold}`",
+                    f"*匹配阈值*: `{match_threshold}`",
+                    f"*AI过滤*: `{'开启' if exclude_ai else '关闭'}`",
+                    f"*R18模式*: `{r18_mode}`",
+                ]
+                
+                await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            except Exception as e:
+                await update.message.reply_text(f"❌ 获取状态失败: {e}")
+
         # /block 指令 - 交互式标签屏蔽管理
         async def cmd_block(update, context):
             user_id = update.message.from_user.id
@@ -2667,6 +2741,7 @@ class TelegramNotifier(BaseNotifier):
         self._app.add_handler(CommandHandler("schedule", cmd_schedule))
         self._app.add_handler(CommandHandler("xp", cmd_xp))
         self._app.add_handler(CommandHandler("stats", cmd_stats))
+        self._app.add_handler(CommandHandler("status", cmd_status))
         self._app.add_handler(CommandHandler("block", cmd_block))
         self._app.add_handler(CommandHandler("unblock", cmd_unblock))
         self._app.add_handler(CommandHandler("mute", cmd_mute))

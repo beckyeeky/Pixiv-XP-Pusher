@@ -361,6 +361,26 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
              # 使用 create_task 异步执行，避免阻塞 Bot 响应
              # force=True 跳过队列限制
              asyncio.create_task(main_task(config, client, profiler, notifiers, sync_client, force=True))
+
+        elif action == "get_status":
+            # 获取系统状态
+            try:
+                # Semaphore 没有直接的方法获取当前占用数
+                # 我们通过检查 _task_lock 和返回基本信息
+                task_running = _task_lock.locked()
+                
+                # 尝试估计队列使用量（不够精确但够用）
+                # 注意：asyncio.Semaphore 没有公开当前计数器
+                import sys
+                status_info = {
+                    "queue_used": "运行中" if task_running else "空闲",
+                    "queue_limit": 30,
+                    "task_running": task_running,
+                }
+                return status_info
+            except Exception as e:
+                logger.warning(f"获取状态失败: {e}")
+                return None
              
         elif action == "update_schedule":
             # 更新调度计划 (支持多个时间)
