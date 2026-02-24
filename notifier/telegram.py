@@ -163,7 +163,17 @@ class TelegramNotifier(BaseNotifier):
 
                 try:
                     # 调用原始发送逻辑，使用任务指定的 batch_mode
-                    await self._send_direct(illusts, custom_title, batch_mode)
+                    sent_ids = await self._send_direct(illusts, custom_title, batch_mode)
+                    # 标记已推送
+                    if sent_ids:
+                        try:
+                            import database as db
+                            for ill in illusts:
+                                if ill.id in sent_ids:
+                                    source = getattr(ill, 'source', 'unknown')
+                                    await db.mark_pushed(ill.id, source)
+                        except Exception as e:
+                            logger.warning(f"队列内标记推送状态失败: {e}")
                 except Exception as e:
                     logger.error(f"推送任务执行失败: {e}")
 

@@ -755,6 +755,14 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
                                 if source in ['xp_search', 'subscription', 'ranking', 'related', 'engagement_artists']:
                                     await db_module.update_strategy_stats(source, is_success=False)
                     
+                    # 双重保险：对所有候选作品标记已推送（防止队列返回占位符导致漏标记）
+                    for ill in filtered:
+                        try:
+                            source = getattr(ill, 'source', 'unknown')
+                            await mark_pushed(ill.id, source)
+                        except Exception as e:
+                            logger.debug(f"推送后标记作品失败: {e}")
+                    
                         # 将消息 ID 写入数据库缓存（用于连锁推送引用）
                         for notifier in notifiers:
                             if hasattr(notifier, '_message_illust_map'):
