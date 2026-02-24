@@ -356,12 +356,11 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                 logger.error(f"重试失败: {e}")
         
         elif action == "run_task":
-             # 手动触发推送任务
-             logger.info("🤖 收到 Bot 手动推送指令")
-             # 确保 config, client, profiler, notifiers 可用
-             # 这里是一个闭包，可以直接访问外部变量
+             # 手动触发推送任务 (Bot 命令跳过队列)
+             logger.info("🤖 收到 Bot 手动推送指令 (跳过队列)")
              # 使用 create_task 异步执行，避免阻塞 Bot 响应
-             asyncio.create_task(main_task(config, client, profiler, notifiers, sync_client))
+             # force=True 跳过队列限制
+             asyncio.create_task(main_task(config, client, profiler, notifiers, sync_client, force=True))
              
         elif action == "update_schedule":
             # 更新调度计划 (支持多个时间)
@@ -531,20 +530,21 @@ async def setup_services(config: dict):
     return main_client, sync_client, profiler, notifiers
 
 
-async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, notifiers: list, sync_client: PixivClient = None):
+async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, notifiers: list, sync_client: PixivClient = None, force: bool = False):
     """
     执行一次完整的推送任务 (依赖外部服务)
     
     Args:
         client: 主客户端 (用于搜索、排行榜、下载)
         sync_client: 同步客户端 (用于获取关注动态，可选)
+        force: 是否强制跳过队列限制
     """
     # 如果未传入 sync_client，使用 main_client
     if sync_client is None:
         sync_client = client
         
     # 队列深度限制：最多排队 30 个触发（强制模式跳过）
-    if not _force_mode:
+    if not force:
         try:
             await asyncio.wait_for(_queue_limit.acquire(), timeout=0)
         except asyncio.TimeoutError:
@@ -773,14 +773,14 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
     
         logger.info("=== 推送任务结束 ===")
     finally:
-        if not _force_mode:
+        if not force:
             try:
                 _queue_limit.release()
             except Exception:
                 pass
 
 
-async def run_once(config: dict):
+async def run_once(config: dict, force: bool = False):
     """立即执行一次"""
     main_client, sync_client, profiler, notifiers = await setup_services(config)
     
@@ -793,7 +793,7 @@ async def run_once(config: dict):
     # 所以 --once 真的就是 "Fire and Forget".
     
     try:
-        await main_task(config, main_client, profiler, notifiers, sync_client)
+        await main_task(config, main_client, profiler, notifiers, sync_client, force=force)
     finally:
         await main_client.close()
         # 如果 sync_client 是独立实例，也需要关闭
@@ -1103,7 +1103,7 @@ def main():
         args.once = True
     
     if args.once:
-        asyncio.run(run_once(config))
+        asyncio.run(run_once(config, force=args.force))
     else:
         # If --now is set, run_scheduler will handle immediate run
         asyncio.run(run_scheduler(config, run_immediately=args.now))
