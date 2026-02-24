@@ -1511,25 +1511,34 @@ class TelegramNotifier(BaseNotifier):
             import database as db_mod
             expanded_keywords = []
             has_expansion = False
+            
+            # 定义无意义的标签模式（不应作为搜索扩展）
+            meaningless_patterns = ("users入り", "user入り")
+            
             for k in keywords:
                 # 1. 首先尝试精确匹配翻译名 -> 原标签名
                 original = await db_mod.get_original_tag(k)
                 if original and original.lower() != k.lower():
-                    expanded_keywords.append(original)
-                    has_expansion = True
-                    continue
+                    # 检查是否是意义标签
+                    if not any(p in original for p in meaningless_patterns):
+                        expanded_keywords.append(original)
+                        has_expansion = True
+                        continue
                 
                 # 2. 如果用户输入的是日文标签，检查是否需要补充其他翻译形式
                 # 模糊搜索相似标签
-                similar_tags = await db_mod.search_tags_with_translation(k, limit=3)
+                similar_tags = await db_mod.search_tags_with_translation(k, limit=5)
                 if similar_tags and len(similar_tags) > 0:
-                    # 找到相似标签，使用第一个匹配
-                    matched_name = similar_tags[0][0]  # name
-                    matched_trans = similar_tags[0][1]  # translated_name
-                    if matched_name.lower() != k.lower():
-                        expanded_keywords.append(matched_name)
-                        has_expansion = True
-                        continue
+                    # 找到相似标签，过滤掉无意义的，使用第一个有效的
+                    for tag_name, tag_trans in similar_tags:
+                        if tag_name.lower() != k.lower() and not any(p in tag_name for p in meaningless_patterns):
+                            expanded_keywords.append(tag_name)
+                            has_expansion = True
+                            break
+                    else:
+                        # 没有找到有效的相似标签，使用原关键词
+                        expanded_keywords.append(k)
+                    continue
                 
                 # 3. 没有扩展，使用原关键词
                 expanded_keywords.append(k)
