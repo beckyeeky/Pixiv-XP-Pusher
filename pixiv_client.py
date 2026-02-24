@@ -559,9 +559,16 @@ class PixivClient:
             
             if tag_translations:
                 # Fire and forget - 保存标签翻译
-                asyncio.create_task(db.save_tag_translations(tag_translations))
+                async def _save_with_log():
+                    try:
+                        await db.save_tag_translations(tag_translations)
+                        logger.debug(f"保存了 {len(tag_translations)} 个标签翻译")
+                    except Exception as e:
+                        logger.warning(f"保存标签翻译失败: {e}")
+                
+                asyncio.create_task(_save_with_log())
         except Exception as e:
-            logger.warning(f"保存标签翻译失败: {e}")
+            logger.warning(f"准备保存标签翻译失败: {e}")
 
         # 获取所有页的原图URL
         image_urls = []

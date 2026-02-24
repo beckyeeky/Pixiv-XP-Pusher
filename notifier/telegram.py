@@ -1497,17 +1497,32 @@ class TelegramNotifier(BaseNotifier):
             status_message_ids = []
             user_message_ids = []
 
-            # 扩展关键词 (通过翻译反查)
+            # 扩展关键词 (通过翻译反查 + 模糊匹配)
             import database as db_mod
             expanded_keywords = []
             has_expansion = False
             for k in keywords:
+                # 1. 首先尝试精确匹配翻译名 -> 原标签名
                 original = await db_mod.get_original_tag(k)
                 if original and original.lower() != k.lower():
                     expanded_keywords.append(original)
                     has_expansion = True
-                else:
-                    expanded_keywords.append(k)
+                    continue
+                
+                # 2. 如果用户输入的是日文标签，检查是否需要补充其他翻译形式
+                # 模糊搜索相似标签
+                similar_tags = await db_mod.search_tags_with_translation(k, limit=3)
+                if similar_tags and len(similar_tags) > 0:
+                    # 找到相似标签，使用第一个匹配
+                    matched_name = similar_tags[0][0]  # name
+                    matched_trans = similar_tags[0][1]  # translated_name
+                    if matched_name.lower() != k.lower():
+                        expanded_keywords.append(matched_name)
+                        has_expansion = True
+                        continue
+                
+                # 3. 没有扩展，使用原关键词
+                expanded_keywords.append(k)
 
             if has_expansion:
                  expansion_msg = await self.bot.send_message(
@@ -1554,9 +1569,22 @@ class TelegramNotifier(BaseNotifier):
 
                     # 截取指定批次
                     batch = illusts[offset:offset+20]
+                    
+                    # 从搜索结果中提取并保存标签翻译
+                    try:
+                        import database as db_mod
+                        tag_translations = []
+                        for ill in batch:
+                            for tag_name, tag_trans in zip(ill.tags or [], ill.tags_translated or []):
+                                if tag_trans and tag_name:
+                                    tag_translations.append((tag_name, tag_trans))
+                        if tag_translations:
+                            asyncio.create_task(db_mod.save_tag_translations(tag_translations))
+                            logger.debug(f"从搜索结果保存了 {len(tag_translations)} 个标签翻译")
+                    except Exception as e:
+                        logger.debug(f"保存搜索结果标签翻译失败: {e}")
 
                     # 过滤已推送的
-                    import database as db_mod
                     filtered = [ill for ill in batch if not await db_mod.is_pushed(ill.id)]
 
                     if not filtered:
