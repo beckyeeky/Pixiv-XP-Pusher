@@ -362,6 +362,15 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
              # force=True 跳过队列限制
              asyncio.create_task(main_task(config, client, profiler, notifiers, sync_client, force=True))
 
+        elif action == "run_task_historical":
+            # 历史补充模式推送
+            days = data.get("days", 180) if isinstance(data, dict) else 180
+            logger.info(f"🤖 收到 Bot 历史补充推送指令（近{days}天）(跳过队列)")
+            asyncio.create_task(main_task(
+                config, client, profiler, notifiers, sync_client, 
+                force=True, historical_days=days
+            ))
+
         elif action == "get_status":
             # 获取系统状态
             try:
@@ -550,7 +559,7 @@ async def setup_services(config: dict):
     return main_client, sync_client, profiler, notifiers
 
 
-async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, notifiers: list, sync_client: PixivClient = None, force: bool = False):
+async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, notifiers: list, sync_client: PixivClient = None, force: bool = False, historical_days: int = None):
     """
     执行一次完整的推送任务 (依赖外部服务)
     
@@ -558,6 +567,7 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
         client: 主客户端 (用于搜索、排行榜、下载)
         sync_client: 同步客户端 (用于获取关注动态，可选)
         force: 是否强制跳过队列限制
+        historical_days: 历史补充模式的天数 (覆盖配置中的 date_range_days)
     """
     # 如果未传入 sync_client，使用 main_client
     if sync_client is None:
@@ -628,12 +638,17 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
             logger.info(f"有效关注画师数: {len(all_subs)} (API获取: {len(following_ids)}, 手动: {len(manual_subs)})")
 
             # ContentFetcher: 搜索/排行榜用 client，订阅检查用 sync_client
+            # 历史补充模式：覆盖 date_range_days
+            fetcher_date_range = historical_days if historical_days else fetcher_cfg.get("date_range_days", 7)
+            if historical_days:
+                logger.info(f"📚 历史补充模式：时间范围调整为 {historical_days} 天")
+            
             fetcher = ContentFetcher(
                 client=client,
                 sync_client=sync_client,  # 新增：同步客户端
                 config=config,
                 bookmark_threshold=fetcher_cfg.get("bookmark_threshold", {"search": 1000, "subscription": 0}),
-                date_range_days=fetcher_cfg.get("date_range_days", 7),
+                date_range_days=fetcher_date_range,
                 subscribed_artists=list(manual_subs),
                 discovery_rate=profiler_cfg.get("discovery_rate", 0.1),
                 ranking_config=fetcher_cfg.get("ranking"),

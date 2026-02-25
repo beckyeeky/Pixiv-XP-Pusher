@@ -1254,6 +1254,7 @@ class TelegramNotifier(BaseNotifier):
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📦 今日精选推送", callback_data="push:today")],
+                [InlineKeyboardButton("📚 历史补充 (半年/一年)", callback_data="push:historical")],
                 [InlineKeyboardButton("🎨 画师作品集", callback_data="push:artist")],
                 [InlineKeyboardButton("📌 指定作品ID", callback_data="push:illust")],
                 [InlineKeyboardButton("❌ 取消", callback_data="push_cancel")],
@@ -1399,6 +1400,37 @@ class TelegramNotifier(BaseNotifier):
                 await query.edit_message_text("🚀 正在启动今日精选推送...")
                 if self.on_action:
                     await self.on_action("run_task", None)
+                else:
+                    await query.edit_message_text("⚠️ 内部错误: 未配置 Action 回调")
+                if user_id in self._push_sessions:
+                    del self._push_sessions[user_id]
+                return
+
+            if data == "push:historical":
+                # 历史补充模式 - 选择时间范围
+                session = self._push_sessions.get(user_id, {})
+                session["step"] = "select_historical_range"
+
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📅 最近半年 (180天)", callback_data="historical:180")],
+                    [InlineKeyboardButton("📅 最近一年 (365天)", callback_data="historical:365")],
+                    [InlineKeyboardButton("⬅️ 返回", callback_data="push_cancel")],
+                ])
+
+                await query.edit_message_text(
+                    "📚 *历史补充模式*\n\n选择要补充的历史数据范围:\n"
+                    "_注意：这会抓取大量数据，可能需要较长时间_",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+                return
+
+            if data.startswith("historical:"):
+                # 执行历史补充推送
+                days = int(data.split(":")[1])
+                await query.edit_message_text(f"🚀 正在启动历史补充推送（近{days}天）...")
+                if self.on_action:
+                    await self.on_action("run_task_historical", {"days": days})
                 else:
                     await query.edit_message_text("⚠️ 内部错误: 未配置 Action 回调")
                 if user_id in self._push_sessions:
