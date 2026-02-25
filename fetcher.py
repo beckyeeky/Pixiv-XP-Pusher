@@ -58,6 +58,8 @@ class ContentFetcher:
 
         # 缓存 Tag 的最高热度，避免重复查询 (Session Valid)
         self._search_max_bookmarks_cache = {}
+        
+        logger.debug(f"ContentFetcher 初始化: date_range_days={self.date_range_days}")
     
     def _adaptive_threshold(self, base: int, tag_weight: float, is_combination: bool = False) -> int:
         """

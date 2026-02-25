@@ -243,6 +243,8 @@ class PixivClient:
         # 处理 date_range_days 可能为 None 的情况
         effective_days = date_range_days if date_range_days is not None else 0
         
+        logger.debug(f"search_illusts 被调用: tags={tags}, date_range_days={date_range_days}, effective_days={effective_days}")
+        
         while len(illusts) < limit:
             async with self.rate_limiter:
                 if next_qs:

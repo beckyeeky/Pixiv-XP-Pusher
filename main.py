@@ -639,9 +639,9 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
 
             # ContentFetcher: 搜索/排行榜用 client，订阅检查用 sync_client
             # 历史补充模式：覆盖 date_range_days
-            fetcher_date_range = historical_days if historical_days else fetcher_cfg.get("date_range_days", 7)
-            if historical_days:
-                logger.info(f"📚 历史补充模式：时间范围调整为 {historical_days} 天")
+            fetcher_date_range = historical_days if historical_days is not None else fetcher_cfg.get("date_range_days", 7)
+            if historical_days is not None:
+                logger.info(f"📚 历史补充模式：时间范围调整为 {historical_days} 天 (实际使用: {fetcher_date_range})")
             
             fetcher = ContentFetcher(
                 client=client,
