@@ -2828,12 +2828,14 @@ class TelegramNotifier(BaseNotifier):
                 BotCommand("search", "🔍 定向搜图"),
                 BotCommand("xp", "🎯 查看XP画像"),
                 BotCommand("stats", "📈 策略表现"),
+                BotCommand("status", "📊 系统状态"),
                 BotCommand("schedule", "⏰ 定时任务"),
                 BotCommand("block", "🚫 屏蔽标签"),
                 BotCommand("mute", "🔕 静音标签24h"),
                 BotCommand("unmute", "🔔 取消静音"),
                 BotCommand("block_artist", "🎨 屏蔽画师"),
                 BotCommand("batch", "📦 批量模式"),
+                BotCommand("restart", "🔄 重启服务"),
                 BotCommand("help", "ℹ️ 帮助信息"),
             ]
             await self._app.bot.set_my_commands(commands)
