@@ -626,8 +626,8 @@ class PixivClient:
         """添加收藏"""
         restrict = "private" if private else "public"
         try:
-            # 如果 5 分钟内未刷新过 token，则先刷新
-            if not self._token_last_refresh or (datetime.now() - self._token_last_refresh).total_seconds() > 300:
+            # 如果 30 分钟内未刷新过 token，则先刷新
+            if not self._token_last_refresh or (datetime.now() - self._token_last_refresh).total_seconds() > 1800:
                 await self.login()
             async with self.rate_limiter:
                 await self.api.illust_bookmark_add(
