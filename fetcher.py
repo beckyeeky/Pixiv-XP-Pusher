@@ -353,9 +353,13 @@ class ContentFetcher:
         else:
             try:
                 # 搜索该 Tag 按收藏数降序，获取第一张作为参考
+                # 使用与主流程一致的时间范围，避免历史补充模式仍用默认30天
+                content_type = self.config.get("filter", {}).get("content_type", "all")
                 top_illusts = await self.client.search_illusts(
                     tags=[tag], 
                     limit=1,
+                    date_range_days=self.date_range_days,
+                    content_type=content_type,
                     # search_illusts 内部默认是 popular_desc，所以取第1个就是 Max Bookmarks 左右
                 )
                 if top_illusts:
