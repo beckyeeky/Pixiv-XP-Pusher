@@ -780,7 +780,7 @@ class TelegramNotifier(BaseNotifier):
                 return
 
             # ===== 推送菜单回调处理 =====
-            if data.startswith("push"):
+            if data.startswith("push") or data.startswith("historical:"):
                 await _handle_push_callback(query, data)
                 return
 
