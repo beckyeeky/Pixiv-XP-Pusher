@@ -202,18 +202,32 @@ class ContentFilter:
         result = []
         filtered_by_time = 0
         
+        # 过滤原因统计
+        reason_stats = {
+            "pushed": 0,
+            "time": 0,
+            "blacklist": 0,
+            "muted": 0,
+            "ai": 0,
+            "r18": 0,
+            "ugoira": 0,
+        }
+        
         for illust in illusts:
             # 1. 去重 (使用预加载的集合)
             if illust.id in pushed_ids:
+                reason_stats["pushed"] += 1
                 continue
             
             # 2. 时间过滤
             if time_threshold and illust.create_date < time_threshold:
                 filtered_by_time += 1
+                reason_stats["time"] += 1
                 continue
             
             # 3. R-18G 排除
             if self._has_blacklisted_tag(illust):
+                reason_stats["blacklist"] += 1
                 continue
 
             # 3.5 临时静音标签过滤 (/mute)
@@ -225,6 +239,7 @@ class ContentFilter:
                         for t in (illust.tags or [])
                     )
                     if muted_hit:
+                        reason_stats["muted"] += 1
                         continue
             except Exception as e:
                 logger.warning(f"静音标签检查失败: {e}")
@@ -233,9 +248,11 @@ class ContentFilter:
             if self.exclude_ai:
                 # 4.1 Pixiv 官方标记
                 if illust.ai_type == 2:
+                    reason_stats["ai"] += 1
                     continue
                 # 4.2 标签关键词检测
                 if self._is_ai_by_tags(illust):
+                    reason_stats["ai"] += 1
                     continue
             
             # 4.1 涩涩模式 (R-18 Mode Control)
@@ -249,10 +266,12 @@ class ContentFilter:
             if mode_str in ("true", "r18_only", "pure"):
                 # 纯 18+ 模式：只允许 R-18
                 if not is_r18:
+                    reason_stats["r18"] += 1
                     continue
             elif mode_str in ("safe", "18-", "clean"):
                 # 净网模式：禁止 R-18
                 if is_r18:
+                    reason_stats["r18"] += 1
                     continue
             else:
                 # 默认/mixed/neutral：不因 R-18 属性过滤，全凭匹配度
@@ -260,6 +279,7 @@ class ContentFilter:
             
             # 4.2 动图过滤
             if self.skip_ugoira and getattr(illust, 'type', 'illust') == 'ugoira':
+                reason_stats["ugoira"] += 1
                 continue
             
             result.append(illust)
@@ -524,6 +544,21 @@ class ContentFilter:
             top_3 = scored_result[:3]
             log_items = [f"{i[0].title[:10]}(score={i[1]:.2f})" for i in top_3]
             logger.info(f"匹配度 Top3: {', '.join(log_items)}")
+        
+        # 输出过滤原因统计
+        try:
+            logger.info(
+                "过滤原因统计: "
+                f"pushed={reason_stats['pushed']} | "
+                f"time={reason_stats['time']} | "
+                f"blacklist={reason_stats['blacklist']} | "
+                f"muted={reason_stats['muted']} | "
+                f"ai={reason_stats['ai']} | "
+                f"r18={reason_stats['r18']} | "
+                f"ugoira={reason_stats['ugoira']}"
+            )
+        except Exception:
+            pass
         
         logger.info(f"过滤后剩余 {len(final_result)} 个作品 (涉及 {len(artist_count)} 个画师)")
         return final_result
