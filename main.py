@@ -671,6 +671,11 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
             # 3. 过滤
             filter_cfg = config.get("filter", {})
             match_cfg = fetcher_cfg.get("match_score", {})
+            # 历史补充模式：临时放宽 min_create_days
+            if historical_days is not None:
+                filter_cfg = dict(filter_cfg)
+                filter_cfg["min_create_days"] = 0
+                logger.info("📚 历史补充模式：min_create_days 临时设为 0")
         
             # 初始化可选的 Embedder (AI 语义匹配)
             embedder = None
