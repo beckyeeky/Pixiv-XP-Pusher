@@ -71,6 +71,7 @@ class PixivClient:
         self._session: Optional[aiohttp.ClientSession] = None
         self._logged_in = False
         self.proxy_url = proxy_url
+        self._token_last_refresh: Optional[datetime] = None
     
     async def login(self) -> bool:
         """
@@ -87,6 +88,7 @@ class PixivClient:
                 auth_info = await self.api.login(refresh_token=self.refresh_token)
             
             self._logged_in = True
+            self._token_last_refresh = datetime.now()
             
             # 从响应中获取用户信息
             user_data = auth_info.get("response", {}).get("user", {})
@@ -624,6 +626,9 @@ class PixivClient:
         """添加收藏"""
         restrict = "private" if private else "public"
         try:
+            # 如果 5 分钟内未刷新过 token，则先刷新
+            if not self._token_last_refresh or (datetime.now() - self._token_last_refresh).total_seconds() > 300:
+                await self.login()
             async with self.rate_limiter:
                 await self.api.illust_bookmark_add(
                     illust_id=illust_id,
@@ -647,4 +652,9 @@ class PixivClient:
             
         if result and result.get("illust"):
             return self._parse_illust(result["illust"])
+        # 记录返回内容（用于诊断未找到作品原因）
+        try:
+            logger.warning(f"illust_detail 返回空: illust_id={illust_id}, result={result}")
+        except Exception:
+            pass
         return None

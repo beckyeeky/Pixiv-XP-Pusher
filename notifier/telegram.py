@@ -3651,6 +3651,11 @@ class TelegramNotifier(BaseNotifier):
                         # 对于 follow，illust_id 参数实际上是 user_id（从 callback_data 传递过来的）
                         user_id = illust_id
                         try:
+                            # 如果 5 分钟内未刷新过 token，则先刷新
+                            if hasattr(self.client, "_token_last_refresh"):
+                                from datetime import datetime
+                                if not self.client._token_last_refresh or (datetime.now() - self.client._token_last_refresh).total_seconds() > 300:
+                                    await self.client.login()
                             result = await self.client.api.user_follow_add(user_id, restrict='public')
                             logger.info(f"[Pixiv] user_follow_add API调用完成，user_id={user_id}, result={result}")
 
