@@ -307,6 +307,10 @@ class PixivClient:
             since: 仅获取此时间之后的作品
             limit: 返回数量
         """
+        # Token 30分钟刷新检查
+        if not self._token_last_refresh or (datetime.now() - self._token_last_refresh).total_seconds() > 1800:
+            await self.login()
+        
         illusts = []
         next_qs = None
         
@@ -354,6 +358,10 @@ class PixivClient:
             illust_id: 种子作品ID
             limit: 返回数量
         """
+        # Token 30分钟刷新检查
+        if not self._token_last_refresh or (datetime.now() - self._token_last_refresh).total_seconds() > 1800:
+            await self.login()
+        
         illusts = []
         next_qs = None
         
@@ -413,6 +421,10 @@ class PixivClient:
             logger.warning("排行榜功能需要登录")
             return []
         
+        # Token 30分钟刷新检查
+        if not self._token_last_refresh or (datetime.now() - self._token_last_refresh).total_seconds() > 1800:
+            await self.login()
+        
         illusts = []
         next_qs = None
         
@@ -455,6 +467,10 @@ class PixivClient:
         """获取关注的用户ID列表"""
         if not self._logged_in:
             return set()
+        
+        # Token 30分钟刷新检查
+        if not self._token_last_refresh or (datetime.now() - self._token_last_refresh).total_seconds() > 1800:
+            await self.login()
             
         following_ids = set()
         restrict = "public" if public else "private"
@@ -495,6 +511,10 @@ class PixivClient:
         """获取关注用户的最新作品"""
         if not self._logged_in:
             return []
+        
+        # Token 30分钟刷新检查
+        if not self._token_last_refresh or (datetime.now() - self._token_last_refresh).total_seconds() > 1800:
+            await self.login()
             
         illusts = []
         next_qs = None
