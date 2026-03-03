@@ -646,13 +646,26 @@ class PixivClient:
         if not self._logged_in:
             logger.warning("获取详情需要登录")
             return None
-            
+        
         async with self.rate_limiter:
             result = await self.api.illust_detail(illust_id)
-            
+        
+        # 检查是否 Token 过期
+        if result and result.get("error"):
+            error_msg = str(result.get("error", {}))
+            if "invalid_grant" in error_msg or "OAuth" in error_msg:
+                logger.warning(f"Token 过期，正在刷新... ({illust_id})")
+                try:
+                    await self.login()
+                    # 重试一次
+                    async with self.rate_limiter:
+                        result = await self.api.illust_detail(illust_id)
+                except Exception as e:
+                    logger.error(f"刷新 Token 后重试失败: {e}")
+        
         if result and result.get("illust"):
             return self._parse_illust(result["illust"])
-        # 记录返回内容（用于诊断未找到作品原因）
+        
         try:
             logger.warning(f"illust_detail 返回空: illust_id={illust_id}, result={result}")
         except Exception:
