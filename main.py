@@ -95,7 +95,12 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
             if notifiers_list:
                 for notifier in notifiers_list:
                     if isinstance(notifier, TelegramNotifier) and notifier.chat_ids:
-                        typing_task = asyncio.create_task(notifier._keep_typing(int(notifier.chat_ids[0])))
+                        try:
+                            chat_id = int(notifier.chat_ids[0]) if notifier.chat_ids else None
+                            if chat_id:
+                                typing_task = asyncio.create_task(notifier._keep_typing(chat_id))
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"无效的 chat_id: {notifier.chat_ids[0] if notifier.chat_ids else None}: {e}")
                         break
             try:
                 # 1. 获取关联
@@ -126,7 +131,11 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                 
                 for ill in related:
                     # 严格去重 (ID 类型统一)
-                    if int(ill.id) == int(seed_illust.id):
+                    try:
+                        if ill.id and seed_illust.id and int(ill.id) == int(seed_illust.id):
+                            continue
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"ID 类型转换失败: ill.id={ill.id}, seed_illust.id={seed_illust.id}: {e}")
                         continue
                     
                     # 本次候选队列去重，防止 API 返回重复作品
