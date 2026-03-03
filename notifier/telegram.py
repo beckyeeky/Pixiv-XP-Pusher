@@ -3180,7 +3180,7 @@ class TelegramNotifier(BaseNotifier):
         sem = asyncio.Semaphore(5)
         async with aiohttp.ClientSession() as session:
             tasks = [process_one(i, ill, sem, session) for i, ill in enumerate(illusts, 1)]
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         return "".join([r for r in results if r])
 
