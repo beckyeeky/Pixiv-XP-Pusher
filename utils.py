@@ -11,6 +11,7 @@ import logging
 import random
 import time
 from functools import wraps
+from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -18,6 +19,22 @@ import io
 import zipfile
 import tempfile
 import os
+
+
+@contextmanager
+def temp_file_context(suffix: str = ""):
+    """临时文件上下文管理器，确保文件在退出时被删除"""
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+        yield tmp_path
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 import aiohttp
 
@@ -343,10 +360,7 @@ def convert_ugoira_to_mp4(zip_data: bytes, frames: list[dict]) -> bytes:
             # 由于 BytesIO 写入比较复杂（需要 format='mp4' 且 ffmpeg 支持 pipe），
             # 使用临时文件更稳妥
             
-            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_file:
-                tmp_path = tmp_file.name
-            
-            try:
+            with temp_file_context(suffix=".mp4") as tmp_path:
                 # fix: libx264 要求宽高必须是偶数，添加 pad filter
                 # scale=trunc(iw/2)*2:trunc(ih/2)*2 也可以，但 pad 不会变形
                 imageio.mimwrite(
@@ -361,11 +375,8 @@ def convert_ugoira_to_mp4(zip_data: bytes, frames: list[dict]) -> bytes:
                 
                 with open(tmp_path, "rb") as f:
                     mp4_bytes = f.read()
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            
-            return mp4_bytes
+                
+                return mp4_bytes
             
     except Exception as e:
         logger.error(f"动图转换失败: {e}")
