@@ -93,6 +93,8 @@ class ContentFetcher:
         
         # 获取高权重组合 (Smart Search)
         top_pairs = await db.get_top_tag_pairs(limit=50)
+        if not top_pairs:
+            top_pairs = []
         used_tags = set()
         
         tasks = []
