@@ -445,10 +445,17 @@ class PixivClient:
         
         illusts = []
         next_qs = None
+        seen_qs_hashes = set()  # 检测重复的 next_qs，防止死循环
         
         while len(illusts) < limit:
             async with self.rate_limiter:
                 if next_qs:
+                    # 检测是否重复
+                    qs_hash = hash(str(next_qs))
+                    if qs_hash in seen_qs_hashes:
+                        logger.warning("检测到重复的 next_qs，停止获取以防死循环")
+                        break
+                    seen_qs_hashes.add(qs_hash)
                     result = await self.api.illust_ranking(**next_qs)
                 else:
                     params = {"mode": mode}
