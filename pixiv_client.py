@@ -553,15 +553,27 @@ class PixivClient:
         """
         下载图片（带Referer）
         """
+        # 确保 session 已创建
         if not self._session:
             self._session = aiohttp.ClientSession()
         
-        return await download_image_with_referer(
-            self._session,
-            url,
-            self.download_semaphore,
-            proxy=self.proxy_url
-        )
+        try:
+            return await download_image_with_referer(
+                self._session,
+                url,
+                self.download_semaphore,
+                proxy=self.proxy_url
+            )
+        except Exception:
+            # 发生异常时关闭 session 防止资源泄露
+            # 下次下载时会重新创建
+            if self._session:
+                try:
+                    await self._session.close()
+                except Exception:
+                    pass
+                self._session = None
+            raise
     
     async def close(self):
         """关闭会话"""
