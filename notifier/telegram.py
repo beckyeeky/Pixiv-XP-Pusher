@@ -1268,6 +1268,9 @@ class TelegramNotifier(BaseNotifier):
             self._push_sessions[user_id]["message_ids"].append(msg.message_id)
 
         async def _handle_push_direct(user_id: int, chat_id: int, args: list):
+            if not args:
+                await self.bot.send_message(chat_id, "❌ 缺少参数")
+                return
             """直接处理带参数的 push 命令"""
             typing_task = asyncio.create_task(self._keep_typing(chat_id))
             try:
