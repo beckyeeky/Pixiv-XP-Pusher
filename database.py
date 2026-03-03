@@ -351,6 +351,13 @@ async def get_pushed_ids_batch(illust_ids: list[int]) -> set[int]:
     
     async with aiosqlite.connect(DB_PATH) as db:
         # 使用 IN 查询批量获取
+        # 安全说明: placeholders 只包含 "?" 字符，不包含用户输入
+        # illust_ids 通过参数化查询传递，无 SQL 注入风险
+        if not illust_ids:
+            return set()
+        # 限制批量查询数量，防止内存问题
+        if len(illust_ids) > 10000:
+            illust_ids = illust_ids[:10000]
         placeholders = ",".join("?" * len(illust_ids))
         cursor = await db.execute(
             f"SELECT illust_id FROM push_history WHERE illust_id IN ({placeholders})",
@@ -1247,6 +1254,10 @@ async def get_illust_embeddings_batch(illust_ids: list[int]) -> dict[int, list[f
         return {}
     
     async with aiosqlite.connect(DB_PATH) as db:
+        # 安全说明: placeholders 只包含 "?" 字符，不包含用户输入
+        # illust_ids 通过参数化查询传递，无 SQL 注入风险
+        if len(illust_ids) > 10000:
+            illust_ids = illust_ids[:10000]
         placeholders = ",".join("?" * len(illust_ids))
         cursor = await db.execute(
             f"SELECT illust_id, embedding FROM illust_embeddings WHERE illust_id IN ({placeholders})",
@@ -1556,6 +1567,8 @@ async def search_tags_with_translation(keyword: str, limit: int = 10) -> list[tu
     搜索标签 (同时匹配 name 和 translated_name)
     返回 [(name, translated_name)]
     """
+    # 安全说明: 使用参数化查询传递 keyword，防止 SQL 注入
+    # f-string 仅用于构建 LIKE 通配符模式，实际值通过参数传递
     keyword = f"%{keyword}%"
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
