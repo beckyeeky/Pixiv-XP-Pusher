@@ -17,6 +17,24 @@ from utils import AsyncRateLimiter, retry_async, download_image_with_referer
 
 logger = logging.getLogger(__name__)
 
+def sanitize_proxy_url(url: str | None) -> str | None:
+    """脱敏代理URL，隐藏密码信息"""
+    if not url:
+        return url
+    try:
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(url)
+        if parsed.password:
+            # 隐藏密码部分
+            netloc = f"{parsed.username}:****@{parsed.hostname}"
+            if parsed.port:
+                netloc += f":{parsed.port}"
+            return urlunparse(parsed._replace(netloc=netloc))
+    except Exception:
+        pass
+    return url
+
+
 
 @dataclass
 class Illust:
@@ -58,7 +76,7 @@ class PixivClient:
             # Prioritize https, then http
             proxy_url = sys_proxies.get("https") or sys_proxies.get("http")
             if proxy_url:
-                logger.info(f"Using system proxy: {proxy_url}")
+                logger.info(f"Using system proxy: {sanitize_proxy_url(proxy_url)}")
                 # Ensure scheme if missing (though getproxies usually includes it)
                 if not proxy_url.startswith("http"):
                     proxy_url = f"http://{proxy_url}"
