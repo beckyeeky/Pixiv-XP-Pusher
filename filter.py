@@ -106,7 +106,7 @@ class ContentFilter:
         subscribed_artists: Optional[list[int]] = None,  # 关注的画师 ID
         artist_boost: float = 0.3,  # 关注画师的匹配度加成
         min_create_days: int = 0,  # 过滤 N 天前的老图 (0=不过滤)
-        r18_mode: bool = False,  # 涩涩模式：只推送 R-18
+        r18_mode: bool | str = False,  # 涩涩模式：只推送 R-18 (支持 bool 或 str: safe, mixed, r18_only)
         # === 新增：借鉴 X 算法的增强选项 ===
         author_diversity: Optional[dict] = None,  # 画师多样性衰减配置
         source_boost: Optional[dict] = None,  # 来源加成配置
