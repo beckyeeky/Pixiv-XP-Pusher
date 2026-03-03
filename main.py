@@ -1,6 +1,7 @@
 
 import argparse
 import asyncio
+import contextvars
 import logging
 import os
 import sys
@@ -59,8 +60,8 @@ async def retry_async(coro_func, *args, max_retries: int = 3, delay: float = 5.0
 _task_lock = asyncio.Lock()
 # 允许最多排队 30 个触发
 _queue_limit = asyncio.Semaphore(30)
-# 强制模式标记（跳过队列限制）
-_force_mode = False
+# 强制模式标记（跳过队列限制）- 使用 ContextVar 避免竞态条件
+_force_mode_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar('force_mode', default=False)
 
 async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfiler, sync_client: PixivClient = None):
     """创建并配置推送器（支持多推送渠道）"""
@@ -1121,8 +1122,7 @@ def main():
     args = parser.parse_args()
     
     # 全局标记强制模式
-    global _force_mode
-    _force_mode = args.force
+    _force_mode_ctx.set(args.force)
     
     setup_logging()
     
