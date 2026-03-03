@@ -661,25 +661,28 @@ class PixivClient:
             logger.error(f"添加收藏失败 {illust_id}: {e}")
             return False
     @retry_async(max_retries=3)
-    async def get_illust_detail(self, illust_id: int) -> Optional[Illust]:
+    async def get_illust_detail(self, illust_id: int, _retry_count: int = 0) -> Optional[Illust]:
         """获取作品详情"""
+        if _retry_count > 1:
+            logger.error(f"获取作品详情重试次数超限，放弃: {illust_id}")
+            return None
+
         if not self._logged_in:
             logger.warning("获取详情需要登录")
             return None
-        
+
         async with self.rate_limiter:
             result = await self.api.illust_detail(illust_id)
-        
+
         # 检查是否 Token 过期
         if result and result.get("error"):
             error_msg = str(result.get("error", {}))
-            if "invalid_grant" in error_msg or "OAuth" in error_msg:
+            if _retry_count == 0 and ("invalid_grant" in error_msg or "OAuth" in error_msg):
                 logger.warning(f"Token 过期，正在刷新... ({illust_id})")
                 try:
                     await self.login()
-                    # 重试一次
-                    async with self.rate_limiter:
-                        result = await self.api.illust_detail(illust_id)
+                    # 递归重试一次，增加重试计数
+                    return await self.get_illust_detail(illust_id, _retry_count + 1)
                 except Exception as e:
                     logger.error(f"刷新 Token 后重试失败: {e}")
         
