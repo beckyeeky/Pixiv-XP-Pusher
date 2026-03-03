@@ -58,6 +58,7 @@ class ContentFetcher:
 
         # 缓存 Tag 的最高热度，避免重复查询 (Session Valid)
         self._search_max_bookmarks_cache = {}
+        self._cache_lock = asyncio.Lock()  # 保护缓存操作
         
         logger.debug(f"ContentFetcher 初始化: date_range_days={self.date_range_days}")
     
@@ -348,9 +349,12 @@ class ContentFetcher:
         """
         基于热度的动态阈值 (Dynamic Threshold) - Cached
         """
-        # 1. Check Cache
-        if tag in self._search_max_bookmarks_cache:
-            max_bookmarks = self._search_max_bookmarks_cache[tag]
+        # 1. Check Cache (使用锁保护读取)
+        async with self._cache_lock:
+            cached = self._search_max_bookmarks_cache.get(tag)
+        
+        if cached is not None:
+            max_bookmarks = cached
             # logger.debug(f"动态阈值 Cache Hit: {tag} -> {max_bookmarks}")
         else:
             try:
@@ -372,8 +376,9 @@ class ContentFetcher:
                 logger.debug(f"获取 Tag '{tag}' 热度失败: {e}")
                 max_bookmarks = 1000  # Fallback
             
-            # Save Cache
-            self._search_max_bookmarks_cache[tag] = max_bookmarks
+            # Save Cache (使用锁保护写入)
+            async with self._cache_lock:
+                self._search_max_bookmarks_cache[tag] = max_bookmarks
 
         # 相对阈值：使用配置的比例和保底值
         relative_threshold = max(self.dynamic_threshold_min, int(max_bookmarks * self.dynamic_threshold_rate))
