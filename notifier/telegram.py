@@ -1072,8 +1072,8 @@ class TelegramNotifier(BaseNotifier):
                         # 删除用户输入消息
                         try:
                             await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"操作被忽略: {e}")
                         await message.reply_text(f"✅ 已屏蔽标签: `{text}`", parse_mode="Markdown")
 
                     elif input_type == "mute_tag":
@@ -1084,8 +1084,8 @@ class TelegramNotifier(BaseNotifier):
                         # 删除用户输入消息
                         try:
                             await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"操作被忽略: {e}")
                         await message.reply_text(f"🔕 已静音标签: `{tag}`\n⏳ 截止: `{until_ts}`", parse_mode="Markdown")
 
                     elif input_type == "block_artist":
@@ -1097,8 +1097,8 @@ class TelegramNotifier(BaseNotifier):
                         # 删除用户输入消息
                         try:
                             await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"操作被忽略: {e}")
                         await message.reply_text(f"✅ 已屏蔽画师: `{text}`", parse_mode="Markdown")
 
                     elif input_type == "set_limit":
@@ -1114,12 +1114,12 @@ class TelegramNotifier(BaseNotifier):
                             prompt_id = pending.get("prompt_id") if isinstance(pending, dict) else None
                             if prompt_id:
                                 await self.bot.delete_message(chat_id=message.chat_id, message_id=prompt_id)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"操作被忽略: {e}")
                         try:
                             await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"操作被忽略: {e}")
 
                         await message.reply_text(f"✅ 每日推送上限已设置为: `{limit}`", parse_mode="Markdown")
 
@@ -1150,8 +1150,8 @@ class TelegramNotifier(BaseNotifier):
                             # 删除用户输入消息
                             try:
                                 await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"操作被忽略: {e}")
                             await message.reply_text(f"✅ 已添加推送时间: `{text}`", parse_mode="Markdown")
                         else:
                             await message.reply_text("⚠️ 未配置 Action 回调")
@@ -1165,8 +1165,8 @@ class TelegramNotifier(BaseNotifier):
                                 # 删除用户输入消息
                                 try:
                                     await self.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"操作被忽略: {e}")
                                 await message.reply_text(f"✅ 定时任务已更新: `{text}`", parse_mode="Markdown")
                             else:
                                 await message.reply_text("⚠️ 未配置 Action 回调")
@@ -1661,13 +1661,13 @@ class TelegramNotifier(BaseNotifier):
                     for msg_id in status_message_ids:
                         try:
                             await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"操作被忽略: {e}")
                     for msg_id in user_message_ids:
                         try:
                             await self.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"操作被忽略: {e}")
 
                     if sent_ids:
                         msg = f"✅ 推送完成！共 {len(sent_ids)} 张\n"
@@ -3476,9 +3476,9 @@ class TelegramNotifier(BaseNotifier):
                         self._message_illust_map[sent.message_id] = illust.id
                         any_success = True
                         continue
-                except Exception:
+                except Exception as e:
                     # 如果 URL 发送失败，进入转码流程
-                    pass
+                    logger.debug(f"URL 发送失败，进入转码流程: {e}")
 
                 # 3. 尝试本地转码 (仅当反代失败且尚未转码时)
                 if not local_mp4_bytes and self.client:
