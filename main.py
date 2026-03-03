@@ -574,9 +574,11 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
         sync_client = client
         
     # 队列深度限制：最多排队 30 个触发（强制模式跳过）
+    _acquired = False
     if not force:
         try:
             await asyncio.wait_for(_queue_limit.acquire(), timeout=0)
+            _acquired = True
         except asyncio.TimeoutError:
             logger.warning("⏳ 推送触发过于频繁，队列已满(30)，已拒绝本次触发")
             return
@@ -815,7 +817,8 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
     
         logger.info("=== 推送任务结束 ===")
     finally:
-        if not force:
+        # 使用标志位确保只在成功 acquire 后才 release，避免竞态条件
+        if _acquired:
             try:
                 _queue_limit.release()
             except Exception:
