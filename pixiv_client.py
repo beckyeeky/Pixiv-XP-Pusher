@@ -72,6 +72,7 @@ class PixivClient:
         self._logged_in = False
         self.proxy_url = proxy_url
         self._token_last_refresh: Optional[datetime] = None
+        self._pending_tag_translations: list[tuple[str, str]] = []  # 待保存的标签翻译队列
     
     async def login(self) -> bool:
         """
@@ -100,6 +101,23 @@ class PixivClient:
         except Exception as e:
             logger.error(f"Pixiv 登录失败: {e}")
             return False
+    
+    async def flush_tag_translations(self) -> None:
+        """批量保存待处理的标签翻译"""
+        if not self._pending_tag_translations:
+            return
+        
+        try:
+            import database as db
+            # 去重
+            unique_translations = list(dict.fromkeys(self._pending_tag_translations))
+            await db.save_tag_translations(unique_translations)
+            logger.debug(f"批量保存了 {len(unique_translations)} 个标签翻译")
+        except Exception as e:
+            logger.warning(f"批量保存标签翻译失败: {e}")
+        finally:
+            # 清空队列
+            self._pending_tag_translations.clear()
     
     @retry_async(max_retries=3)
     async def get_bookmarks(
@@ -587,24 +605,11 @@ class PixivClient:
         tags = [t["name"] for t in raw_tags]
         tags_translated = [(t.get("translated_name") or "").strip() for t in raw_tags]
         
-        # 提取翻译并异步保存
+        # 提取翻译并添加到待保存队列 (避免在同步方法中创建异步任务)
         try:
-            import database as db
-            tag_translations = []
             for t in raw_tags:
                 if t.get("translated_name"):
-                    tag_translations.append((t["name"], t["translated_name"]))
-            
-            if tag_translations:
-                # Fire and forget - 保存标签翻译
-                async def _save_with_log():
-                    try:
-                        await db.save_tag_translations(tag_translations)
-                        logger.debug(f"保存了 {len(tag_translations)} 个标签翻译")
-                    except Exception as e:
-                        logger.warning(f"保存标签翻译失败: {e}")
-                
-                asyncio.create_task(_save_with_log())
+                    self._pending_tag_translations.append((t["name"], t["translated_name"]))
         except Exception as e:
             logger.warning(f"准备保存标签翻译失败: {e}")
 
