@@ -21,6 +21,7 @@ from filter import ContentFilter
 from notifier.telegram import TelegramNotifier
 from notifier.onebot import OneBotNotifier
 from utils import setup_logging
+from push_stats import PushStats, create_stats, set_current_stats
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,10 @@ _task_lock = asyncio.Lock()
 _queue_limit = asyncio.Semaphore(30)
 # 强制模式标记（跳过队列限制）- 使用 ContextVar 避免竞态条件
 _force_mode_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar('force_mode', default=False)
+
+# 连锁推送全局去重：跟踪正在处理中的关联推送候选（防止竞态条件导致的重复）
+_related_chain_processing = set()
+_related_chain_lock = asyncio.Lock()
 
 async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfiler, sync_client: PixivClient = None):
     """创建并配置推送器（支持多推送渠道）"""
@@ -124,6 +129,7 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
             
                 # 使用简单的过滤逻辑 (不去重 SENT_HISTORY，因为这是用户主动要求的)
                 # 但我们要去重 "已收藏" 和 "画师屏蔽"
+                # 新增：使用全局锁防止并行的关联推送任务重复推送同一作品
                 filtered = []
                 seen_ids = set()
                 import database as db_mod
@@ -143,28 +149,41 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                         continue
                     seen_ids.add(ill.id)
 
-                    # 过滤已推送过的作品 (响应用户需求: 不推老图)
-                    if await db_mod.is_pushed(ill.id):
-                        logger.debug(f"🔗 作品 {ill.id} 已推送过，跳过推荐")
-                        continue
-                    # 检查屏蔽
-                    if not c_filter.check_illust(ill):
-                        continue
-                    if ill.user_id in profiler._blocked_artist_ids:
-                        continue
+                    # 全局连锁推送去重：检查是否正在被其他任务处理
+                    async with _related_chain_lock:
+                        if ill.id in _related_chain_processing:
+                            logger.debug(f"🔗 作品 {ill.id} 正在被其他关联推送任务处理，跳过")
+                            continue
+                        # 标记为正在处理
+                        _related_chain_processing.add(ill.id)
                     
-                    # 计算分数
-                    score = 0
-                    for t in ill.tags:
-                        norm = t.lower().replace(" ", "_")
-                        if norm in xp_profile:
-                            score += xp_profile[norm]
-                    
-                    # Artist Boost
-                    artist_score = await db_mod.get_artist_score(ill.user_id)
-                    score += artist_score
-                    
-                    filtered.append((ill, score))
+                    try:
+                        # 过滤已推送过的作品 (响应用户需求: 不推老图)
+                        if await db_mod.is_pushed(ill.id):
+                            logger.debug(f"🔗 作品 {ill.id} 已推送过，跳过推荐")
+                            continue
+                        # 检查屏蔽
+                        if not c_filter.check_illust(ill):
+                            continue
+                        if ill.user_id in profiler._blocked_artist_ids:
+                            continue
+                        
+                        # 计算分数
+                        score = 0
+                        for t in ill.tags:
+                            norm = t.lower().replace(" ", "_")
+                            if norm in xp_profile:
+                                score += xp_profile[norm]
+                        
+                        # Artist Boost
+                        artist_score = await db_mod.get_artist_score(ill.user_id)
+                        score += artist_score
+                        
+                        filtered.append((ill, score))
+                    finally:
+                        # 从处理中集合移除（无论是否通过过滤）
+                        async with _related_chain_lock:
+                            _related_chain_processing.discard(ill.id)
                 
                 # 排序取前 N
                 filtered.sort(key=lambda x: x[1], reverse=True)
@@ -370,16 +389,19 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
              logger.info("🤖 收到 Bot 手动推送指令 (跳过队列)")
              # 使用 create_task 异步执行，避免阻塞 Bot 响应
              # force=True 跳过队列限制
-             asyncio.create_task(main_task(config, client, profiler, notifiers, sync_client, force=True))
+             # 返回 task 对象以便调用者可以等待任务完成
+             task = asyncio.create_task(main_task(config, client, profiler, notifiers, sync_client, force=True))
+             return task
 
         elif action == "run_task_historical":
             # 历史补充模式推送
             days = data.get("days", 180) if isinstance(data, dict) else 180
             logger.info(f"🤖 收到 Bot 历史补充推送指令（近{days}天）(跳过队列)")
-            asyncio.create_task(main_task(
+            task = asyncio.create_task(main_task(
                 config, client, profiler, notifiers, sync_client, 
                 force=True, historical_days=days
             ))
+            return task
 
         elif action == "get_status":
             # 获取系统状态
@@ -569,7 +591,7 @@ async def setup_services(config: dict):
     return main_client, sync_client, profiler, notifiers
 
 
-async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, notifiers: list, sync_client: PixivClient = None, force: bool = False, historical_days: int = None):
+async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, notifiers: list, sync_client: PixivClient = None, force: bool = False, historical_days: int = None) -> PushStats:
     """
     执行一次完整的推送任务 (依赖外部服务)
     
@@ -578,6 +600,9 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
         sync_client: 同步客户端 (用于获取关注动态，可选)
         force: 是否强制跳过队列限制
         historical_days: 历史补充模式的天数 (覆盖配置中的 date_range_days)
+    
+    Returns:
+        PushStats: 推送任务的统计数据
     """
     # 如果未传入 sync_client，使用 main_client
     if sync_client is None:
@@ -591,16 +616,19 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
             _acquired = True
         except asyncio.TimeoutError:
             logger.warning("⏳ 推送触发过于频繁，队列已满(30)，已拒绝本次触发")
-            return
+            return PushStats()
         except Exception as e:
             logger.warning(f"⏳ 队列入队失败: {e}")
-            return
+            return PushStats()
     else:
         logger.info("🚀 强制模式：跳过队列限制")
     
     try:
         if _task_lock.locked():
             logger.info("⏳ 推送任务正在运行中，本次触发已入队等待")
+        
+        # 创建统计对象（尽早创建，确保所有路径都有）
+        stats = create_stats()
         
         async with _task_lock:
             logger.info("=== 开始推送任务 ===")
@@ -679,6 +707,15 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
                  total_limit=fetcher_cfg.get("discovery_limit", 200)
             )
             logger.info(f"共获取 {len(all_illusts)} 个候选作品")
+            
+            # 统计各来源获取数量
+            from collections import Counter
+            source_counts = Counter(getattr(ill, 'source', 'unknown') for ill in all_illusts)
+            for source, count in source_counts.items():
+                stats.record_fetch(source, count)
+        
+            # 记录过滤前数量
+            stats.record_filter_start(len(all_illusts))
         
             # 3. 过滤
             filter_cfg = config.get("filter", {})
@@ -757,6 +794,20 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
             pixiv_uid = config.get("pixiv", {}).get("user_id", 0)
             filtered = await content_filter.filter(all_illusts, xp_profile=xp_profile, user_id=pixiv_uid)
             logger.info(f"过滤后 {len(filtered)} 个作品")
+            
+            # 记录过滤后数量
+            stats.record_filter_end(len(filtered))
+            
+            # 记录过滤原因（从 ContentFilter 获取）
+            if hasattr(content_filter, '_last_filter_reasons'):
+                for reason, count in content_filter._last_filter_reasons.items():
+                    stats.record_filter_reason(reason, count)
+            
+            # 记录 AI 功能启用状态
+            stats.record_ai_enabled(
+                semantic_match=embedder is not None and embedder.enabled,
+                scorer=ai_scorer is not None and ai_scorer.enabled
+            )
         
             # 4. 推送
             if notifiers and filtered:
@@ -772,6 +823,17 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
                             all_sent_ids.update(sent_ids)
                         except Exception as e:
                             logger.error(f"推送器 {type(notifier).__name__} 发送失败: {e}")
+                    
+                    # 记录推送统计
+                    if all_sent_ids:
+                        filtered_map = {ill.id: ill for ill in filtered}
+                        for pid in all_sent_ids:
+                            if pid in filtered_map:
+                                illust = filtered_map[pid]
+                                source = getattr(illust, 'source', 'unknown')
+                                stats.record_push_success(source)
+                            else:
+                                stats.record_push_success('unknown')
                 
                     if all_sent_ids:
                         # 记录推送历史
@@ -797,13 +859,23 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
                                         await db_module.set_chain_meta(illust_id, chain_depth=0, chain_msg_id=msg_id)
                             
                         logger.info(f"推送完成: {len(all_sent_ids)}/{len(filtered)} 个作品成功")
+                        
+                        # 记录失败的推送
+                        failed_count = len(filtered) - len(all_sent_ids)
+                        if failed_count > 0:
+                            for _ in range(failed_count):
+                                stats.record_push_failed()
                     else:
                         logger.error("没有任何作品被成功推送")
+                        # 全部推送失败
+                        for _ in range(len(filtered)):
+                            stats.record_push_failed()
                     
                     # 5. AI 错误报警
                     ai_errors = profiler.ai_processor.occurred_errors
                     if ai_errors:
                         err_count = len(ai_errors)
+                        stats.record_ai_error(err_count)
                         err_id = ai_errors[0]
                         msg = f"⚠️ 警告：本次任务有 {err_count} 批 Tag AI 优化失败。\n已自动记录并降级处理。"
                         buttons = [("🔄 重试修复", f"retry_ai:{err_id}")]
@@ -817,6 +889,9 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
                                     pass
                 except Exception as e:
                     logger.error(f"推送过程出错: {e}")
+                    # 推送过程中出错，记录所有为失败
+                    for _ in range(len(filtered)):
+                        stats.record_push_failed()
             elif not filtered:
                  logger.info("无新作品可推送")
             else:
@@ -826,6 +901,7 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
             logger.error(f"任务执行出错: {e}", exc_info=True)
     
         logger.info("=== 推送任务结束 ===")
+        return stats
     finally:
         # 使用标志位确保只在成功 acquire 后才 release，避免竞态条件
         if _acquired:
@@ -835,7 +911,7 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
                 pass
 
 
-async def run_once(config: dict, force: bool = False):
+async def run_once(config: dict, force: bool = False) -> PushStats:
     """立即执行一次"""
     main_client, sync_client, profiler, notifiers = await setup_services(config)
     
@@ -848,7 +924,8 @@ async def run_once(config: dict, force: bool = False):
     # 所以 --once 真的就是 "Fire and Forget".
     
     try:
-        await main_task(config, main_client, profiler, notifiers, sync_client, force=force)
+        stats = await main_task(config, main_client, profiler, notifiers, sync_client, force=force)
+        return stats
     finally:
         await main_client.close()
         # 如果 sync_client 是独立实例，也需要关闭

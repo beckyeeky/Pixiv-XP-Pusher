@@ -1207,7 +1207,9 @@ class TelegramNotifier(BaseNotifier):
             user_msg_id = update.message.message_id
             chat_id = update.message.chat_id
 
-            await update.message.reply_text("🔄 正在通过 systemctl 重启服务...")
+            # 发送重启消息并保存消息对象
+            restart_msg = await update.message.reply_text("🔄 正在通过 systemctl 重启服务...")
+            restart_msg_id = restart_msg.message_id
             logger.info(f"用户 {user_id} 触发 systemctl 重启")
 
             # 删除用户的 /restart 命令
@@ -1219,8 +1221,14 @@ class TelegramNotifier(BaseNotifier):
             # 使用 systemctl 重启服务（systemd 管理）
             import subprocess
             import asyncio
-            # 延迟一点点确保消息发送出去
-            await asyncio.sleep(1)
+            # 延迟几秒让用户看到消息，然后删除
+            await asyncio.sleep(2)
+            try:
+                # 删除重启通知消息
+                await self.bot.delete_message(chat_id=chat_id, message_id=restart_msg_id)
+            except Exception as e:
+                logger.debug(f"删除重启通知消息失败: {e}")
+            
             try:
                 subprocess.Popen(["systemctl", "restart", "pixiv-pusher"],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1402,7 +1410,22 @@ class TelegramNotifier(BaseNotifier):
                 # 今日精选推送
                 await query.edit_message_text("🚀 正在启动今日精选推送...")
                 if self.on_action:
-                    await self.on_action("run_task", None)
+                    try:
+                        # 调用 on_action 并等待任务完成
+                        task = await self.on_action("run_task", None)
+                        if task:
+                            stats = await task
+                            # 任务完成后更新消息为统计报告
+                            if stats and hasattr(stats, 'format_report'):
+                                report = stats.format_report()
+                                await query.edit_message_text(report)
+                            else:
+                                await query.edit_message_text("✅ 今日精选推送已完成")
+                        else:
+                            await query.edit_message_text("✅ 今日精选推送已完成")
+                    except Exception as e:
+                        logger.error(f"推送任务执行失败: {e}")
+                        await query.edit_message_text(f"❌ 推送任务失败: {str(e)[:100]}")
                 else:
                     await query.edit_message_text("⚠️ 内部错误: 未配置 Action 回调")
                 if user_id in self._push_sessions:
@@ -1433,7 +1456,24 @@ class TelegramNotifier(BaseNotifier):
                 days = int(data.split(":")[1])
                 await query.edit_message_text(f"🚀 正在启动历史补充推送（近{days}天）...")
                 if self.on_action:
-                    await self.on_action("run_task_historical", {"days": days})
+                    try:
+                        # 调用 on_action 并等待任务完成
+                        task = await self.on_action("run_task_historical", {"days": days})
+                        if task:
+                            stats = await task
+                            # 任务完成后更新消息为统计报告
+                            if stats and hasattr(stats, 'format_report'):
+                                report = stats.format_report()
+                                # 替换标题为历史补充模式
+                                report = report.replace("今日精选推送完成", f"历史补充推送完成（近{days}天）")
+                                await query.edit_message_text(report)
+                            else:
+                                await query.edit_message_text(f"✅ 历史补充推送（近{days}天）已完成")
+                        else:
+                            await query.edit_message_text(f"✅ 历史补充推送（近{days}天）已完成")
+                    except Exception as e:
+                        logger.error(f"历史推送任务执行失败: {e}")
+                        await query.edit_message_text(f"❌ 历史推送任务失败: {str(e)[:100]}")
                 else:
                     await query.edit_message_text("⚠️ 内部错误: 未配置 Action 回调")
                 if user_id in self._push_sessions:

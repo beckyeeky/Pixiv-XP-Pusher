@@ -557,6 +557,8 @@ class ContentFilter:
                 f"r18={reason_stats['r18']} | "
                 f"ugoira={reason_stats['ugoira']}"
             )
+            # 保存到实例属性供外部获取
+            self._last_filter_reasons = reason_stats
         except Exception:
             pass
         
