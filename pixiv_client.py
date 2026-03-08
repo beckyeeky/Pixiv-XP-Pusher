@@ -270,6 +270,10 @@ class PixivClient:
             logger.warning("搜索功能需要登录")
             return []
         
+        # Token 30分钟刷新检查
+        if not self._token_last_refresh or (datetime.now() - self._token_last_refresh).total_seconds() > 1800:
+            await self.login()
+        
         query = " ".join(tags)
         illusts = []
         next_qs = None
