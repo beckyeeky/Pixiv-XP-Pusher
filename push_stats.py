@@ -101,11 +101,13 @@ class PushStats:
         
         lines.append("")
         
-        # 筛选统计
+        # 筛选统计 - 区分"过滤跳过"和"推送失败"
+        filtered_out = self.filter_before_count - self.filter_after_count
         pass_rate = self.filter_pass_rate
+        
         lines.append(f"🎯 筛选：{self.filter_after_count} 个通过 ({pass_rate:.0f}%)")
         
-        # 过滤原因
+        # 过滤原因（被过滤掉的作品）
         reason_names = {
             'pushed': '已推送过',
             'blacklist': '黑名单标签',
@@ -118,29 +120,37 @@ class PushStats:
             'bookmark_threshold': '收藏数不足'
         }
         
-        reasons_to_show = {k: v for k, v in self.filter_reasons.items() if v > 0}
-        if reasons_to_show:
-            for i, (reason, count) in enumerate(sorted(reasons_to_show.items(), key=lambda x: -x[1])):
-                name = reason_names.get(reason, reason)
-                is_last = (i == len(reasons_to_show) - 1)
-                symbol = "└─" if is_last else "├─"
-                if reason == 'pushed':
-                    lines.append(f"   {symbol} {name}: {count} (跳过)")
-                else:
-                    lines.append(f"   {symbol} {name}: {count}")
+        # 显示被过滤掉的原因
+        if filtered_out > 0:
+            lines.append(f"   ├─ 过滤跳过: {filtered_out}")
+            reasons_to_show = {k: v for k, v in self.filter_reasons.items() if v > 0}
+            if reasons_to_show:
+                for i, (reason, count) in enumerate(sorted(reasons_to_show.items(), key=lambda x: -x[1])):
+                    name = reason_names.get(reason, reason)
+                    is_last = (i == len(reasons_to_show) - 1) and (self.push_failed_count == 0)
+                    symbol = "└─" if is_last else "├─"
+                    lines.append(f"   │  {symbol} {name}: {count}")
+        
+        # 推送阶段
+        total_to_push = self.filter_after_count
+        if total_to_push > 0:
+            if self.push_failed_count > 0:
+                lines.append(f"   └─ 推送失败: {self.push_failed_count}")
         
         lines.append("")
         
-        # 推送统计
-        lines.append(f"📤 推送：{self.push_success_count} 个成功")
+        # 推送结果统计
+        lines.append(f"📤 推送结果：{self.push_success_count} 个成功")
         if self.push_by_source:
             for i, (source, count) in enumerate(sorted(self.push_by_source.items(), key=lambda x: -x[1])):
                 name = source_names.get(source, source)
                 is_last = (i == len(self.push_by_source) - 1)
                 symbol = "└─" if is_last else "├─"
                 lines.append(f"   {symbol} {name}: {count}")
+        
+        # 如果有失败，明确显示
         if self.push_failed_count > 0:
-            lines.append(f"   ⚠️ 失败: {self.push_failed_count}")
+            lines.append(f"   ⚠️ 推送失败: {self.push_failed_count} 个")
         
         lines.append("")
         

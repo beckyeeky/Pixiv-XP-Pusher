@@ -612,7 +612,7 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
     _acquired = False
     if not force:
         try:
-            await asyncio.wait_for(_queue_limit.acquire(), timeout=0)
+            await asyncio.wait_for(_queue_limit.acquire(), timeout=0.001)
             _acquired = True
         except asyncio.TimeoutError:
             logger.warning("⏳ 推送触发过于频繁，队列已满(30)，已拒绝本次触发")
