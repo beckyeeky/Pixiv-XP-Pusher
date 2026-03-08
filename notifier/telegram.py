@@ -1713,9 +1713,23 @@ class TelegramNotifier(BaseNotifier):
                             logger.debug(f"操作被忽略: {e}")
 
                     if sent_ids:
-                        msg = f"✅ 推送完成！共 {len(sent_ids)} 张\n"
-                        msg += f"\n继续获取下一批：\n/search 然后选批次 {offset//20 + 2}"
-                        await self.bot.send_message(chat_id, msg)
+                        current_batch = offset // 20 + 1
+                        next_batch = current_batch + 1
+                        prev_batch = current_batch - 1 if current_batch > 1 else None
+                        
+                        msg = f"✅ 推送完成！共 {len(filtered)} 张\n"
+                        msg += f"🔍 搜索: {' | '.join(keywords)}\n"
+                        msg += f"📅 时间: {'不限' if date_range_days == 0 else f'近{date_range_days}天'}\n"
+                        msg += f"📄 当前批次: 第 {current_batch} 批"
+                        
+                        # 构建翻页按钮
+                        buttons = []
+                        if prev_batch:
+                            buttons.append(InlineKeyboardButton("⬅️ 上一批", callback_data=f"search_page:{keywords[0]}:{date_range_days}:{prev_batch}"))
+                        buttons.append(InlineKeyboardButton("下一批 ➡️", callback_data=f"search_page:{keywords[0]}:{date_range_days}:{next_batch}"))
+                        
+                        keyboard = InlineKeyboardMarkup([buttons])
+                        await self.bot.send_message(chat_id, msg, reply_markup=keyboard)
                     else:
                         await self.bot.send_message(chat_id, "❌ 画册生成失败")
                 else:
@@ -1808,6 +1822,27 @@ class TelegramNotifier(BaseNotifier):
                     f"直接回复此消息即可",
                     parse_mode="Markdown"
                 )
+            
+            elif data.startswith("search_page:"):
+                """搜索结果翻页"""
+                parts = data.split(":")
+                if len(parts) >= 4:
+                    keyword = parts[1]
+                    date_range_days = int(parts[2])
+                    batch_num = int(parts[3])
+                    offset = (batch_num - 1) * 20
+                    chat_id = query.message.chat_id
+                    
+                    await query.answer(f"正在加载第 {batch_num} 批...")
+                    
+                    # 删除原消息
+                    try:
+                        await query.message.delete()
+                    except:
+                        pass
+                    
+                    # 调用搜索
+                    await _do_search(user_id, chat_id, [keyword], date_range_days, offset)
         async def cmd_schedule(update, context):
             user_id = update.message.from_user.id
             if self.allowed_users and user_id not in self.allowed_users:
