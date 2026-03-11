@@ -22,6 +22,7 @@ from notifier.telegram import TelegramNotifier
 from notifier.onebot import OneBotNotifier
 from utils import setup_logging
 from push_stats import PushStats, create_stats, set_current_stats
+from singleton import check_single_instance
 
 logger = logging.getLogger(__name__)
 
@@ -1211,6 +1212,9 @@ def main():
     _force_mode_ctx.set(args.force)
     
     setup_logging()
+    
+    # 单实例锁检查（防止重复启动）
+    check_single_instance()
     
     if args.reset_xp:
         from database import reset_xp_data, init_db
