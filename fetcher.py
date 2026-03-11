@@ -134,7 +134,14 @@ class ContentFetcher:
         
         if tasks:
             logger.info(f"启动 {len(tasks)} 个组合搜索任务...")
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # 使用 Semaphore 控制并发
+            sem = asyncio.Semaphore(5)
+            async def sem_task(coro):
+                async with sem:
+                    return await coro
+            wrapped_tasks = [sem_task(t) for t in tasks]
+            results = await asyncio.gather(*wrapped_tasks, return_exceptions=True)
             for res in results:
                 if isinstance(res, list):
                     all_illusts.extend(res)
@@ -160,7 +167,8 @@ class ContentFetcher:
                 
             if fallback_tasks:
                 logger.info(f"启动 {len(fallback_tasks)} 个单Tag补充任务...")
-                res_list = await asyncio.gather(*fallback_tasks, return_exceptions=True)
+                wrapped_fallback = [sem_task(t) for t in fallback_tasks]
+                res_list = await asyncio.gather(*wrapped_fallback, return_exceptions=True)
                 for res in res_list:
                     if isinstance(res, list):
                         all_illusts.extend(res)
@@ -192,8 +200,9 @@ class ContentFetcher:
         threshold = int(min(t1_thresh, t2_thresh) * 0.3)  # 组合搜索降低阈值(0.3)，增加命中率
         
         # 获取搜索词
-        raw_t1 = await db.get_best_search_tag(t1)
-        raw_t2 = await db.get_best_search_tag(t2)
+        tags_dict = await db.get_best_search_tags([t1, t2])
+        raw_t1 = tags_dict.get(t1, t1)
+        raw_t2 = tags_dict.get(t2, t2)
         
         final_q1 = self._build_query(t1, raw_t1)
         final_q2 = self._build_query(t2, raw_t2)

@@ -1578,3 +1578,29 @@ async def search_tags_with_translation(keyword: str, limit: int = 10) -> list[tu
             LIMIT ?
         """, (keyword, keyword, limit))
         return await cursor.fetchall()
+
+
+async def get_best_search_tags(normalized_tags: list[str]) -> dict[str, str]:
+    """
+    批量获取标准化标签对应的最高频原始标签
+    """
+    if not normalized_tags:
+        return {}
+        
+    result = {tag: tag for tag in normalized_tags}
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        # aiosqlite does not support executemany for SELECT, we use IN clause or loop
+        # Since tags are small, we can loop or use a simple query
+        for tag in normalized_tags:
+            cursor = await db.execute("""
+                SELECT original_tag FROM tag_mapping_stats
+                WHERE normalized_tag = ?
+                ORDER BY frequency DESC
+                LIMIT 1
+            """, (tag,))
+            row = await cursor.fetchone()
+            if row:
+                result[tag] = row[0]
+                
+    return result
