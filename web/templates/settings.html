@@ -766,6 +766,22 @@ function saveSettings() {
     
     const formData = new FormData(form);
     const data = Object.fromEntries(formData);
+    
+    // 转换数字字段
+    const numberFields = [
+        'user_id', 'ip_weight_discount', 'search_limit', 'date_range_days',
+        'bookmark_threshold_search', 'daily_limit', 'max_per_artist',
+        'image_quality', 'max_image_size', 'max_concurrency', 'requests_per_minute'
+    ];
+    numberFields.forEach(field => {
+        if (data[field] !== undefined && data[field] !== '') {
+            const val = parseFloat(data[field]);
+            if (!isNaN(val)) {
+                data[field] = val;
+            }
+        }
+    });
+    
     data.strategies = strategies;
     data.exclude_ai = exclude_ai;
     data.skip_ugoira = skip_ugoira;
