@@ -4,12 +4,39 @@
 
 {% block extra_head %}
 <style>
+    .settings-container {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding-bottom: 100px;
+    }
+
     .settings-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
         gap: 1.5rem;
-        max-width: 1200px;
-        margin: 0 auto;
+    }
+
+    .card {
+        background: var(--bg-card);
+        border-radius: 12px;
+        padding: 1.5rem;
+        border: 1px solid var(--border);
+    }
+
+    .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.25rem;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .card-title {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin: 0;
     }
 
     .form-group {
@@ -17,7 +44,9 @@
     }
 
     .form-label {
-        display: block;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
         margin-bottom: 0.5rem;
         color: var(--text-secondary);
         font-size: 0.9rem;
@@ -31,6 +60,7 @@
         border-radius: 6px;
         color: var(--text-primary);
         font-size: 0.95rem;
+        transition: border-color 0.2s;
     }
 
     .form-control:focus {
@@ -61,6 +91,7 @@
         border-radius: 6px;
         cursor: pointer;
         font-size: 0.9rem;
+        transition: all 0.2s;
     }
 
     .btn-secondary:hover {
@@ -78,10 +109,11 @@
         border: 1px solid var(--border);
         cursor: pointer;
         margin-bottom: 0.5rem;
+        transition: border-color 0.2s;
     }
 
     .toggle-switch:hover {
-        border-color: var(--accent-soft);
+        border-color: var(--accent);
     }
 
     .toggle-switch input {
@@ -124,16 +156,54 @@
         margin-top: 0.3rem;
     }
 
-    /* Tooltip 悬浮提示 */
-    .form-label {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        margin-bottom: 0.5rem;
-        color: var(--text-secondary);
-        font-size: 0.9rem;
+    .section-divider {
+        border-top: 1px solid var(--border);
+        margin: 1.5rem 0;
     }
 
+    .subsection-title {
+        font-size: 0.95rem;
+        font-weight: 500;
+        color: var(--text-primary);
+        margin: 1rem 0 0.75rem 0;
+        padding-left: 0.5rem;
+        border-left: 3px solid var(--accent);
+    }
+
+    .save-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: var(--bg-secondary);
+        border-top: 1px solid var(--border);
+        padding: 1rem 2rem;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 1rem;
+        z-index: 100;
+    }
+
+    .save-bar .btn-primary {
+        width: auto;
+        padding: 0.7rem 2rem;
+    }
+
+    .sync-log {
+        background: #000;
+        color: #0f0;
+        font-family: monospace;
+        padding: 0.8rem;
+        border-radius: 6px;
+        height: 120px;
+        overflow-y: auto;
+        font-size: 0.75rem;
+        margin-top: 0.8rem;
+        display: none;
+    }
+
+    /* Tooltip 悬浮提示 */
     .tooltip-icon {
         display: inline-flex;
         align-items: center;
@@ -141,12 +211,13 @@
         width: 16px;
         height: 16px;
         border-radius: 50%;
-        background: var(--accent-soft);
+        background: var(--accent-soft, #533483);
         color: var(--text-primary);
         font-size: 10px;
         cursor: help;
         position: relative;
         transition: background 0.2s;
+        flex-shrink: 0;
     }
 
     .tooltip-icon:hover {
@@ -166,8 +237,8 @@
         font-size: 0.8rem;
         color: var(--text-primary);
         white-space: pre-line;
-        min-width: 250px;
-        max-width: 350px;
+        min-width: 280px;
+        max-width: 380px;
         z-index: 1000;
         opacity: 0;
         visibility: hidden;
@@ -205,55 +276,72 @@
         border-left: 3px solid var(--accent);
     }
 
-    .section-divider {
-        border-top: 1px solid var(--border);
-        margin: 1.5rem 0;
+    /* 折叠面板 */
+    .collapsible {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        margin-bottom: 1rem;
+        overflow: hidden;
     }
 
-    .save-bar {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        background: var(--bg-secondary);
-        border-top: 1px solid var(--border);
-        padding: 1rem 2rem;
+    .collapsible-header {
+        background: var(--bg-primary);
+        padding: 0.75rem 1rem;
+        cursor: pointer;
         display: flex;
-        justify-content: center;
+        justify-content: space-between;
         align-items: center;
-        gap: 1rem;
-        z-index: 100;
+        transition: background 0.2s;
     }
 
-    .save-bar .btn-primary {
-        width: auto;
-        padding: 0.7rem 2rem;
+    .collapsible-header:hover {
+        background: rgba(255, 255, 255, 0.03);
     }
 
-    .sync-log {
-        background: #000;
-        color: #0f0;
-        font-family: monospace;
-        padding: 0.8rem;
-        border-radius: 6px;
-        height: 120px;
-        overflow-y: auto;
-        font-size: 0.75rem;
-        margin-top: 0.8rem;
+    .collapsible-content {
+        padding: 1rem;
         display: none;
+    }
+
+    .collapsible.expanded .collapsible-content {
+        display: block;
+    }
+
+    .collapsible.expanded .collapsible-arrow {
+        transform: rotate(180deg);
+    }
+
+    .collapsible-arrow {
+        transition: transform 0.2s;
+    }
+
+    /* 数字输入短框 */
+    input[type="number"].input-short {
+        width: 100px;
+    }
+
+    .input-with-unit {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .unit {
+        color: var(--text-secondary);
+        font-size: 0.9rem;
     }
 </style>
 {% endblock %}
 
 {% block content %}
-<div style="max-width: 1200px; margin: 0 auto; padding-bottom: 80px;">
+<div class="settings-container">
     
     <div class="card" style="margin-bottom: 1.5rem;">
         <div class="card-header">
             <h2 class="card-title">⚙️ 系统设置</h2>
         </div>
         <p style="color: var(--text-secondary); font-size: 0.9rem;">
-            配置推送策略、IP 降权、定时任务等系统参数。
+            配置推送策略、抓取参数、过滤规则等系统参数。
             <a href="/tags" style="color: var(--accent);">管理 Tags 请去 Tags 页面 →</a>
         </p>
     </div>
@@ -261,60 +349,46 @@
     <form id="settingsForm">
     <div class="settings-grid">
         
-        <!-- IP 降权设置 -->
+        <!-- 基础配置 -->
         <div class="card">
             <div class="card-header">
-                <h3 class="card-title">📉 IP 标签降权</h3>
-                <span class="status-badge" id="ipStatus">检查中...</span>
+                <h3 class="card-title">🔧 基础配置</h3>
             </div>
             
             <div class="form-group">
                 <label class="form-label">
-                    降权系数
-                    <span class="tooltip-icon" data-tooltip="控制 IP 标签在画像计算中的权重折扣&#10;• 0.1-0.3: 强降权（IP 标签几乎不出现）&#10;• 0.4-0.7: 中等降权&#10;• 0.8-1.0: 轻微降权或不降权&#10;&#10;推荐值: 0.5&#10;默认: 1.0">ⓘ</span>
-                    <span class="range-value" id="discountValue">{{ config.profiler.ip_weight_discount | default(1.0) }}</span>
-                </label>                
-                <div class="range-wrap">
-                    <input type="range" name="ip_weight_discount" 
-                           min="0.1" max="1.0" step="0.1" 
-                           value="{{ config.profiler.ip_weight_discount | default(1.0) }}"
-                           oninput="document.getElementById('discountValue').innerText = this.value">
-                </div>
-                <div class="help-text">
-                    0.1 = 降权 90%（IP 标签几乎不出现），1.0 = 不降权
-                </div>
-            </div>
-
-            <div class="section-divider"></div>
-
-            <div class="form-group">
-                <label class="form-label">
-                    Danbooru 用户名
-                    <span class="tooltip-icon" data-tooltip="Danbooru 网站的登录用户名&#10;用于同步 IP 标签列表（如 hololive、blue_archive 等）&#10;&#10;留空则无法同步 IP 标签&#10;格式: 纯字母数字用户名">ⓘ</span>
+                    Pixiv User ID
+                    <span class="tooltip-icon" data-tooltip="你的 Pixiv 用户数字 ID&#10;用于分析你的公开收藏来构建个人画像&#10;&#10;获取方式: Pixiv 个人资料页 URL 中的数字&#10;示例: pixiv.net/users/12345678&#10;&#10;推荐: 填写以获取个性化推荐&#10;注意: 仅读取公开收藏，无需登录">ⓘ</span>
                 </label>
-                <input type="text" class="form-control" name="danbooru_login" 
-                       value="{{ config.profiler.danbooru_login | default('') }}" 
-                       placeholder="选填，用于同步 IP 标签">
+                <input type="number" class="form-control" name="user_id" 
+                       value="{{ config.pixiv.user_id | default('') }}"
+                       placeholder="2260876">
             </div>
             
             <div class="form-group">
                 <label class="form-label">
-                    Danbooru API Key
-                    <span class="tooltip-icon" data-tooltip="Danbooru API 访问密钥&#10;用于获取 IP 标签数据，可在 Danbooru 个人资料页生成&#10;&#10;安全性: 仅存储在本地服务器&#10;格式: 24位字母数字混合">ⓘ</span>
+                    定时任务 (Cron)
+                    <span class="tooltip-icon" data-tooltip="Cron 表达式定义推送任务的执行时间&#10;&#10;格式: 分 时 日 月 周&#10;示例: 0 12 * * * = 每天12点&#10;&#10;常用配置:&#10;• 0 12 * * * — 每天中午12点&#10;• 0 8,20 * * * — 早8点和晚8点&#10;• 0 */4 * * * — 每4小时&#10;• 0 9 * * 1 — 每周一上午9点&#10;&#10;推荐: 0 12 * * * (每日一次)">ⓘ</span>
                 </label>
-                <input type="password" class="form-control" name="danbooru_api_key" 
-                       value="{{ config.profiler.danbooru_api_key | default('') }}" 
-                       placeholder="选填">
-                <div class="help-text">
-                    <a href="https://danbooru.donmai.us/profile/api_key" target="_blank" style="color: var(--accent);">获取 API Key</a>
+                <input type="text" class="form-control" name="cron" 
+                       value="{{ config.scheduler.cron | default('0 12 * * *') }}"
+                       placeholder="0 12 * * *">
+                <div class="help-text" style="margin-top: 0.5rem;">
+                    <a href="#" onclick="setCron('0 12 * * *')">每天12点</a> ·
+                    <a href="#" onclick="setCron('0 8,20 * * *')">早8晚8</a> ·
+                    <a href="#" onclick="setCron('0 */4 * * *')">每4小时</a>
                 </div>
             </div>
-
-            <button type="button" class="btn-secondary" onclick="syncIP()">
-                🔄 同步 IP 标签列表
-            </button>
             
-            <div class="sync-log" id="syncLog"></div>
+            <div class="form-group">
+                <label class="form-label">
+                    Telegram Proxy
+                    <span class="tooltip-icon" data-tooltip="连接 Telegram Bot API 的代理服务器&#10;&#10;格式: http://主机:端口&#10;示例: http://127.0.0.1:7890&#10;&#10;国内用户: 建议填写 Clash/V2Ray 本地代理&#10;海外服务器: 可留空&#10;&#10;推荐: http://127.0.0.1:7890 (Clash 默认)">ⓘ</span>
+                </label>
+                <input type="text" class="form-control" name="proxy_url" 
+                       value="{{ config.notifier.telegram.proxy_url | default('') }}"
+                       placeholder="http://127.0.0.1:7890">
+            </div>
         </div>
 
         <!-- 推送策略 -->
@@ -325,7 +399,7 @@
             
             <div class="form-group">
                 <label class="form-label">
-                    推送策略
+                    启用策略
                     <span class="tooltip-icon" data-tooltip="选择启用的内容获取策略，可多选&#10;&#10;• XP 画像搜索: 根据你的喜好标签搜索相似作品&#10;• 关联连锁: 从喜欢的作品找到相似推荐&#10;• 每日排行榜: Pixiv 每日热门作品&#10;• 关注画师更新: 你关注画师的最新作品&#10;&#10;推荐: 至少开启 2 个策略以获得更多样化内容">ⓘ</span>
                 </label>
                 
@@ -369,46 +443,223 @@
             </div>
         </div>
 
-        <!-- 基础设置 -->
+        <!-- IP 降权设置 -->
         <div class="card">
             <div class="card-header">
-                <h3 class="card-title">⚙️ 基础配置</h3>
+                <h3 class="card-title">📉 IP 标签降权</h3>
+                <span class="status-badge" id="ipStatus">检查中...</span>
             </div>
             
             <div class="form-group">
                 <label class="form-label">
-                    Pixiv User ID
-                    <span class="tooltip-icon" data-tooltip="你的 Pixiv 用户数字 ID&#10;用于分析你的公开收藏来构建个人画像&#10;&#10;获取方式: Pixiv 个人资料页 URL 中的数字&#10;示例: pixiv.net/users/12345678&#10;&#10;推荐: 填写以获取个性化推荐&#10;注意: 仅读取公开收藏，无需登录">ⓘ</span>
-                </label>
-                <input type="number" class="form-control" name="user_id" 
-                       value="{{ config.pixiv.user_id | default('') }}"
-                       placeholder="用于分析收藏构建画像">
+                    降权系数
+                    <span class="tooltip-icon" data-tooltip="控制 IP 标签在画像计算中的权重折扣&#10;• 0.1-0.3: 强降权（IP 标签几乎不出现）&#10;• 0.4-0.7: 中等降权&#10;• 0.8-1.0: 轻微降权或不降权&#10;&#10;推荐值: 0.5&#10;默认: 1.0">ⓘ</span>
+                    <span class="range-value" id="discountValue">{{ config.profiler.ip_weight_discount | default(1.0) }}</span>
+                </label>                
+                <div class="range-wrap">
+                    <input type="range" name="ip_weight_discount" 
+                           min="0.1" max="1.0" step="0.1" 
+                           value="{{ config.profiler.ip_weight_discount | default(1.0) }}"
+                           oninput="document.getElementById('discountValue').innerText = this.value">
+                </div>
+                <div class="help-text">0.1 = 降权 90%，1.0 = 不降权</div>
+            </div>
+
+            <div class="section-divider"></div>
+
+            <div class="form-group">
+                <label class="form-label">Danbooru 用户名</label>
+                <input type="text" class="form-control" name="danbooru_login" 
+                       value="{{ config.profiler.danbooru_login | default('') }}" 
+                       placeholder="选填">
             </div>
             
             <div class="form-group">
+                <label class="form-label">Danbooru API Key</label>
+                <input type="password" class="form-control" name="danbooru_api_key" 
+                       value="{{ config.profiler.danbooru_api_key | default('') }}" 
+                       placeholder="选填">
+                <div class="help-text">
+                    <a href="https://danbooru.donmai.us/profile/api_key" target="_blank" style="color: var(--accent);">获取 API Key →</a>
+                </div>
+            </div>
+
+            <button type="button" class="btn-secondary" onclick="syncIP()">
+                🔄 同步 IP 标签列表
+            </button>
+            
+            <div class="sync-log" id="syncLog"></div>
+        </div>
+
+        <!-- 抓取设置 -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">🔍 抓取设置</h3>
+            </div>
+            
+            <div class="subsection-title">搜索参数</div>
+            
+            <div class="form-group">
                 <label class="form-label">
-                    定时任务 (Cron)
-                    <span class="tooltip-icon" data-tooltip="Cron 表达式定义推送任务的执行时间&#10;&#10;格式: 分 时 日 月 周&#10;示例: 0 12 * * * = 每天12点&#10;&#10;常用配置:&#10;• 0 12 * * * — 每天中午12点&#10;• 0 8,20 * * * — 早8点和晚8点&#10;• 0 */4 * * * — 每4小时&#10;• 0 9 * * 1 — 每周一上午9点&#10;&#10;推荐: 0 12 * * * (每日一次)">ⓘ</span>
+                    搜索抓取数量
+                    <span class="tooltip-icon" data-tooltip="每次搜索策略抓取的作品数量&#10;&#10;• 值越大获取的内容越多&#10;• 但会增加 API 调用和耗时&#10;&#10;推荐: 100-300&#10;默认: 200">ⓘ</span>
                 </label>
-                <input type="text" class="form-control" name="cron" 
-                       value="{{ config.scheduler.cron | default('0 12 * * *') }}"
-                       placeholder="0 12 * * *">
-                <div class="help-text" style="margin-top: 0.5rem;">
-                    <a href="#" onclick="setCron('0 12 * * *')">每天12点</a> ·
-                    <a href="#" onclick="setCron('0 8,20 * * *')">早8晚8</a> ·
-                    <a href="#" onclick="setCron('0 */4 * * *')">每4小时</a>
+                <div class="input-with-unit">
+                    <input type="number" class="form-control input-short" name="search_limit"
+                           value="{{ config.fetcher.search_limit | default(200) }}"
+                           min="50" max="1000" step="50">
+                    <span class="unit">张/次</span>
                 </div>
             </div>
             
             <div class="form-group">
                 <label class="form-label">
-                    Telegram Proxy
-                    <span class="tooltip-icon" data-tooltip="连接 Telegram Bot API 的代理服务器&#10;&#10;格式: http://主机:端口&#10;示例: http://127.0.0.1:7890&#10;&#10;国内用户: 建议填写 Clash/V2Ray 本地代理&#10;海外服务器: 可留空&#10;&#10;推荐: http://127.0.0.1:7890 (Clash 默认)">ⓘ</span>
+                    日期范围
+                    <span class="tooltip-icon" data-tooltip="只抓取最近 N 天内发布的作品&#10;&#10;• 避免推送过旧的内容&#10;• 0 = 不限制&#10;&#10;推荐: 30-90 天&#10;默认: 60 天">ⓘ</span>
                 </label>
-                <input type="text" class="form-control" name="proxy_url" 
-                       value="{{ config.notifier.telegram.proxy_url | default('') }}"
-                       placeholder="http://127.0.0.1:7890">
-                <div class="help-text">国内用户需填写，用于连接 Telegram</div>
+                <div class="input-with-unit">
+                    <input type="number" class="form-control input-short" name="date_range_days"
+                           value="{{ config.fetcher.date_range_days | default(60) }}">
+                    <span class="unit">天</span>
+                </div>
+            </div>
+
+            <div class="section-divider"></div>
+            
+            <div class="subsection-title">收藏阈值</div>
+            
+            <div class="form-group">
+                <label class="form-label">
+                    搜索最小收藏
+                    <span class="tooltip-icon" data-tooltip="搜索策略中作品的最低收藏数&#10;&#10;• 过滤低质量作品&#10;• 0 = 不过滤&#10;&#10;推荐: 100-1000&#10;默认: 500">ⓘ</span>
+                </label>
+                <input type="number" class="form-control input-short" name="bookmark_threshold_search"
+                       value="{{ config.fetcher.bookmark_threshold.search | default(500) }}">
+            </div>
+        </div>
+
+        <!-- 过滤设置 -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">🛡️ 过滤设置</h3>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">
+                    每日推送上限
+                    <span class="tooltip-icon" data-tooltip="每天最多推送的作品数量&#10;&#10;• 避免刷屏&#10;• 达到上限后当天不再推送&#10;&#10;推荐: 20-100&#10;默认: 50">ⓘ</span>
+                </label>
+                <div class="input-with-unit">
+                    <input type="number" class="form-control input-short" name="daily_limit"
+                           value="{{ config.filter.daily_limit | default(50) }}">
+                    <span class="unit">张/天</span>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">
+                    单画师上限
+                    <span class="tooltip-icon" data-tooltip="同一画师每天最多推送的作品数&#10;&#10;• 增加作者多样性&#10;• 避免被单一画师刷屏&#10;&#10;推荐: 2-5&#10;默认: 3">ⓘ</span>
+                </label>
+                <div class="input-with-unit">
+                    <input type="number" class="form-control input-short" name="max_per_artist"
+                           value="{{ config.filter.max_per_artist | default(3) }}">
+                    <span class="unit">张/画师/天</span>
+                </div>
+            </div>
+
+            <div class="section-divider"></div>
+
+            <label class="toggle-switch">
+                <input type="checkbox" name="exclude_ai" value="true"
+                       {% if config.filter.exclude_ai %}checked{% endif %}>
+                <span>
+                    🚫 排除 AI 生成作品
+                    <span class="tooltip-icon" data-tooltip="过滤掉标记为 AI 生成的作品&#10;&#10;检测标签: AI生成、AI作品、AI绘画、AIイラスト&#10;&#10;推荐: 开启">ⓘ</span>
+                </span>
+            </label>
+            
+            <label class="toggle-switch">
+                <input type="checkbox" name="skip_ugoira" value="true"
+                       {% if config.filter.skip_ugoira %}checked{% endif %}>
+                <span>
+                    ⏭️ 跳过动图 (Ugoira)
+                    <span class="tooltip-icon" data-tooltip="不推送 Pixiv 动图格式作品&#10;&#10;动图需要转码，推送较慢&#10;&#10;推荐: 开启">ⓘ</span>
+                </span>
+            </label>
+        </div>
+
+        <!-- Telegram 设置 -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">📱 Telegram 设置</h3>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">
+                    批量推送模式
+                    <span class="tooltip-icon" data-tooltip="R18 内容的显示方式&#10;&#10;• Single: 单张发送（带 Spoiler）&#10;• Album: 多张合并为相册（更高效）&#10;&#10;推荐: Album">ⓘ</span>
+                </label>
+                <select class="form-control" name="batch_mode">
+                    <option value="single" {% if config.notifier.telegram.batch_mode == 'single' %}selected{% endif %}>Single (单张)</option>
+                    <option value="album" {% if config.notifier.telegram.batch_mode == 'album' %}selected{% endif %}>Album (相册)</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">
+                    图片质量
+                    <span class="tooltip-icon" data-tooltip="发送图片的压缩质量&#10;&#10;• 值越高图片越清晰&#10;• 但文件更大，发送更慢&#10;&#10;推荐: 85&#10;范围: 70-95">ⓘ</span>
+                </label>
+                <div class="range-wrap">
+                    <input type="range" name="image_quality" 
+                           min="70" max="95" step="5"
+                           value="{{ config.notifier.telegram.image_quality | default(85) }}"
+                           oninput="document.getElementById('qualityValue').innerText = this.value + '%'">
+                    <span class="range-value" id="qualityValue">{{ config.notifier.telegram.image_quality | default(85) }}%</span>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">
+                    最大图片尺寸
+                    <span class="tooltip-icon" data-tooltip="发送图片的最大边长&#10;&#10;• 超过此尺寸会被压缩&#10;• 值越大越清晰，但文件更大&#10;&#10;推荐: 1500-2000&#10;单位: 像素">ⓘ</span>
+                </label>
+                <div class="input-with-unit">
+                    <input type="number" class="form-control input-short" name="max_image_size"
+                           value="{{ config.notifier.telegram.max_image_size | default(2000) }}"
+                           step="100">
+                    <span class="unit">px</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 网络设置 -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">🌐 网络设置</h3>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">
+                    最大并发数
+                    <span class="tooltip-icon" data-tooltip="同时进行的网络请求数量&#10;&#10;• 值越大抓取越快&#10;• 但会增加被限流风险&#10;&#10;推荐: 3-8&#10;默认: 5">ⓘ</span>
+                </label>
+                <input type="number" class="form-control input-short" name="max_concurrency"
+                       value="{{ config.network.max_concurrency | default(5) }}"
+                       min="1" max="20">
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">
+                    请求频率限制
+                    <span class="tooltip-icon" data-tooltip="每分钟最多发起的 API 请求数&#10;&#10;• 避免触发 Pixiv 限流&#10;&#10;推荐: 30-100&#10;默认: 60">ⓘ</span>
+                </label>
+                <div class="input-with-unit">
+                    <input type="number" class="form-control input-short" name="requests_per_minute"
+                           value="{{ config.network.requests_per_minute | default(60) }}">
+                    <span class="unit">请求/分钟</span>
+                </div>
             </div>
         </div>
 
@@ -509,9 +760,15 @@ function saveSettings() {
         strategies.push(el.value);
     });
     
+    // 收集布尔值
+    const exclude_ai = form.querySelector('input[name="exclude_ai"]').checked;
+    const skip_ugoira = form.querySelector('input[name="skip_ugoira"]').checked;
+    
     const formData = new FormData(form);
     const data = Object.fromEntries(formData);
     data.strategies = strategies;
+    data.exclude_ai = exclude_ai;
+    data.skip_ugoira = skip_ugoira;
     
     btn.disabled = true;
     btn.innerText = '保存中...';

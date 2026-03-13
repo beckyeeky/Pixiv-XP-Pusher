@@ -2,105 +2,343 @@
 
 {% block title %}导入/导出 - Pixiv-XP-Pusher{% endblock %}
 
+{% block extra_head %}
+<style>
+.import-export-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+    gap: 1.5rem;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+.card {
+    background: var(--bg-card);
+    border-radius: 12px;
+    padding: 1.5rem;
+    border: 1px solid var(--border);
+}
+
+.card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.card-title {
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.card-desc {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin-bottom: 1.25rem;
+    line-height: 1.5;
+}
+
+/* 按钮样式 */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.7rem 1.2rem;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-primary {
+    background: var(--accent);
+    color: white;
+}
+
+.btn-primary:hover {
+    opacity: 0.9;
+    transform: translateY(-1px);
+}
+
+.btn-success {
+    background: #4caf50;
+    color: white;
+}
+
+.btn-success:hover {
+    background: #45a049;
+}
+
+.btn-secondary {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+
+.btn-secondary:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
+.btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* 拖放区域 */
+.drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 2.5rem 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: var(--bg-primary);
+}
+
+.drop-zone:hover,
+.drop-zone.dragover {
+    border-color: var(--accent);
+    background: rgba(233, 69, 96, 0.05);
+}
+
+.drop-zone-icon {
+    font-size: 3rem;
+    margin-bottom: 0.75rem;
+}
+
+.drop-zone-text {
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    line-height: 1.6;
+}
+
+.drop-zone-text .highlight {
+    color: var(--accent);
+    font-weight: 500;
+}
+
+/* 代码编辑器 */
+.code-editor {
+    width: 100%;
+    font-family: 'Consolas', 'Monaco', 'SF Mono', monospace;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    background: #0d1117;
+    color: #c9d1d9;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    resize: vertical;
+}
+
+.code-editor:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* 导出结果区 */
+.export-result {
+    margin-top: 1.25rem;
+    animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.alert {
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.alert-success {
+    background: rgba(76, 175, 80, 0.15);
+    border: 1px solid rgba(76, 175, 80, 0.3);
+    color: #4caf50;
+}
+
+.alert-danger {
+    background: rgba(244, 67, 54, 0.15);
+    border: 1px solid rgba(244, 67, 54, 0.3);
+    color: #f44336;
+}
+
+/* 分隔线 */
+.divider {
+    display: flex;
+    align-items: center;
+    margin: 1.5rem 0;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.divider::before,
+.divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+}
+
+.divider span {
+    padding: 0 1rem;
+}
+
+/* 表单元素 */
+.form-group {
+    margin-bottom: 1rem;
+}
+
+.form-label {
+    display: block;
+    margin-bottom: 0.5rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.form-check {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
+    cursor: pointer;
+}
+
+.form-check input[type="checkbox"] {
+    width: 1.1rem;
+    height: 1.1rem;
+    cursor: pointer;
+}
+
+.form-check-label {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+/* 按钮组 */
+.btn-group {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-top: 1rem;
+}
+
+/* 加载动画 */
+.spinner {
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid transparent;
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.d-none {
+    display: none !important;
+}
+
+.mt-3 {
+    margin-top: 1rem;
+}
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="row">
+<div class="import-export-grid">
     <!-- 导出部分 -->
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0">📤 导出配置</h5>
+    <div class="card">
+        <div class="card-header">
+            <span>📤</span>
+            <h3 class="card-title">导出配置</h3>
+        </div>
+        <p class="card-desc">将当前配置导出为带注释的 YAML 文件，便于备份、迁移或手动编辑。</p>
+        
+        <button id="exportBtn" class="btn btn-primary">
+            <span class="btn-text">📥 导出 YAML</span>
+            <span class="spinner d-none"></span>
+        </button>
+        
+        <div id="exportResult" class="export-result d-none">
+            <div class="alert alert-success">
+                <span>✓</span> 导出成功！
             </div>
-            <div class="card-body">
-                <p class="text-muted">将当前配置导出为带注释的 YAML 文件，便于备份和手动编辑。</p>
-                
-                <button id="exportBtn" class="btn btn-primary">
-                    <span class="btn-text">导出 YAML</span>
-                    <span class="spinner-border spinner-border-sm d-none"></span>
+            
+            <div class="form-group">
+                <label class="form-label">配置文件预览：</label>
+                <textarea id="yamlOutput" class="code-editor" rows="18" readonly></textarea>
+            </div>
+            
+            <div class="btn-group">
+                <button id="downloadBtn" class="btn btn-success">
+                    <span>💾</span> 下载文件
                 </button>
-                
-                <div id="exportResult" class="mt-3 d-none">
-                    <div class="alert alert-success">
-                        <i class="bi bi-check-circle"></i> 导出成功！
-                    </div>
-                    <div class="form-group">
-                        <label>配置文件内容：</label>
-                        <textarea id="yamlOutput" class="form-control code-editor" rows="20" readonly></textarea>
-                    </div>
-                    <button id="downloadBtn" class="btn btn-success mt-2">
-                        <i class="bi bi-download"></i> 下载文件
-                    </button>
-                    <button id="copyBtn" class="btn btn-outline-secondary mt-2">
-                        <i class="bi bi-clipboard"></i> 复制到剪贴板
-                    </button>
-                </div>
+                <button id="copyBtn" class="btn btn-secondary">
+                    <span>📋</span> 复制到剪贴板
+                </button>
             </div>
         </div>
     </div>
     
     <!-- 导入部分 -->
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0">📥 导入配置</h5>
-            </div>
-            <div class="card-body">
-                <p class="text-muted">从 YAML 文件导入配置。支持拖拽上传。</p>
-                
-                <!-- 拖放区域 -->
-                <div id="dropZone" class="drop-zone">
-                    <div class="drop-zone-content">
-                        <i class="bi bi-cloud-upload fs-1"></i>
-                        <p class="mt-2">拖拽 YAML 文件到此处<br>或 <span class="text-primary">点击选择文件</span></p>
-                        <input type="file" id="fileInput" accept=".yaml,.yml" class="d-none">
-                    </div>
-                </div>
-                
-                <div class="form-group mt-3">
-                    <label>或直接粘贴 YAML 内容：</label>
-                    <textarea id="yamlInput" class="form-control code-editor" rows="10" placeholder="# 在此粘贴 YAML 配置..."></textarea>
-                </div>
-                
-                <div class="form-check mt-3">
-                    <input type="checkbox" class="form-check-input" id="mergeMode">
-                    <label class="form-check-label" for="mergeMode">
-                        合并模式（保留现有配置，仅覆盖冲突项）
-                    </label>
-                </div>
-                
-                <button id="importBtn" class="btn btn-primary mt-3">
-                    <span class="btn-text">导入配置</span>
-                    <span class="spinner-border spinner-border-sm d-none"></span>
-                </button>
-                
-                <div id="importResult" class="mt-3"></div>
-            </div>
+    <div class="card">
+        <div class="card-header">
+            <span>📥</span>
+            <h3 class="card-title">导入配置</h3>
         </div>
+        <p class="card-desc">从 YAML 文件导入配置。支持拖拽上传或粘贴内容。</p>
+        
+        <!-- 拖放区域 -->
+        <div id="dropZone" class="drop-zone">
+            <div class="drop-zone-icon">☁️</div>
+            <div class="drop-zone-text">
+                拖拽 YAML 文件到此处<br>
+                或 <span class="highlight">点击选择文件</span>
+            </div>
+            <input type="file" id="fileInput" accept=".yaml,.yml" style="display: none;">
+        </div>
+        
+        <div class="divider"><span>或</span></div>
+        
+        <div class="form-group">
+            <label class="form-label">粘贴 YAML 内容：</label>
+            <textarea id="yamlInput" class="code-editor" rows="10" placeholder="# 在此粘贴 YAML 配置内容...
+# 示例：
+# pixiv:
+#   user_id: 12345678
+# scheduler:
+#   cron: '0 12 * * *'"></textarea>
+        </div>
+        
+        <label class="form-check">
+            <input type="checkbox" id="mergeMode">
+            <span class="form-check-label">合并模式（保留现有配置，仅覆盖冲突项）</span>
+        </label>
+        
+        <button id="importBtn" class="btn btn-primary" style="margin-top: 1rem;">
+            <span class="btn-text">📤 导入配置</span>
+            <span class="spinner d-none"></span>
+        </button>
+        
+        <div id="importResult" class="mt-3"></div>
     </div>
 </div>
-
-<style>
-.drop-zone {
-    border: 2px dashed var(--border-color);
-    border-radius: 8px;
-    padding: 2rem;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.drop-zone:hover,
-.drop-zone.dragover {
-    border-color: var(--accent-blue);
-    background: rgba(94, 129, 172, 0.1);
-}
-
-.code-editor {
-    font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 0.875rem;
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-}
-</style>
 
 <script>
 let exportedFilename = 'config.yaml';
@@ -108,7 +346,7 @@ let exportedFilename = 'config.yaml';
 // 导出功能
 document.getElementById('exportBtn').addEventListener('click', async () => {
     const btn = document.getElementById('exportBtn');
-    const spinner = btn.querySelector('.spinner-border');
+    const spinner = btn.querySelector('.spinner');
     const text = btn.querySelector('.btn-text');
     
     spinner.classList.remove('d-none');
@@ -123,6 +361,8 @@ document.getElementById('exportBtn').addEventListener('click', async () => {
             document.getElementById('yamlOutput').value = data.yaml;
             exportedFilename = data.filename;
             document.getElementById('exportResult').classList.remove('d-none');
+            // 滚动到结果区
+            document.getElementById('exportResult').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         } else {
             alert('导出失败: ' + data.error);
         }
@@ -130,7 +370,7 @@ document.getElementById('exportBtn').addEventListener('click', async () => {
         alert('导出出错: ' + e.message);
     } finally {
         spinner.classList.add('d-none');
-        text.textContent = '导出 YAML';
+        text.textContent = '📥 导出 YAML';
         btn.disabled = false;
     }
 });
@@ -156,13 +396,15 @@ document.getElementById('copyBtn').addEventListener('click', async () => {
         await navigator.clipboard.writeText(yaml);
         const btn = document.getElementById('copyBtn');
         const originalText = btn.innerHTML;
-        btn.innerHTML = '<i class="bi bi-check"></i> 已复制';
-        btn.classList.remove('btn-outline-secondary');
-        btn.classList.add('btn-success');
+        btn.innerHTML = '<span>✓</span> 已复制';
+        btn.style.background = 'rgba(76, 175, 80, 0.2)';
+        btn.style.borderColor = '#4caf50';
+        btn.style.color = '#4caf50';
         setTimeout(() => {
             btn.innerHTML = originalText;
-            btn.classList.remove('btn-success');
-            btn.classList.add('btn-outline-secondary');
+            btn.style.background = '';
+            btn.style.borderColor = '';
+            btn.style.color = '';
         }, 2000);
     } catch (e) {
         alert('复制失败: ' + e.message);
@@ -208,6 +450,12 @@ function handleFile(file) {
     const reader = new FileReader();
     reader.onload = (e) => {
         document.getElementById('yamlInput').value = e.target.result;
+        // 视觉反馈
+        const textarea = document.getElementById('yamlInput');
+        textarea.style.borderColor = 'var(--accent)';
+        setTimeout(() => {
+            textarea.style.borderColor = '';
+        }, 500);
     };
     reader.readAsText(file);
 }
@@ -221,7 +469,7 @@ document.getElementById('importBtn').addEventListener('click', async () => {
     }
     
     const btn = document.getElementById('importBtn');
-    const spinner = btn.querySelector('.spinner-border');
+    const spinner = btn.querySelector('.spinner');
     const text = btn.querySelector('.btn-text');
     const resultDiv = document.getElementById('importResult');
     
@@ -241,28 +489,16 @@ document.getElementById('importBtn').addEventListener('click', async () => {
         const data = await resp.json();
         
         if (data.success) {
-            resultDiv.innerHTML = `
-                <div class="alert alert-success">
-                    <i class="bi bi-check-circle"></i> ${data.message}
-                </div>
-            `;
+            resultDiv.innerHTML = '<div class="alert alert-success"><span>✓</span> ' + data.message + '</div>';
             setTimeout(() => location.reload(), 1500);
         } else {
-            resultDiv.innerHTML = `
-                <div class="alert alert-danger">
-                    <i class="bi bi-x-circle"></i> 导入失败: ${data.error}
-                </div>
-            `;
+            resultDiv.innerHTML = '<div class="alert alert-danger"><span>✗</span> 导入失败: ' + data.error + '</div>';
         }
     } catch (e) {
-        resultDiv.innerHTML = `
-            <div class="alert alert-danger">
-                <i class="bi bi-x-circle"></i> 导入出错: ${e.message}
-            </div>
-        `;
+        resultDiv.innerHTML = '<div class="alert alert-danger"><span>✗</span> 导入出错: ' + e.message + '</div>';
     } finally {
         spinner.classList.add('d-none');
-        text.textContent = '导入配置';
+        text.textContent = '📤 导入配置';
         btn.disabled = false;
     }
 });

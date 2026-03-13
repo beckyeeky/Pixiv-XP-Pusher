@@ -258,6 +258,19 @@ class SettingsRequest(BaseModel):
     strategies: List[str]
     r18_mode: str
     proxy_url: Optional[str] = ""
+    # 新增字段
+    search_limit: Optional[int] = 200
+    date_range_days: Optional[int] = 60
+    bookmark_threshold_search: Optional[int] = 500
+    daily_limit: Optional[int] = 50
+    max_per_artist: Optional[int] = 3
+    exclude_ai: Optional[bool] = True
+    skip_ugoira: Optional[bool] = True
+    batch_mode: Optional[str] = "album"
+    image_quality: Optional[int] = 85
+    max_image_size: Optional[int] = 2000
+    max_concurrency: Optional[int] = 5
+    requests_per_minute: Optional[int] = 60
 
 @app.post("/api/settings")
 async def save_settings(req: SettingsRequest, _=Depends(require_auth)):
@@ -286,20 +299,39 @@ async def save_settings(req: SettingsRequest, _=Depends(require_auth)):
         # 5. Filter / R18
         if "filter" not in config: config["filter"] = {}
         config["filter"]["r18_mode"] = req.r18_mode
+        config["filter"]["daily_limit"] = req.daily_limit
+        config["filter"]["max_per_artist"] = req.max_per_artist
+        config["filter"]["exclude_ai"] = req.exclude_ai
+        config["filter"]["skip_ugoira"] = req.skip_ugoira
         
-        # 6. Proxy
-        # 确保 notifier.telegram 结构存在
+        # 6. Fetcher
+        if "fetcher" not in config: config["fetcher"] = {}
+        config["fetcher"]["search_limit"] = req.search_limit
+        config["fetcher"]["date_range_days"] = req.date_range_days
+        if "bookmark_threshold" not in config["fetcher"]:
+            config["fetcher"]["bookmark_threshold"] = {}
+        config["fetcher"]["bookmark_threshold"]["search"] = req.bookmark_threshold_search
+        
+        # 7. Notifier / Telegram
         if "notifier" not in config:
             config["notifier"] = {}
         if "telegram" not in config["notifier"]:
             config["notifier"]["telegram"] = {}
         
+        config["notifier"]["telegram"]["batch_mode"] = req.batch_mode
+        config["notifier"]["telegram"]["image_quality"] = req.image_quality
+        config["notifier"]["telegram"]["max_image_size"] = req.max_image_size
+        
         # 处理代理 URL：如果是空字符串或 "None"，则设为 None
         if req.proxy_url and req.proxy_url.strip() and req.proxy_url.strip().lower() != "none":
             config["notifier"]["telegram"]["proxy_url"] = req.proxy_url.strip()
         else:
-            # 清除代理设置
             config["notifier"]["telegram"]["proxy_url"] = None
+        
+        # 8. Network
+        if "network" not in config: config["network"] = {}
+        config["network"]["max_concurrency"] = req.max_concurrency
+        config["network"]["requests_per_minute"] = req.requests_per_minute
                 
         save_config(config)
         return {"success": True}
