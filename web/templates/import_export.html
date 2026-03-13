@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+
+{% block title %}导入/导出 - Pixiv-XP-Pusher{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- 导出部分 -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">📤 导出配置</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">将当前配置导出为带注释的 YAML 文件，便于备份和手动编辑。</p>
+                
+                <button id="exportBtn" class="btn btn-primary">
+                    <span class="btn-text">导出 YAML</span>
+                    <span class="spinner-border spinner-border-sm d-none"></span>
+                </button>
+                
+                <div id="exportResult" class="mt-3 d-none">
+                    <div class="alert alert-success">
+                        <i class="bi bi-check-circle"></i> 导出成功！
+                    </div>
+                    <div class="form-group">
+                        <label>配置文件内容：</label>
+                        <textarea id="yamlOutput" class="form-control code-editor" rows="20" readonly></textarea>
+                    </div>
+                    <button id="downloadBtn" class="btn btn-success mt-2">
+                        <i class="bi bi-download"></i> 下载文件
+                    </button>
+                    <button id="copyBtn" class="btn btn-outline-secondary mt-2">
+                        <i class="bi bi-clipboard"></i> 复制到剪贴板
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 导入部分 -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">📥 导入配置</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">从 YAML 文件导入配置。支持拖拽上传。</p>
+                
+                <!-- 拖放区域 -->
+                <div id="dropZone" class="drop-zone">
+                    <div class="drop-zone-content">
+                        <i class="bi bi-cloud-upload fs-1"></i>
+                        <p class="mt-2">拖拽 YAML 文件到此处<br>或 <span class="text-primary">点击选择文件</span></p>
+                        <input type="file" id="fileInput" accept=".yaml,.yml" class="d-none">
+                    </div>
+                </div>
+                
+                <div class="form-group mt-3">
+                    <label>或直接粘贴 YAML 内容：</label>
+                    <textarea id="yamlInput" class="form-control code-editor" rows="10" placeholder="# 在此粘贴 YAML 配置..."></textarea>
+                </div>
+                
+                <div class="form-check mt-3">
+                    <input type="checkbox" class="form-check-input" id="mergeMode">
+                    <label class="form-check-label" for="mergeMode">
+                        合并模式（保留现有配置，仅覆盖冲突项）
+                    </label>
+                </div>
+                
+                <button id="importBtn" class="btn btn-primary mt-3">
+                    <span class="btn-text">导入配置</span>
+                    <span class="spinner-border spinner-border-sm d-none"></span>
+                </button>
+                
+                <div id="importResult" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.drop-zone {
+    border: 2px dashed var(--border-color);
+    border-radius: 8px;
+    padding: 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.drop-zone:hover,
+.drop-zone.dragover {
+    border-color: var(--accent-blue);
+    background: rgba(94, 129, 172, 0.1);
+}
+
+.code-editor {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.875rem;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+</style>
+
+<script>
+let exportedFilename = 'config.yaml';
+
+// 导出功能
+document.getElementById('exportBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('exportBtn');
+    const spinner = btn.querySelector('.spinner-border');
+    const text = btn.querySelector('.btn-text');
+    
+    spinner.classList.remove('d-none');
+    text.textContent = '导出中...';
+    btn.disabled = true;
+    
+    try {
+        const resp = await fetch('/api/config/export');
+        const data = await resp.json();
+        
+        if (data.success) {
+            document.getElementById('yamlOutput').value = data.yaml;
+            exportedFilename = data.filename;
+            document.getElementById('exportResult').classList.remove('d-none');
+        } else {
+            alert('导出失败: ' + data.error);
+        }
+    } catch (e) {
+        alert('导出出错: ' + e.message);
+    } finally {
+        spinner.classList.add('d-none');
+        text.textContent = '导出 YAML';
+        btn.disabled = false;
+    }
+});
+
+// 下载功能
+document.getElementById('downloadBtn').addEventListener('click', () => {
+    const yaml = document.getElementById('yamlOutput').value;
+    const blob = new Blob([yaml], { type: 'text/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = exportedFilename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+});
+
+// 复制功能
+document.getElementById('copyBtn').addEventListener('click', async () => {
+    const yaml = document.getElementById('yamlOutput').value;
+    try {
+        await navigator.clipboard.writeText(yaml);
+        const btn = document.getElementById('copyBtn');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<i class="bi bi-check"></i> 已复制';
+        btn.classList.remove('btn-outline-secondary');
+        btn.classList.add('btn-success');
+        setTimeout(() => {
+            btn.innerHTML = originalText;
+            btn.classList.remove('btn-success');
+            btn.classList.add('btn-outline-secondary');
+        }, 2000);
+    } catch (e) {
+        alert('复制失败: ' + e.message);
+    }
+});
+
+// 拖拽上传
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+dropZone.addEventListener('click', () => fileInput.click());
+
+dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('dragover');
+});
+
+dropZone.addEventListener('dragleave', () => {
+    dropZone.classList.remove('dragover');
+});
+
+dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+        handleFile(files[0]);
+    }
+});
+
+fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+        handleFile(e.target.files[0]);
+    }
+});
+
+function handleFile(file) {
+    if (!file.name.match(/\.(yaml|yml)$/i)) {
+        alert('请选择 YAML 文件 (.yaml 或 .yml)');
+        return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        document.getElementById('yamlInput').value = e.target.result;
+    };
+    reader.readAsText(file);
+}
+
+// 导入功能
+document.getElementById('importBtn').addEventListener('click', async () => {
+    const yamlContent = document.getElementById('yamlInput').value.trim();
+    if (!yamlContent) {
+        alert('请输入或上传 YAML 内容');
+        return;
+    }
+    
+    const btn = document.getElementById('importBtn');
+    const spinner = btn.querySelector('.spinner-border');
+    const text = btn.querySelector('.btn-text');
+    const resultDiv = document.getElementById('importResult');
+    
+    spinner.classList.remove('d-none');
+    text.textContent = '导入中...';
+    btn.disabled = true;
+    
+    try {
+        const resp = await fetch('/api/config/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                yaml_content: yamlContent,
+                merge: document.getElementById('mergeMode').checked
+            })
+        });
+        const data = await resp.json();
+        
+        if (data.success) {
+            resultDiv.innerHTML = `
+                <div class="alert alert-success">
+                    <i class="bi bi-check-circle"></i> ${data.message}
+                </div>
+            `;
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            resultDiv.innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-x-circle"></i> 导入失败: ${data.error}
+                </div>
+            `;
+        }
+    } catch (e) {
+        resultDiv.innerHTML = `
+            <div class="alert alert-danger">
+                <i class="bi bi-x-circle"></i> 导入出错: ${e.message}
+            </div>
+        `;
+    } finally {
+        spinner.classList.add('d-none');
+        text.textContent = '导入配置';
+        btn.disabled = false;
+    }
+});
+</script>
+{% endblock %}

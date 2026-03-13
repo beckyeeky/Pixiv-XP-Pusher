@@ -670,6 +670,171 @@ async def api_gallery(request: Request, page: int = 1, limit: int = 24, _=Depend
     }
 
 
+@app.get("/import-export", response_class=HTMLResponse)
+async def import_export_page(request: Request, _=Depends(require_auth)):
+    """导入/导出页面"""
+    config = load_config()
+    return templates.TemplateResponse("import_export.html", {
+        "request": request,
+        "active_page": "import_export",
+        "config": config
+    })
+
+
+@app.get("/api/config/export")
+async def export_config(_=Depends(require_auth)):
+    """导出配置为带注释的 YAML"""
+    try:
+        config = load_config()
+        
+        # 添加注释的 YAML 输出
+        yaml_content = generate_commented_yaml(config)
+        
+        return {
+            "success": True,
+            "yaml": yaml_content,
+            "filename": f"pixiv-xp-pusher-config-{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml"
+        }
+    except Exception as e:
+        logger.error(f"导出配置失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+class ImportConfigRequest(BaseModel):
+    yaml_content: str
+    merge: bool = False  # True = 合并, False = 覆盖
+
+
+@app.post("/api/config/import")
+async def import_config(req: ImportConfigRequest, _=Depends(require_auth)):
+    """导入 YAML 配置"""
+    try:
+        # 解析导入的 YAML
+        imported = yaml.safe_load(req.yaml_content)
+        if imported is None:
+            return {"success": False, "error": "YAML 内容为空或格式无效"}
+        
+        if req.merge:
+            # 合并模式：保留现有配置，导入的覆盖
+            current = load_config()
+            merged = deep_merge(current, imported)
+            save_config(merged)
+        else:
+            # 覆盖模式：完全替换
+            save_config(imported)
+        
+        return {"success": True, "message": "配置导入成功"}
+    except yaml.YAMLError as e:
+        return {"success": False, "error": f"YAML 解析错误: {e}"}
+    except Exception as e:
+        logger.error(f"导入配置失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def generate_commented_yaml(config: dict) -> str:
+    """生成带注释的 YAML"""
+    comments = {
+        "pixiv": {
+            "_desc": "Pixiv 配置",
+            "user_id": "你的 Pixiv 用户 ID",
+            "refresh_token": "Pixiv Refresh Token（可选，用于获取收藏数据）"
+        },
+        "scheduler": {
+            "_desc": "调度器配置",
+            "cron": "Cron 表达式，例如 '0 */6 * * *' 每6小时执行一次",
+            "timezone": "时区，例如 'Asia/Shanghai'"
+        },
+        "notifier": {
+            "_desc": "通知渠道配置",
+            "telegram": {
+                "_desc": "Telegram 通知",
+                "bot_token": "Bot Token",
+                "chat_id": "频道/群组 ID",
+                "proxy_url": "代理地址（可选）"
+            }
+        },
+        "filter": {
+            "_desc": "内容过滤配置",
+            "r18_mode": "R18 过滤模式: strict(严格), allow(允许), only(仅R18)",
+            "blacklist_tags": "黑名单标签列表",
+            "min_bookmarks": "最小收藏数阈值"
+        },
+        "profiler": {
+            "_desc": "XP 画像配置",
+            "ip_weight_discount": "IP 标签权重折扣 (0-1)",
+            "boost_tags": "加权标签字典 {tag: multiplier}",
+            "min_tag_weight": "最小标签权重阈值"
+        },
+        "strategies": {
+            "_desc": "推送策略列表",
+            "_items": [
+                "bookmarks: 基于收藏",
+                "following: 基于关注", 
+                "ranking: 基于排行榜",
+                "recommend: 智能推荐"
+            ]
+        },
+        "database": {
+            "_desc": "数据库配置",
+            "path": "SQLite 数据库路径"
+        },
+        "web": {
+            "_desc": "Web UI 配置",
+            "password": "登录密码（SHA256 哈希）"
+        }
+    }
+    
+    lines = ["# Pixiv-XP-Pusher 配置文件", f"# 导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ""]
+    
+    def add_comments(obj, schema, indent=0):
+        prefix = "  " * indent
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                # 获取注释
+                key_schema = schema.get(key, {}) if isinstance(schema, dict) else {}
+                desc = key_schema.get("_desc", "") if isinstance(key_schema, dict) else ""
+                
+                if desc and indent == 0:
+                    lines.append("")
+                    lines.append(f"{prefix}# {desc}")
+                
+                if isinstance(value, dict):
+                    lines.append(f"{prefix}{key}:")
+                    add_comments(value, key_schema, indent + 1)
+                elif isinstance(value, list):
+                    lines.append(f"{prefix}{key}:")
+                    for item in value:
+                        if isinstance(item, str):
+                            lines.append(f"{prefix}  - {item}")
+                        else:
+                            lines.append(f"{prefix}  - {item}")
+                else:
+                    # 处理字符串值，需要引号
+                    if isinstance(value, str):
+                        # 转义特殊字符
+                        escaped = value.replace('"', '\\"').replace("'", "''")
+                        lines.append(f"{prefix}{key}: \"{escaped}\"")
+                    else:
+                        lines.append(f"{prefix}{key}: {value}")
+        
+    add_comments(config, comments)
+    return "\n".join(lines)
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+    """深度合并两个字典"""
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        elif key in result and isinstance(result[key], list) and isinstance(value, list):
+            # 列表合并：去重
+            result[key] = list(dict.fromkeys(result[key] + value))
+        else:
+            result[key] = value
+    return result
+
+
 @app.get("/api/proxy/image/{illust_id}")
 async def proxy_image(illust_id: int):
     """

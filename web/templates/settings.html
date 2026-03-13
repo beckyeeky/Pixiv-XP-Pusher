@@ -124,6 +124,87 @@
         margin-top: 0.3rem;
     }
 
+    /* Tooltip 悬浮提示 */
+    .form-label {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+    }
+
+    .tooltip-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--accent-soft);
+        color: var(--text-primary);
+        font-size: 10px;
+        cursor: help;
+        position: relative;
+        transition: background 0.2s;
+    }
+
+    .tooltip-icon:hover {
+        background: var(--accent);
+    }
+
+    .tooltip-icon::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 0.6rem 0.8rem;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-size: 0.8rem;
+        color: var(--text-primary);
+        white-space: pre-line;
+        min-width: 250px;
+        max-width: 350px;
+        z-index: 1000;
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 0.2s, visibility 0.2s;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        line-height: 1.5;
+    }
+
+    .tooltip-icon:hover::after {
+        opacity: 1;
+        visibility: visible;
+        bottom: calc(100% + 8px);
+    }
+
+    .tooltip-icon::before {
+        content: '';
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border: 6px solid transparent;
+        border-top-color: var(--border);
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 0.2s, visibility 0.2s;
+    }
+
+    .tooltip-icon:hover::before {
+        opacity: 1;
+        visibility: visible;
+        bottom: calc(100% + 2px);
+    }
+
+    .tooltip-icon[data-tooltip*="推荐"]::after {
+        border-left: 3px solid var(--accent);
+    }
+
     .section-divider {
         border-top: 1px solid var(--border);
         margin: 1.5rem 0;
@@ -190,6 +271,7 @@
             <div class="form-group">
                 <label class="form-label">
                     降权系数
+                    <span class="tooltip-icon" data-tooltip="控制 IP 标签在画像计算中的权重折扣&#10;• 0.1-0.3: 强降权（IP 标签几乎不出现）&#10;• 0.4-0.7: 中等降权&#10;• 0.8-1.0: 轻微降权或不降权&#10;&#10;推荐值: 0.5&#10;默认: 1.0">ⓘ</span>
                     <span class="range-value" id="discountValue">{{ config.profiler.ip_weight_discount | default(1.0) }}</span>
                 </label>                
                 <div class="range-wrap">
@@ -206,14 +288,20 @@
             <div class="section-divider"></div>
 
             <div class="form-group">
-                <label class="form-label">Danbooru 用户名</label>
+                <label class="form-label">
+                    Danbooru 用户名
+                    <span class="tooltip-icon" data-tooltip="Danbooru 网站的登录用户名&#10;用于同步 IP 标签列表（如 hololive、blue_archive 等）&#10;&#10;留空则无法同步 IP 标签&#10;格式: 纯字母数字用户名">ⓘ</span>
+                </label>
                 <input type="text" class="form-control" name="danbooru_login" 
                        value="{{ config.profiler.danbooru_login | default('') }}" 
                        placeholder="选填，用于同步 IP 标签">
             </div>
             
             <div class="form-group">
-                <label class="form-label">Danbooru API Key</label>
+                <label class="form-label">
+                    Danbooru API Key
+                    <span class="tooltip-icon" data-tooltip="Danbooru API 访问密钥&#10;用于获取 IP 标签数据，可在 Danbooru 个人资料页生成&#10;&#10;安全性: 仅存储在本地服务器&#10;格式: 24位字母数字混合">ⓘ</span>
+                </label>
                 <input type="password" class="form-control" name="danbooru_api_key" 
                        value="{{ config.profiler.danbooru_api_key | default('') }}" 
                        placeholder="选填">
@@ -236,6 +324,11 @@
             </div>
             
             <div class="form-group">
+                <label class="form-label">
+                    推送策略
+                    <span class="tooltip-icon" data-tooltip="选择启用的内容获取策略，可多选&#10;&#10;• XP 画像搜索: 根据你的喜好标签搜索相似作品&#10;• 关联连锁: 从喜欢的作品找到相似推荐&#10;• 每日排行榜: Pixiv 每日热门作品&#10;• 关注画师更新: 你关注画师的最新作品&#10;&#10;推荐: 至少开启 2 个策略以获得更多样化内容">ⓘ</span>
+                </label>
+                
                 <label class="toggle-switch">
                     <input type="checkbox" name="strategies" value="xp_search" 
                            {% if 'xp_search' in config.strategies %}checked{% endif %}>
@@ -264,7 +357,10 @@
             <div class="section-divider"></div>
 
             <div class="form-group">
-                <label class="form-label">R18 模式</label>
+                <label class="form-label">
+                    R18 模式
+                    <span class="tooltip-icon" data-tooltip="控制推送内容的 R18 过滤级别&#10;&#10;• Safe: 仅全年龄内容（无 R18）&#10;• Mixed: 混合推送（根据画像权重决定）&#10;• R18 Only: 仅推送 R18 内容&#10;&#10;推荐: Mixed&#10;注意: 请遵守当地法律法规">ⓘ</span>
+                </label>
                 <select class="form-control" name="r18_mode">
                     <option value="safe" {% if config.filter.r18_mode == 'safe' %}selected{% endif %}>Safe (仅全年龄)</option>
                     <option value="mixed" {% if config.filter.r18_mode == 'mixed' %}selected{% endif %}>Mixed (混合)</option>
@@ -280,14 +376,20 @@
             </div>
             
             <div class="form-group">
-                <label class="form-label">Pixiv User ID</label>
+                <label class="form-label">
+                    Pixiv User ID
+                    <span class="tooltip-icon" data-tooltip="你的 Pixiv 用户数字 ID&#10;用于分析你的公开收藏来构建个人画像&#10;&#10;获取方式: Pixiv 个人资料页 URL 中的数字&#10;示例: pixiv.net/users/12345678&#10;&#10;推荐: 填写以获取个性化推荐&#10;注意: 仅读取公开收藏，无需登录">ⓘ</span>
+                </label>
                 <input type="number" class="form-control" name="user_id" 
                        value="{{ config.pixiv.user_id | default('') }}"
                        placeholder="用于分析收藏构建画像">
             </div>
             
             <div class="form-group">
-                <label class="form-label">定时任务 (Cron)</label>
+                <label class="form-label">
+                    定时任务 (Cron)
+                    <span class="tooltip-icon" data-tooltip="Cron 表达式定义推送任务的执行时间&#10;&#10;格式: 分 时 日 月 周&#10;示例: 0 12 * * * = 每天12点&#10;&#10;常用配置:&#10;• 0 12 * * * — 每天中午12点&#10;• 0 8,20 * * * — 早8点和晚8点&#10;• 0 */4 * * * — 每4小时&#10;• 0 9 * * 1 — 每周一上午9点&#10;&#10;推荐: 0 12 * * * (每日一次)">ⓘ</span>
+                </label>
                 <input type="text" class="form-control" name="cron" 
                        value="{{ config.scheduler.cron | default('0 12 * * *') }}"
                        placeholder="0 12 * * *">
@@ -299,7 +401,10 @@
             </div>
             
             <div class="form-group">
-                <label class="form-label">Telegram Proxy</label>
+                <label class="form-label">
+                    Telegram Proxy
+                    <span class="tooltip-icon" data-tooltip="连接 Telegram Bot API 的代理服务器&#10;&#10;格式: http://主机:端口&#10;示例: http://127.0.0.1:7890&#10;&#10;国内用户: 建议填写 Clash/V2Ray 本地代理&#10;海外服务器: 可留空&#10;&#10;推荐: http://127.0.0.1:7890 (Clash 默认)">ⓘ</span>
+                </label>
                 <input type="text" class="form-control" name="proxy_url" 
                        value="{{ config.notifier.telegram.proxy_url | default('') }}"
                        placeholder="http://127.0.0.1:7890">
