@@ -8,14 +8,17 @@
     <title>{% block title %}Pixiv-XP-Pusher{% endblock %}</title>
     <style>
         :root {
-            --bg-primary: #1a1a2e;
-            --bg-secondary: #16213e;
-            --bg-card: #0f3460;
-            --text-primary: #e8e8e8;
-            --text-secondary: #a0a0a0;
-            --accent: #e94560;
-            --accent-soft: #533483;
-            --border: #2d3a52;
+            /* Crimson 高级暗色主题 */
+            --bg-primary: #0b0f14;
+            --bg-secondary: #0f1620;
+            --bg-card: #111b26;
+            --text-primary: #e6eaf0;
+            --text-secondary: #9aa4b2;
+            --accent: #e11d48;          /* Crimson */
+            --accent-soft: #2a141c;     /* 深酒红底 */
+            --border: #223042;
+            --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+            --shadow-soft: 0 6px 18px rgba(0, 0, 0, 0.25);
         }
 
         * {
@@ -26,10 +29,20 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
-            background: var(--bg-primary);
+            background: radial-gradient(1200px 800px at 20% -10%, rgba(225, 29, 72, 0.14), transparent 55%),
+                        radial-gradient(900px 600px at 90% 10%, rgba(225, 29, 72, 0.10), transparent 60%),
+                        var(--bg-primary);
             color: var(--text-primary);
             line-height: 1.6;
             min-height: 100vh;
+        }
+
+        a {
+            color: var(--accent);
+        }
+
+        a:hover {
+            opacity: 0.9;
         }
 
         /* 导航栏 */
@@ -69,11 +82,16 @@
 
         /* 卡片 */
         .card {
-            background: var(--bg-card);
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 60%), var(--bg-card);
             border-radius: 12px;
             padding: 1.5rem;
             margin-bottom: 1.5rem;
-            border: 1px solid var(--border);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            box-shadow: var(--shadow-soft);
+        }
+
+        .card:hover {
+            border-color: rgba(225, 29, 72, 0.35);
         }
 
         .card-header {
@@ -187,36 +205,64 @@
 
         /* 按钮 */
         .btn {
-            display: inline-block;
-            padding: 0.6rem 1.2rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.65rem 1.15rem;
             background: var(--accent);
             color: #fff;
-            border: none;
-            border-radius: 6px;
+            border: 1px solid rgba(225, 29, 72, 0.45);
+            border-radius: 8px;
             cursor: pointer;
-            font-size: 0.9rem;
+            font-size: 0.92rem;
             text-decoration: none;
-            transition: opacity 0.2s;
+            transition: transform 0.12s ease, opacity 0.12s ease, box-shadow 0.12s ease;
+            box-shadow: 0 8px 18px rgba(225, 29, 72, 0.12);
         }
 
         .btn:hover {
-            opacity: 0.9;
+            opacity: 0.95;
+            transform: translateY(-1px);
+            box-shadow: 0 12px 24px rgba(225, 29, 72, 0.18);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn.secondary {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: var(--text-secondary);
+            box-shadow: none;
+        }
+
+        .btn.secondary:hover {
+            border-color: rgba(225, 29, 72, 0.35);
+            color: var(--text-primary);
+            box-shadow: none;
         }
 
         /* 表单 */
         input,
+        select,
+        textarea,
         button {
             padding: 0.75rem 1rem;
-            border: 1px solid var(--border);
-            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
             font-size: 1rem;
-            background: var(--bg-secondary);
+            background: rgba(255, 255, 255, 0.02);
             color: var(--text-primary);
         }
 
-        input:focus {
+        input:focus,
+        select:focus,
+        textarea:focus {
             outline: none;
-            border-color: var(--accent);
+            border-color: rgba(225, 29, 72, 0.65);
+            box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.18);
         }
 
         /* 响应式 */
@@ -246,6 +292,7 @@
             <a href="/gallery" class="{% if active_page == 'gallery' %}active{% endif %}">Gallery</a>
             <a href="/tags" class="{% if active_page == 'tags' %}active{% endif %}">Tags</a>
             <a href="/settings" class="{% if active_page == 'settings' %}active{% endif %}">Settings</a>
+            <a href="/import-export" class="{% if active_page == 'import_export' %}active{% endif %}">Import/Export</a>
             <a href="/logout">登出</a>
         </div>
     </nav>

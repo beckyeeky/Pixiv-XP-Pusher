@@ -517,7 +517,15 @@ class ContentFetcher:
         scored_candidates = []
         xp_dict = dict(xp_tags)
         
+        # 读取 bookmark_threshold 配置
+        bookmark_threshold_related = self.bookmark_threshold.get("related", 0)
+        
         for illust in raw_related:
+            # 收藏数阈值过滤
+            if bookmark_threshold_related > 0 and illust.bookmark_count < bookmark_threshold_related:
+                logger.debug(f"关联策略: 作品 {illust.id} 收藏数 {illust.bookmark_count} < 阈值 {bookmark_threshold_related}，跳过")
+                continue
+            
             # 基础分
             score = 0.0
             

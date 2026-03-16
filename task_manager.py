@@ -123,7 +123,17 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                 import database as db_mod
                 xp_profile = await db_mod.get_xp_profile()
                 
+                # 读取 bookmark_threshold 配置
+                fetcher_cfg = config.get("fetcher", {})
+                bt_cfg = fetcher_cfg.get("bookmark_threshold") or {}
+                bookmark_threshold_related = bt_cfg.get("related", 0) if isinstance(bt_cfg, dict) else 0
+                
                 for ill in related:
+                    # 收藏数阈值过滤
+                    if bookmark_threshold_related > 0 and ill.bookmark_count < bookmark_threshold_related:
+                        logger.debug(f"🔗 作品 {ill.id} 收藏数 {ill.bookmark_count} < 阈值 {bookmark_threshold_related}，跳过")
+                        continue
+                    
                     # 严格去重 (ID 类型统一)
                     try:
                         if ill.id and seed_illust.id and int(ill.id) == int(seed_illust.id):
