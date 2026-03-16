@@ -141,13 +141,18 @@ async def do_setup(password: str = Form(...), confirm: str = Form(...)):
 
 
 @app.post("/login")
-async def login(password: str = Form(...)):
-    """登录"""
+async def login(request: Request, password: str = Form(...)):
+    """登录 - 密码错误时返回页面内提示"""
     config = load_config()
     stored_hash = config.get("web", {}).get("password", "")
     
     if hash_password(password) != stored_hash:
-        raise HTTPException(401, "密码错误")
+        # 密码错误，返回登录页面并显示错误信息
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "active_page": "",
+            "error": "密码错误，请重试"
+        })
     
     session_id = secrets.token_hex(32)
     sessions[session_id] = datetime.now()
@@ -170,8 +175,12 @@ async def logout(request: Request):
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(request: Request, _=Depends(require_auth)):
+async def dashboard(request: Request):
     """仪表盘"""
+    # 检查登录状态，未登录重定向到登录页
+    if not verify_session(request):
+        return RedirectResponse("/", status_code=302)
+    
     # 获取 XP 画像
     xp_profile = await db.get_xp_profile()
     top_tags = sorted(xp_profile.items(), key=lambda x: x[1], reverse=True)[:20]
@@ -203,8 +212,12 @@ SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_ip_tags.py"
 IP_TAGS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 @app.get("/gallery", response_class=HTMLResponse)
-async def gallery(request: Request, page: int = Query(1, ge=1), _=Depends(require_auth)):
+async def gallery(request: Request, page: int = Query(1, ge=1)):
     """推送历史画廊"""
+    # 检查登录状态，未登录重定向到登录页
+    if not verify_session(request):
+        return RedirectResponse("/", status_code=302)
+    
     limit = 24
     offset = (page - 1) * limit
     
@@ -222,8 +235,12 @@ async def gallery(request: Request, page: int = Query(1, ge=1), _=Depends(requir
 
 
 @app.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request, _=Depends(require_auth)):
+async def settings_page(request: Request):
     """设置页面 - 纯配置"""
+    # 检查登录状态，未登录重定向到登录页
+    if not verify_session(request):
+        return RedirectResponse("/", status_code=302)
+    
     config = load_config()
     return templates.TemplateResponse("settings.html", {
         "request": request,
@@ -233,8 +250,12 @@ async def settings_page(request: Request, _=Depends(require_auth)):
 
 
 @app.get("/tags", response_class=HTMLResponse)
-async def tags_page(request: Request, _=Depends(require_auth)):
+async def tags_page(request: Request):
     """标签管理页面"""
+    # 检查登录状态，未登录重定向到登录页
+    if not verify_session(request):
+        return RedirectResponse("/", status_code=302)
+    
     config = load_config()
     return templates.TemplateResponse("tags.html", {
         "request": request,
@@ -707,8 +728,12 @@ async def api_gallery(request: Request, page: int = 1, limit: int = 24, _=Depend
 
 
 @app.get("/import-export", response_class=HTMLResponse)
-async def import_export_page(request: Request, _=Depends(require_auth)):
+async def import_export_page(request: Request):
     """导入/导出页面"""
+    # 检查登录状态，未登录重定向到登录页
+    if not verify_session(request):
+        return RedirectResponse("/", status_code=302)
+    
     config = load_config()
     return templates.TemplateResponse("import_export.html", {
         "request": request,
