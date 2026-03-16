@@ -42,7 +42,7 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # 会话存储（简易实现）
 sessions: dict[str, datetime] = {}
-SESSION_EXPIRE_HOURS = 24 * 30
+SESSION_EXPIRE_HOURS = 24
 
 
 def load_config() -> dict:
@@ -258,21 +258,6 @@ class SettingsRequest(BaseModel):
     strategies: List[str]
     r18_mode: str
     proxy_url: Optional[str] = ""
-    # 新增字段
-    search_limit: Optional[int] = 200
-    date_range_days: Optional[int] = 60
-    bookmark_threshold_search: Optional[int] = 500
-    bookmark_threshold_subscription: Optional[int] = 0
-    bookmark_threshold_related: Optional[int] = 100
-    daily_limit: Optional[int] = 50
-    max_per_artist: Optional[int] = 3
-    exclude_ai: Optional[bool] = True
-    skip_ugoira: Optional[bool] = True
-    batch_mode: Optional[str] = "album"
-    image_quality: Optional[int] = 85
-    max_image_size: Optional[int] = 2000
-    max_concurrency: Optional[int] = 5
-    requests_per_minute: Optional[int] = 60
 
 @app.post("/api/settings")
 async def save_settings(req: SettingsRequest, _=Depends(require_auth)):
@@ -301,41 +286,20 @@ async def save_settings(req: SettingsRequest, _=Depends(require_auth)):
         # 5. Filter / R18
         if "filter" not in config: config["filter"] = {}
         config["filter"]["r18_mode"] = req.r18_mode
-        config["filter"]["daily_limit"] = req.daily_limit
-        config["filter"]["max_per_artist"] = req.max_per_artist
-        config["filter"]["exclude_ai"] = req.exclude_ai
-        config["filter"]["skip_ugoira"] = req.skip_ugoira
         
-        # 6. Fetcher
-        if "fetcher" not in config: config["fetcher"] = {}
-        config["fetcher"]["search_limit"] = req.search_limit
-        config["fetcher"]["date_range_days"] = req.date_range_days
-        if "bookmark_threshold" not in config["fetcher"]:
-            config["fetcher"]["bookmark_threshold"] = {}
-        config["fetcher"]["bookmark_threshold"]["search"] = req.bookmark_threshold_search
-        config["fetcher"]["bookmark_threshold"]["subscription"] = req.bookmark_threshold_subscription
-        config["fetcher"]["bookmark_threshold"]["related"] = req.bookmark_threshold_related
-        
-        # 7. Notifier / Telegram
+        # 6. Proxy
+        # 确保 notifier.telegram 结构存在
         if "notifier" not in config:
             config["notifier"] = {}
         if "telegram" not in config["notifier"]:
             config["notifier"]["telegram"] = {}
         
-        config["notifier"]["telegram"]["batch_mode"] = req.batch_mode
-        config["notifier"]["telegram"]["image_quality"] = req.image_quality
-        config["notifier"]["telegram"]["max_image_size"] = req.max_image_size
-        
         # 处理代理 URL：如果是空字符串或 "None"，则设为 None
         if req.proxy_url and req.proxy_url.strip() and req.proxy_url.strip().lower() != "none":
             config["notifier"]["telegram"]["proxy_url"] = req.proxy_url.strip()
         else:
+            # 清除代理设置
             config["notifier"]["telegram"]["proxy_url"] = None
-        
-        # 8. Network
-        if "network" not in config: config["network"] = {}
-        config["network"]["max_concurrency"] = req.max_concurrency
-        config["network"]["requests_per_minute"] = req.requests_per_minute
                 
         save_config(config)
         return {"success": True}
@@ -704,171 +668,6 @@ async def api_gallery(request: Request, page: int = 1, limit: int = 24, _=Depend
         "limit": limit,
         "pages": (total // limit) + (1 if total % limit else 0)
     }
-
-
-@app.get("/import-export", response_class=HTMLResponse)
-async def import_export_page(request: Request, _=Depends(require_auth)):
-    """导入/导出页面"""
-    config = load_config()
-    return templates.TemplateResponse("import_export.html", {
-        "request": request,
-        "active_page": "import_export",
-        "config": config
-    })
-
-
-@app.get("/api/config/export")
-async def export_config(_=Depends(require_auth)):
-    """导出配置为带注释的 YAML"""
-    try:
-        config = load_config()
-        
-        # 添加注释的 YAML 输出
-        yaml_content = generate_commented_yaml(config)
-        
-        return {
-            "success": True,
-            "yaml": yaml_content,
-            "filename": f"pixiv-xp-pusher-config-{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml"
-        }
-    except Exception as e:
-        logger.error(f"导出配置失败: {e}")
-        return {"success": False, "error": str(e)}
-
-
-class ImportConfigRequest(BaseModel):
-    yaml_content: str
-    merge: bool = False  # True = 合并, False = 覆盖
-
-
-@app.post("/api/config/import")
-async def import_config(req: ImportConfigRequest, _=Depends(require_auth)):
-    """导入 YAML 配置"""
-    try:
-        # 解析导入的 YAML
-        imported = yaml.safe_load(req.yaml_content)
-        if imported is None:
-            return {"success": False, "error": "YAML 内容为空或格式无效"}
-        
-        if req.merge:
-            # 合并模式：保留现有配置，导入的覆盖
-            current = load_config()
-            merged = deep_merge(current, imported)
-            save_config(merged)
-        else:
-            # 覆盖模式：完全替换
-            save_config(imported)
-        
-        return {"success": True, "message": "配置导入成功"}
-    except yaml.YAMLError as e:
-        return {"success": False, "error": f"YAML 解析错误: {e}"}
-    except Exception as e:
-        logger.error(f"导入配置失败: {e}")
-        return {"success": False, "error": str(e)}
-
-
-def generate_commented_yaml(config: dict) -> str:
-    """生成带注释的 YAML"""
-    comments = {
-        "pixiv": {
-            "_desc": "Pixiv 配置",
-            "user_id": "你的 Pixiv 用户 ID",
-            "refresh_token": "Pixiv Refresh Token（可选，用于获取收藏数据）"
-        },
-        "scheduler": {
-            "_desc": "调度器配置",
-            "cron": "Cron 表达式，例如 '0 */6 * * *' 每6小时执行一次",
-            "timezone": "时区，例如 'Asia/Shanghai'"
-        },
-        "notifier": {
-            "_desc": "通知渠道配置",
-            "telegram": {
-                "_desc": "Telegram 通知",
-                "bot_token": "Bot Token",
-                "chat_id": "频道/群组 ID",
-                "proxy_url": "代理地址（可选）"
-            }
-        },
-        "filter": {
-            "_desc": "内容过滤配置",
-            "r18_mode": "R18 过滤模式: strict(严格), allow(允许), only(仅R18)",
-            "blacklist_tags": "黑名单标签列表",
-            "min_bookmarks": "最小收藏数阈值"
-        },
-        "profiler": {
-            "_desc": "XP 画像配置",
-            "ip_weight_discount": "IP 标签权重折扣 (0-1)",
-            "boost_tags": "加权标签字典 {tag: multiplier}",
-            "min_tag_weight": "最小标签权重阈值"
-        },
-        "strategies": {
-            "_desc": "推送策略列表",
-            "_items": [
-                "bookmarks: 基于收藏",
-                "following: 基于关注", 
-                "ranking: 基于排行榜",
-                "recommend: 智能推荐"
-            ]
-        },
-        "database": {
-            "_desc": "数据库配置",
-            "path": "SQLite 数据库路径"
-        },
-        "web": {
-            "_desc": "Web UI 配置",
-            "password": "登录密码（SHA256 哈希）"
-        }
-    }
-    
-    lines = ["# Pixiv-XP-Pusher 配置文件", f"# 导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ""]
-    
-    def add_comments(obj, schema, indent=0):
-        prefix = "  " * indent
-        if isinstance(obj, dict):
-            for key, value in obj.items():
-                # 获取注释
-                key_schema = schema.get(key, {}) if isinstance(schema, dict) else {}
-                desc = key_schema.get("_desc", "") if isinstance(key_schema, dict) else ""
-                
-                if desc and indent == 0:
-                    lines.append("")
-                    lines.append(f"{prefix}# {desc}")
-                
-                if isinstance(value, dict):
-                    lines.append(f"{prefix}{key}:")
-                    add_comments(value, key_schema, indent + 1)
-                elif isinstance(value, list):
-                    lines.append(f"{prefix}{key}:")
-                    for item in value:
-                        if isinstance(item, str):
-                            lines.append(f"{prefix}  - {item}")
-                        else:
-                            lines.append(f"{prefix}  - {item}")
-                else:
-                    # 处理字符串值，需要引号
-                    if isinstance(value, str):
-                        # 转义特殊字符
-                        escaped = value.replace('"', '\\"').replace("'", "''")
-                        lines.append(f"{prefix}{key}: \"{escaped}\"")
-                    else:
-                        lines.append(f"{prefix}{key}: {value}")
-        
-    add_comments(config, comments)
-    return "\n".join(lines)
-
-
-def deep_merge(base: dict, override: dict) -> dict:
-    """深度合并两个字典"""
-    result = base.copy()
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = deep_merge(result[key], value)
-        elif key in result and isinstance(result[key], list) and isinstance(value, list):
-            # 列表合并：去重
-            result[key] = list(dict.fromkeys(result[key] + value))
-        else:
-            result[key] = value
-    return result
 
 
 @app.get("/api/proxy/image/{illust_id}")

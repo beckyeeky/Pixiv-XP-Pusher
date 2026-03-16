@@ -1,0 +1,968 @@
+{% extends "base.html" %}
+
+{% block title %}设置 - Pixiv-XP-Pusher{% endblock %}
+
+{% block extra_head %}
+<style>
+.settings-container {
+    display: grid;
+    grid-template-columns: 250px 1fr;
+    gap: 1.5rem;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+.settings-nav {
+    position: sticky;
+    top: 1rem;
+    height: fit-content;
+}
+
+.settings-nav-item {
+    display: block;
+    padding: 0.8rem 1rem;
+    color: var(--text-secondary);
+    text-decoration: none;
+    border-radius: 6px;
+    margin-bottom: 0.3rem;
+    transition: all 0.2s;
+    cursor: pointer;
+    border: none;
+    background: none;
+    width: 100%;
+    text-align: left;
+    font-size: 0.95rem;
+}
+
+.settings-nav-item:hover {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.settings-nav-item.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+
+.settings-content {
+    min-height: 500px;
+}
+
+.settings-section {
+    display: none;
+}
+
+.settings-section.active {
+    display: block;
+}
+
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    gap: 1.5rem;
+}
+
+.form-group {
+    margin-bottom: 1.2rem;
+}
+
+.form-label {
+    display: block;
+    margin-bottom: 0.5rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.form-control {
+    width: 100%;
+    padding: 0.7rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+}
+
+.form-control:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+textarea.form-control {
+    min-height: 100px;
+    resize: vertical;
+    font-family: monospace;
+}
+
+.toggle-switch {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.7rem;
+    background: var(--bg-primary);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    margin-bottom: 0.5rem;
+}
+
+.toggle-switch:hover {
+    border-color: var(--accent-soft);
+}
+
+.toggle-switch input {
+    width: 1.1rem;
+    height: 1.1rem;
+    cursor: pointer;
+}
+
+.range-wrap {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.range-wrap input[type="range"] {
+    flex: 1;
+}
+
+.range-value {
+    min-width: 50px;
+    text-align: center;
+    color: var(--accent);
+    font-weight: bold;
+    font-size: 1.1rem;
+}
+
+.help-text {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 0.3rem;
+}
+
+.save-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    padding: 1rem 2rem;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 1rem;
+    z-index: 100;
+}
+
+.btn-primary {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 0.8rem 2rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: opacity 0.2s;
+}
+
+.btn-primary:hover {
+    opacity: 0.9;
+}
+
+.btn-secondary {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 0.6rem 1.2rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+
+.btn-secondary:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.section-title {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    color: var(--text-primary);
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--accent-soft);
+}
+
+.array-input {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    min-height: 42px;
+}
+
+.array-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.3rem 0.6rem;
+    background: var(--accent-soft);
+    border-radius: 16px;
+    font-size: 0.85rem;
+}
+
+.array-item .remove {
+    cursor: pointer;
+    opacity: 0.6;
+}
+
+.array-item .remove:hover {
+    opacity: 1;
+}
+
+.array-input input {
+    flex: 1;
+    min-width: 100px;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    outline: none;
+}
+
+@media (max-width: 768px) {
+    .settings-container {
+        grid-template-columns: 1fr;
+    }
+    .settings-nav {
+        position: relative;
+        display: flex;
+        overflow-x: auto;
+        gap: 0.5rem;
+    }
+    .settings-nav-item {
+        white-space: nowrap;
+    }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="settings-container">
+    <!-- 左侧导航 -->
+    <nav class="settings-nav">
+        <button class="settings-nav-item active" onclick="showSection('pixiv')">🔑 Pixiv 认证</button>
+        <button class="settings-nav-item" onclick="showSection('strategies')">🎯 推送策略</button>
+        <button class="settings-nav-item" onclick="showSection('notifier')">📢 推送通道</button>
+        <button class="settings-nav-item" onclick="showSection('profiler')">👤 画像分析</button>
+        <button class="settings-nav-item" onclick="showSection('ai')">🤖 AI 增强</button>
+        <button class="settings-nav-item" onclick="showSection('filter')">🛡️ 内容过滤</button>
+        <button class="settings-nav-item" onclick="showSection('fetcher')">📥 内容获取</button>
+        <button class="settings-nav-item" onclick="showSection('scheduler')">⏰ 定时任务</button>
+        <button class="settings-nav-item" onclick="showSection('network')">🌐 网络配置</button>
+        <button class="settings-nav-item" onclick="showSection('feedback')">💬 反馈机制</button>
+        <button class="settings-nav-item" onclick="showSection('web')">🖥️ Web UI</button>
+        <hr style="border-color: var(--border); margin: 1rem 0;">
+        <a href="/import-export" class="settings-nav-item">📥📤 导入/导出</a>
+    </nav>
+
+    <!-- 右侧内容区 -->
+    <div class="settings-content">
+        
+        <!-- Pixiv 认证 -->
+        <div id="section-pixiv" class="settings-section active">
+            <h3 class="section-title">🔑 Pixiv 认证</h3>
+            <div class="form-grid">
+                <div>
+                    <div class="form-group">
+                        <label class="form-label">Refresh Token *</label>
+                        <input type="password" class="form-control" id="pixiv_refresh_token" 
+                               value="{{ config.pixiv.refresh_token | default('') }}">
+                        <div class="help-text">用于搜索、排行榜等操作。通过 get_token.py 获取</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Sync Token (可选)</label>
+                        <input type="password" class="form-control" id="pixiv_sync_token"
+                               value="{{ config.pixiv.sync_token | default('') }}">
+                        <div class="help-text">仅用于获取收藏和关注动态，降低主号风险</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">User ID</label>
+                        <input type="number" class="form-control" id="pixiv_user_id"
+                               value="{{ config.pixiv.user_id | default('') }}">
+                        <div class="help-text">你的 Pixiv 用户ID</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 推送策略 -->
+        <div id="section-strategies" class="settings-section">
+            <h3 class="section-title">🎯 推送策略</h3>
+            <div class="form-group">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="strategy_xp_search" 
+                           {% if 'xp_search' in config.strategies %}checked{% endif %}>
+                    <span>🔍 XP 画像搜索 - 基于你的 XP 画像每日搜索推荐</span>
+                </label>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="strategy_related"
+                           {% if 'related' in config.strategies %}checked{% endif %}>
+                    <span>🔗 关联连锁 - 点赞后推送关联作品</span>
+                </label>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="strategy_ranking"
+                           {% if 'ranking' in config.strategies %}checked{% endif %}>
+                    <span>🏆 每日排行榜 - 推送排行榜作品</span>
+                </label>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="strategy_subscription"
+                           {% if 'subscription' in config.strategies %}checked{% endif %}>
+                    <span>👤 关注画师更新 - 推送关注画师的最新作品</span>
+                </label>
+            </div>
+        </div>
+
+        <!-- 推送通道 -->
+        <div id="section-notifier" class="settings-section">
+            <h3 class="section-title">📢 推送通道</h3>
+            <div class="form-grid">
+                <div>
+                    <h4 style="color: var(--text-secondary); margin-bottom: 1rem;">Telegram</h4>
+                    <div class="form-group">
+                        <label class="form-label">Bot Token</label>
+                        <input type="password" class="form-control" id="tg_bot_token"
+                               value="{{ config.notifier.telegram.bot_token | default('') }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Chat IDs</label>
+                        <div class="array-input" id="tg_chat_ids">
+                            {% for id in config.notifier.telegram.chat_ids | default([]) %}
+                            <span class="array-item">{{ id }} <span class="remove" onclick="this.parentElement.remove()">×</span></span>
+                            {% endfor %}
+                            <input type="text" placeholder="输入ID回车添加" onkeydown="addArrayItem(event, this)">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Proxy URL</label>
+                        <input type="text" class="form-control" id="tg_proxy_url"
+                               value="{{ config.notifier.telegram.proxy_url | default('') }}"
+                               placeholder="http://127.0.0.1:7890">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">图片质量</label>
+                        <div class="range-wrap">
+                            <input type="range" id="tg_image_quality" min="50" max="100" 
+                                   value="{{ config.notifier.telegram.image_quality | default(85) }}"
+                                   oninput="this.nextElementSibling.innerText = this.value">
+                            <span class="range-value">{{ config.notifier.telegram.image_quality | default(85) }}</span>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <h4 style="color: var(--text-secondary); margin-bottom: 1rem;">通用设置</h4>
+                    <div class="form-group">
+                        <label class="form-label">最大页数</label>
+                        <input type="number" class="form-control" id="notifier_max_pages"
+                               value="{{ config.notifier.max_pages | default(10) }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">多图模式</label>
+                        <select class="form-control" id="notifier_multi_page_mode">
+                            <option value="cover_link" {% if config.notifier.multi_page_mode == 'cover_link' %}selected{% endif %}>封面链接</option>
+                            <option value="media_group" {% if config.notifier.multi_page_mode == 'media_group' %}selected{% endif %}>媒体组</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 画像分析 -->
+        <div id="section-profiler" class="settings-section">
+            <h3 class="section-title">👤 画像分析</h3>
+            <div class="form-grid">
+                <div>
+                    <div class="form-group">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="profiler_ai_enabled"
+                                   {% if config.profiler.ai.enabled %}checked{% endif %}>
+                            <span>启用 AI 标签分析</span>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">AI Provider</label>
+                        <select class="form-control" id="profiler_ai_provider">
+                            <option value="openai" {% if config.profiler.ai.provider == 'openai' %}selected{% endif %}>OpenAI</option>
+                            <option value="gemini" {% if config.profiler.ai.provider == 'gemini' %}selected{% endif %}>Gemini</option>
+                            <option value="claude" {% if config.profiler.ai.provider == 'claude' %}selected{% endif %}>Claude</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">API Key</label>
+                        <input type="password" class="form-control" id="profiler_ai_api_key"
+                               value="{{ config.profiler.ai.api_key | default('') }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Base URL</label>
+                        <input type="text" class="form-control" id="profiler_ai_base_url"
+                               value="{{ config.profiler.ai.base_url | default('') }}">
+                    </div>
+                </div>
+                <div>
+                    <div class="form-group">
+                        <label class="form-label">扫描收藏数上限</label>
+                        <input type="number" class="form-control" id="profiler_scan_limit"
+                               value="{{ config.profiler.scan_limit | default(1000) }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">探索率</label>
+                        <div class="range-wrap">
+                            <input type="range" id="profiler_discovery_rate" min="0" max="1" step="0.05"
+                                   value="{{ config.profiler.discovery_rate | default(0.1) }}"
+                                   oninput="this.nextElementSibling.innerText = this.value">
+                            <span class="range-value">{{ config.profiler.discovery_rate | default(0.1) }}</span>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">IP 降权系数</label>
+                        <div class="range-wrap">
+                            <input type="range" id="profiler_ip_discount" min="0.1" max="1" step="0.1"
+                                   value="{{ config.profiler.ip_weight_discount | default(1.0) }}"
+                                   oninput="this.nextElementSibling.innerText = this.value">
+                            <span class="range-value">{{ config.profiler.ip_weight_discount | default(1.0) }}</span>
+                        </div>
+                        <div class="help-text">0.1=降权90%, 1.0=不降权</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI 增强 -->
+        <div id="section-ai" class="settings-section">
+            <h3 class="section-title">🤖 AI 增强</h3>
+            <div class="form-grid">
+                <div>
+                    <h4 style="color: var(--text-secondary); margin-bottom: 1rem;">Embedding 语义匹配</h4>
+                    <div class="form-group">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="ai_embedding_enabled"
+                                   {% if config.ai.embedding.enabled %}checked{% endif %}>
+                            <span>启用 Embedding</span>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">API Key</label>
+                        <input type="password" class="form-control" id="ai_embedding_api_key"
+                               value="{{ config.ai.embedding.api_key | default('') }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">向量维度</label>
+                        <select class="form-control" id="ai_embedding_dimensions">
+                            <option value="256" {% if config.ai.embedding.dimensions == 256 %}selected{% endif %}>256</option>
+                            <option value="512" {% if config.ai.embedding.dimensions == 512 %}selected{% endif %}>512</option>
+                            <option value="1024" {% if config.ai.embedding.dimensions == 1024 %}selected{% endif %}>1024</option>
+                            <option value="1536" {% if config.ai.embedding.dimensions == 1536 %}selected{% endif %}>1536</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <h4 style="color: var(--text-secondary); margin-bottom: 1rem;">AI 评分器</h4>
+                    <div class="form-group">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="ai_scorer_enabled"
+                                   {% if config.ai.scorer.enabled %}checked{% endif %}>
+                            <span>启用 AI 评分</span>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">API Key</label>
+                        <input type="password" class="form-control" id="ai_scorer_api_key"
+                               value="{{ config.ai.scorer.api_key | default('') }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Max Candidates</label>
+                        <input type="number" class="form-control" id="ai_scorer_max_candidates"
+                               value="{{ config.ai.scorer.max_candidates | default(50) }}">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 内容过滤 -->
+        <div id="section-filter" class="settings-section">
+            <h3 class="section-title">🛡️ 内容过滤</h3>
+            <div class="form-grid">
+                <div>
+                    <div class="form-group">
+                        <label class="form-label">每日推送上限</label>
+                        <input type="number" class="form-control" id="filter_daily_limit"
+                               value="{{ config.filter.daily_limit | default(20) }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="filter_exclude_ai"
+                                   {% if config.filter.exclude_ai %}checked{% endif %}>
+                            <span>过滤 AI 生成作品</span>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="filter_skip_ugoira"
+                                   {% if config.filter.skip_ugoira %}checked{% endif %}>
+                            <span>跳过动图 (Ugoira)</span>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">内容类型</label>
+                        <select class="form-control" id="filter_content_type">
+                            <option value="all" {% if config.filter.content_type == 'all' %}selected{% endif %}>全部</option>
+                            <option value="illust" {% if config.filter.content_type == 'illust' %}selected{% endif %}>插画</option>
+                            <option value="manga" {% if config.filter.content_type == 'manga' %}selected{% endif %}>漫画</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <div class="form-group">
+                        <label class="form-label">R18 模式</label>
+                        <select class="form-control" id="filter_r18_mode">
+                            <option value="safe" {% if config.filter.r18_mode == 'safe' %}selected{% endif %}>Safe (仅全年龄)</option>
+                            <option value="mixed" {% if config.filter.r18_mode == 'mixed' %}selected{% endif %}>Mixed (混合)</option>
+                            <option value="r18_only" {% if config.filter.r18_mode == 'r18_only' %}selected{% endif %}>R18 Only</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">单画师最大推送数</label>
+                        <input type="number" class="form-control" id="filter_max_per_artist"
+                               value="{{ config.filter.max_per_artist | default(3) }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">探索比例</label>
+                        <div class="range-wrap">
+                            <input type="range" id="filter_exploration" min="0" max="1" step="0.05"
+                                   value="{{ config.filter.exploration_ratio | default(0.2) }}"
+                                   oninput="this.nextElementSibling.innerText = this.value">
+                            <span class="range-value">{{ config.filter.exploration_ratio | default(0.2) }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 内容获取 -->
+        <div id="section-fetcher" class="settings-section">
+            <h3 class="section-title">📥 内容获取</h3>
+            <div class="form-grid">
+                <div>
+                    <div class="form-group">
+                        <label class="form-label">搜索收藏阈值</label>
+                        <input type="number" class="form-control" id="fetcher_search_threshold"
+                               value="{{ config.fetcher.bookmark_threshold.search | default(1000) }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">日期范围 (天)</label>
+                        <input type="number" class="form-control" id="fetcher_date_range"
+                               value="{{ config.fetcher.date_range_days | default(7) }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">搜索限制</label>
+                        <input type="number" class="form-control" id="fetcher_search_limit"
+                               value="{{ config.fetcher.search_limit | default(50) }}">
+                    </div>
+                </div>
+                <div>
+                    <div class="form-group">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="fetcher_ranking_enabled"
+                                   {% if config.fetcher.ranking.enabled %}checked{% endif %}>
+                            <span>启用排行榜</span>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">关注画师 IDs</label>
+                        <div class="array-input" id="fetcher_subscribed">
+                            {% for id in config.fetcher.subscribed_artists | default([]) %}
+                            <span class="array-item">{{ id }} <span class="remove" onclick="this.parentElement.remove()">×</span></span>
+                            {% endfor %}
+                            <input type="text" placeholder="输入ID回车添加" onkeydown="addArrayItem(event, this)">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 定时任务 -->
+        <div id="section-scheduler" class="settings-section">
+            <h3 class="section-title">⏰ 定时任务</h3>
+            <div class="form-grid">
+                <div>
+                    <div class="form-group">
+                        <label class="form-label">主任务 Cron</label>
+                        <input type="text" class="form-control" id="scheduler_cron"
+                               value="{{ config.scheduler.cron | default('0 12 * * *') }}"
+                               placeholder="0 12 * * *">
+                        <div class="help-text">
+                            <a href="#" onclick="setCron('0 12 * * *')">每天12点</a> ·
+                            <a href="#" onclick="setCron('0 8,20 * * *')">早8晚8</a> ·
+                            <a href="#" onclick="setCron('0 */4 * * *')">每4小时</a>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="scheduler_coalesce"
+                                   {% if config.scheduler.coalesce | default(true) %}checked{% endif %}>
+                            <span>合并错过的任务</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 网络配置 -->
+        <div id="section-network" class="settings-section">
+            <h3 class="section-title">🌐 网络配置</h3>
+            <div class="form-grid">
+                <div>
+                    <div class="form-group">
+                        <label class="form-label">最大并发数</label>
+                        <input type="number" class="form-control" id="network_concurrency"
+                               value="{{ config.network.max_concurrency | default(5) }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">每分钟请求上限</label>
+                        <input type="number" class="form-control" id="network_rpm"
+                               value="{{ config.network.requests_per_minute | default(60) }}">
+                    </div>
+                </div>
+                <div>
+                    <div class="form-group">
+                        <label class="form-label">随机延迟最小 (秒)</label>
+                        <input type="number" class="form-control" id="network_delay_min"
+                               value="{{ config.network.random_delay[0] | default(1.0) }}" step="0.1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">随机延迟最大 (秒)</label>
+                        <input type="number" class="form-control" id="network_delay_max"
+                               value="{{ config.network.random_delay[1] | default(3.0) }}" step="0.1">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 反馈机制 -->
+        <div id="section-feedback" class="settings-section">
+            <h3 class="section-title">💬 反馈机制</h3>
+            <div class="form-grid">
+                <div>
+                    <div class="form-group">
+                        <label class="form-label">点赞权重加成</label>
+                        <input type="number" class="form-control" id="feedback_like_boost" step="0.1"
+                               value="{{ config.feedback.like_boost | default(0.5) }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">点踩权重惩罚</label>
+                        <input type="number" class="form-control" id="feedback_dislike_penalty" step="0.1"
+                               value="{{ config.feedback.dislike_penalty | default(0.3) }}">
+                    </div>
+                </div>
+                <div>
+                    <div class="form-group">
+                        <label class="form-label">连锁深度上限</label>
+                        <input type="number" class="form-control" id="feedback_max_chain"
+                               value="{{ config.feedback.max_chain_depth | default(3) }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">关联推送数量</label>
+                        <input type="number" class="form-control" id="feedback_related_limit"
+                               value="{{ config.feedback.related_push_limit | default(1) }}">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Web UI -->
+        <div id="section-web" class="settings-section">
+            <h3 class="section-title">🖥️ Web UI 配置</h3>
+            <div class="form-grid">
+                <div>
+                    <div class="form-group">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="web_enabled"
+                                   {% if config.web.enabled | default(true) %}checked{% endif %}>
+                            <span>启用 Web UI</span>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">服务端口</label>
+                        <input type="number" class="form-control" id="web_port"
+                               value="{{ config.web.port | default(8000) }}">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- 固定底部保存栏 -->
+<div class="save-bar">
+    <span id="saveStatus" style="color: var(--text-secondary);"></span>
+    <button type="button" class="btn-secondary" onclick="exportConfig()">📤 导出配置</button>
+    <button type="button" class="btn-primary" onclick="saveAllSettings()">
+        💾 保存所有设置
+    </button>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// 切换设置页面
+function showSection(sectionId) {
+    document.querySelectorAll('.settings-section').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.settings-nav-item').forEach(el => el.classList.remove('active'));
+    
+    document.getElementById('section-' + sectionId).classList.add('active');
+    event.target.classList.add('active');
+}
+
+// 添加数组项
+function addArrayItem(event, input) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        const value = input.value.trim();
+        if (value) {
+            const item = document.createElement('span');
+            item.className = 'array-item';
+            item.innerHTML = value + ' <span class="remove" onclick="this.parentElement.remove()">×</span>';
+            input.parentElement.insertBefore(item, input);
+            input.value = '';
+        }
+    }
+}
+
+// 获取数组值
+function getArrayValues(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return [];
+    return Array.from(container.querySelectorAll('.array-item')).map(el => 
+        el.childNodes[0].textContent.trim()
+    );
+}
+
+// 设置 Cron 预设
+function setCron(val) {
+    document.getElementById('scheduler_cron').value = val;
+    return false;
+}
+
+// 收集所有配置
+function collectConfig() {
+    const strategies = [];
+    if (document.getElementById('strategy_xp_search').checked) strategies.push('xp_search');
+    if (document.getElementById('strategy_related').checked) strategies.push('related');
+    if (document.getElementById('strategy_ranking').checked) strategies.push('ranking');
+    if (document.getElementById('strategy_subscription').checked) strategies.push('subscription');
+
+    return {
+        pixiv: {
+            refresh_token: document.getElementById('pixiv_refresh_token').value,
+            sync_token: document.getElementById('pixiv_sync_token').value,
+            user_id: parseInt(document.getElementById('pixiv_user_id').value) || 0
+        },
+        web: {
+            enabled: document.getElementById('web_enabled').checked,
+            port: parseInt(document.getElementById('web_port').value) || 8000,
+            password: '{{ config.web.password | default("") }}'
+        },
+        strategies: strategies,
+        scheduler: {
+            cron: document.getElementById('scheduler_cron').value,
+            coalesce: document.getElementById('scheduler_coalesce').checked,
+            daily_report_cron: '0 0 * * *'
+        },
+        network: {
+            max_concurrency: parseInt(document.getElementById('network_concurrency').value) || 5,
+            random_delay: [
+                parseFloat(document.getElementById('network_delay_min').value) || 1.0,
+                parseFloat(document.getElementById('network_delay_max').value) || 3.0
+            ],
+            requests_per_minute: parseInt(document.getElementById('network_rpm').value) || 60
+        },
+        feedback: {
+            like_boost: parseFloat(document.getElementById('feedback_like_boost').value) || 0.5,
+            dislike_penalty: parseFloat(document.getElementById('feedback_dislike_penalty').value) || 0.3,
+            dislike_threshold: 3,
+            max_chain_depth: parseInt(document.getElementById('feedback_max_chain').value) || 3,
+            related_push_limit: parseInt(document.getElementById('feedback_related_limit').value) || 1
+        },
+        notifier: {
+            types: ['telegram'],
+            telegram: {
+                bot_token: document.getElementById('tg_bot_token').value,
+                chat_ids: getArrayValues('tg_chat_ids').map(id => parseInt(id) || id),
+                allowed_users: getArrayValues('tg_chat_ids').map(id => parseInt(id) || id),
+                proxy_url: document.getElementById('tg_proxy_url').value || null,
+                image_quality: parseInt(document.getElementById('tg_image_quality').value) || 85,
+                max_image_size: 2000,
+                thread_id: null,
+                batch_mode: 'single',
+                batch_show_title: true,
+                batch_show_artist: true,
+                batch_show_tags: true
+            },
+            max_pages: parseInt(document.getElementById('notifier_max_pages').value) || 10,
+            multi_page_mode: document.getElementById('notifier_multi_page_mode').value
+        },
+        profiler: {
+            ai: {
+                enabled: document.getElementById('profiler_ai_enabled').checked,
+                provider: document.getElementById('profiler_ai_provider').value,
+                api_key: document.getElementById('profiler_ai_api_key').value,
+                base_url: document.getElementById('profiler_ai_base_url').value,
+                model: 'gpt-4o-mini',
+                concurrency: 10,
+                batch_size: 200,
+                filter_meaningless: true,
+                merge_synonyms: true
+            },
+            scan_limit: parseInt(document.getElementById('profiler_scan_limit').value) || 1000,
+            discovery_rate: parseFloat(document.getElementById('profiler_discovery_rate').value) || 0.1,
+            time_decay_days: 180,
+            saturation_threshold: 0.5,
+            top_n: 20,
+            include_private: true,
+            ip_weight_discount: parseFloat(document.getElementById('profiler_ip_discount').value) || 1.0,
+            ip_tags_file: 'data/ip_tags.json',
+            danbooru_login: '',
+            danbooru_api_key: '',
+            boost_tags: {{ config.profiler.boost_tags | tojson | default('{}') }},
+            stop_words: ['original', 'manga', 'pixiv', 'illustration']
+        },
+        ai: {
+            embedding: {
+                enabled: document.getElementById('ai_embedding_enabled').checked,
+                provider: 'openai',
+                api_key: document.getElementById('ai_embedding_api_key').value,
+                base_url: '',
+                model: 'text-embedding-3-small',
+                dimensions: parseInt(document.getElementById('ai_embedding_dimensions').value) || 1536,
+                semantic_weight: 0.3,
+                cache_ttl_days: 30
+            },
+            scorer: {
+                enabled: document.getElementById('ai_scorer_enabled').checked,
+                provider: 'openai',
+                api_key: document.getElementById('ai_scorer_api_key').value,
+                base_url: '',
+                model: 'gpt-4o-mini',
+                max_candidates: parseInt(document.getElementById('ai_scorer_max_candidates').value) || 50,
+                score_weight: 0.3,
+                use_profiler_api: false
+            }
+        },
+        filter: {
+            match_score: {
+                min_threshold: 0.1,
+                weight_in_sort: 0.6
+            },
+            daily_limit: parseInt(document.getElementById('filter_daily_limit').value) || 20,
+            exclude_ai: document.getElementById('filter_exclude_ai').checked,
+            skip_ugoira: document.getElementById('filter_skip_ugoira').checked,
+            content_type: document.getElementById('filter_content_type').value,
+            r18_mode: document.getElementById('filter_r18_mode').value,
+            max_per_artist: parseInt(document.getElementById('filter_max_per_artist').value) || 3,
+            artist_boost: 0.3,
+            min_create_days: 0,
+            shuffle_factor: 0.15,
+            exploration_ratio: parseFloat(document.getElementById('filter_exploration').value) || 0.2,
+            author_diversity: {
+                enabled: true,
+                decay_factor: 0.7,
+                floor: 0.1
+            },
+            source_boost: {
+                xp_search: 1.2,
+                subscription: 1.1,
+                ranking: 0.9,
+                related: 1.15,
+                engagement_artists: 1.2
+            },
+            blacklist_tags: {{ config.filter.blacklist_tags | tojson | default('[]') }}
+        },
+        fetcher: {
+            bookmark_threshold: {
+                search: parseInt(document.getElementById('fetcher_search_threshold').value) || 1000,
+                subscription: 0
+            },
+            date_range_days: parseInt(document.getElementById('fetcher_date_range').value) || 7,
+            dynamic_threshold: {
+                min: 100,
+                rate: 0.05
+            },
+            search_limit: parseInt(document.getElementById('fetcher_search_limit').value) || 50,
+            ranking: {
+                enabled: document.getElementById('fetcher_ranking_enabled').checked,
+                modes: ['day', 'week', 'month'],
+                limit: 100
+            },
+            match_score: {
+                min_threshold: 0.3,
+                weight_in_sort: 0.5
+            },
+            mab_limits: {
+                min_quota: 0.2,
+                max_quota: 0.6
+            },
+            subscribed_artists: getArrayValues('fetcher_subscribed').map(id => parseInt(id) || id)
+        }
+    };
+}
+
+// 保存所有设置
+function saveAllSettings() {
+    const btn = document.querySelector('.save-bar .btn-primary');
+    const status = document.getElementById('saveStatus');
+    
+    const config = collectConfig();
+    
+    btn.disabled = true;
+    btn.innerText = '保存中...';
+    
+    fetch('/api/config/full', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(config)
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.success) {
+            status.innerText = '✅ 保存成功';
+            status.style.color = '#4caf50';
+        } else {
+            status.innerText = '❌ 保存失败';
+            status.style.color = '#ef4444';
+            alert('保存失败: ' + (res.error || '未知错误'));
+        }
+    })
+    .catch(err => {
+        status.innerText = '❌ 网络错误';
+        status.style.color = '#ef4444';
+        alert('网络错误: ' + err.message);
+    })
+    .finally(() => {
+        btn.disabled = false;
+        btn.innerText = '💾 保存所有设置';
+        setTimeout(() => {
+            status.innerText = '';
+        }, 3000);
+    });
+}
+
+// 导出配置
+function exportConfig() {
+    window.location.href = '/api/export';
+}
+</script>
+{% endblock %}
