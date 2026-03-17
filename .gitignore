@@ -54,3 +54,6 @@ masked_sample.jpg
 
 test_*.py
 x-algorithm-main/
+
+# Ops runtime state
+ops/state/
