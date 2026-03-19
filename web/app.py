@@ -23,6 +23,7 @@ import aiohttp
 import yaml
 
 import database as db
+from config import load_config as shared_load_config
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +50,8 @@ MAX_LOGIN_ATTEMPTS = 10
 
 
 def load_config() -> dict:
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-            if config is None:
-                logger.warning("config.yaml 为空或格式无效，返回默认配置")
-                return {}
-            return config
-    except Exception as e:
-        logger.error(f"加载 config.yaml 失败: {e}")
-        return {}
+    """复用共享配置加载逻辑，避免 Web 与主流程出现兼容性分叉。"""
+    return shared_load_config(CONFIG_PATH)
 
 
 def save_config(config: dict):
