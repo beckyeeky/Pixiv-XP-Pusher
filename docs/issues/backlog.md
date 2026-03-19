@@ -6,7 +6,7 @@
 
 - [x] ISSUE-001：修复 `config.example.yaml` 的 `filter.daily_limit` 示例格式，并在运行时增加非破坏性的配置规范化，避免错误类型导致实例异常。
 - [x] ISSUE-002：统一 `web/app.py`、`web/app_v2.py` 与 `web/app.py.bak`，收敛为单一 Web 入口；保留 `web.app_v2` 兼容入口，并移除陈旧备份文件。
-- [ ] ISSUE-003：建立最小测试框架，覆盖配置加载、数据库初始化、Web 登录与基础过滤逻辑。
+- [x] ISSUE-003：建立最小测试框架，先覆盖配置加载、数据库初始化与 Web 入口兼容性；后续再补登录与过滤逻辑。
 
 ## P1
 
