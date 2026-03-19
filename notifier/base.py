@@ -4,12 +4,21 @@
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+
 if TYPE_CHECKING:
     from pixiv_client import Illust
 
 
 class BaseNotifier(ABC):
     """推送器抽象基类"""
+
+    CAPABILITIES = {
+        "send_text": True,
+        "push_illusts": False,
+        "reply_thread": False,
+        "topic_routing": False,
+        "batch_mode": False,
+    }
     
     @abstractmethod
     async def send(self, illusts: list["Illust"]) -> list[int]:
@@ -50,6 +59,17 @@ class BaseNotifier(ABC):
             是否处理成功
         """
         pass
+
+
+    @classmethod
+    def capabilities(cls) -> dict[str, bool]:
+        """返回当前推送器声明的能力边界。"""
+        return dict(cls.CAPABILITIES)
+
+    @classmethod
+    def supports(cls, capability: str) -> bool:
+        """查询某项能力是否受支持。"""
+        return bool(cls.CAPABILITIES.get(capability, False))
 
     async def send_text(self, text: str, buttons: list[tuple[str, str]] | None = None) -> bool:
         """

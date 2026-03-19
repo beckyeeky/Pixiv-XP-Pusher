@@ -72,6 +72,15 @@ async def _retry_on_flood(coro_func, max_retries=3):
 class TelegramNotifier(BaseNotifier):
     """Telegram Bot 推送"""
 
+    CAPABILITIES = {
+        **BaseNotifier.CAPABILITIES,
+        "push_illusts": True,
+        "reply_thread": True,
+        "topic_routing": True,
+        "batch_mode": True,
+    }
+
+
     def __init__(
         self,
         bot_token: str,

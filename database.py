@@ -11,6 +11,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
+SCHEMA_VERSION = 1
 
 
 async def init_db():
@@ -222,6 +223,16 @@ async def init_db():
         except:
             pass  # 列已存在
         
+        # === 初始化 schema 版本元数据（兼容旧实例，不做破坏性升级） ===
+        await db.execute(
+            "INSERT OR IGNORE INTO system_state (key, value, updated_at) VALUES (?, ?, ?)",
+            ("schema_version", str(SCHEMA_VERSION), datetime.now())
+        )
+        await db.execute(
+            "UPDATE system_state SET value = ?, updated_at = ? WHERE key = ?",
+            (str(SCHEMA_VERSION), datetime.now(), "schema_version")
+        )
+
         # === 初始化 MAB 策略统计 (确保所有策略都有记录) ===
         default_strategies = ['xp_search', 'subscription', 'ranking', 'related', 'related_chain']
         for strategy in default_strategies:
@@ -787,6 +798,39 @@ async def set_state(key: str, value: str):
 
 
 # ============ 推送统计 ============
+
+
+async def get_schema_version() -> int:
+    """获取当前数据库 schema 版本。"""
+    value = await get_state("schema_version")
+    try:
+        return int(value) if value is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+async def get_db_overview() -> dict:
+    """返回数据库概览，供维护工具与 Web 使用。"""
+    table_names = [
+        "push_history", "xp_profile", "xp_bookmarks", "illust_cache", "feedback",
+        "strategy_stats", "tag_mapping_stats", "ai_tag_cache", "system_state"
+    ]
+    async with aiosqlite.connect(DB_PATH) as db:
+        table_counts = {}
+        for table in table_names:
+            cursor = await db.execute(f"SELECT COUNT(*) FROM {table}")
+            row = await cursor.fetchone()
+            table_counts[table] = row[0] if row else 0
+
+    return {
+        "path": str(DB_PATH),
+        "exists": DB_PATH.exists(),
+        "size_bytes": DB_PATH.stat().st_size if DB_PATH.exists() else 0,
+        "schema_version": await get_schema_version(),
+        "table_counts": table_counts,
+    }
+
+
 async def get_push_stats(days: int = 7) -> dict:
     """
     获取推送统计信息
