@@ -53,6 +53,8 @@ masked_sample.jpg
 .DS_Store
 
 test_*.py
+!tests/
+!tests/*.py
 x-algorithm-main/
 
 # Ops runtime state

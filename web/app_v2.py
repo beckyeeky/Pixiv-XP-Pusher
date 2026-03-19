@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """
 Web UI - FastAPI 后端 (增强版)
 完整配置管理 + 导入导出功能
@@ -851,3 +852,13 @@ async def proxy_image(illust_id: int):
                 continue
     
     return RedirectResponse("https://via.placeholder.com/300?text=Load+Failed")
+=======
+"""Compatibility shim for the legacy `web.app_v2` entrypoint.
+
+`web.app` is the canonical FastAPI implementation. This module re-exports the
+same objects so existing deployments that still start `uvicorn web.app_v2:app`
+continue to work without code duplication.
+"""
+
+from web.app import *  # noqa: F401,F403
+>>>>>>> 7b0f146118bc27dc90e98577c1745288ebb202c5
