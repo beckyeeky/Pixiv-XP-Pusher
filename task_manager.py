@@ -1,6 +1,8 @@
 import asyncio
 import contextvars
+import json
 import logging
+from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from config import load_config, CONFIG_PATH
@@ -630,6 +632,7 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
         
         async with _task_lock:
             logger.info("=== 开始推送任务 ===")
+            await db_module.set_state("runtime.last_run_started_at", datetime.now().isoformat())
         
         # 刷新 Access Token (防止长时间运行后过期)
         try:
@@ -898,6 +901,15 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
         except Exception as e:
             logger.error(f"任务执行出错: {e}", exc_info=True)
     
+        summary = {
+            "finished_at": datetime.now().isoformat(),
+            "fetch_count": getattr(stats, "fetched_total", 0),
+            "filtered_count": getattr(stats, "filtered_count", 0),
+            "pushed": getattr(stats, "push_success_total", 0),
+            "failed": getattr(stats, "push_failed_total", 0),
+        }
+        await db_module.set_state("runtime.last_run_summary", json.dumps(summary, ensure_ascii=False))
+        logger.info("运行摘要: %s", summary)
         logger.info("=== 推送任务结束 ===")
         return stats
     finally:
