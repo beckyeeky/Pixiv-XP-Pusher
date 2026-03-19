@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 class OneBotNotifier(BaseNotifier):
     """OneBot v11 协议推送（链接模式）"""
+
+    CAPABILITIES = {
+        **BaseNotifier.CAPABILITIES,
+        "batch_mode": False,
+    }
+    
     
     def __init__(
         self,

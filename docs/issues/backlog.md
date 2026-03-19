@@ -7,18 +7,16 @@
 - [x] ISSUE-001：修复 `config.example.yaml` 的 `filter.daily_limit` 示例格式，并在运行时增加非破坏性的配置规范化，避免错误类型导致实例异常。
 - [x] ISSUE-002：统一 `web/app.py`、`web/app_v2.py` 与 `web/app.py.bak`，收敛为单一 Web 入口；保留 `web.app_v2` 兼容入口，并移除陈旧备份文件。
 - [x] ISSUE-003：建立最小测试框架，先覆盖配置加载、数据库初始化与 Web 入口兼容性；后续再补登录与过滤逻辑。
-- [ ] ISSUE-002：统一 `web/app.py`、`web/app_v2.py` 与 `web/app.py.bak`，收敛为单一 Web 入口，同时保持现有页面和 API 功能不回退。
-- [ ] ISSUE-003：建立最小测试框架，覆盖配置加载、数据库初始化、Web 登录与基础过滤逻辑。
 
 ## P1
 
-- [ ] ISSUE-004：为数据库引入版本化迁移机制，替代探测失败后直接删表的做法。
-- [ ] ISSUE-005：增强 Web Session 的持久化与安全属性，在不影响当前登录体验的前提下减少重启丢会话问题。
-- [ ] ISSUE-006：增加调度、队列、重试、推送结果的运行指标与日志可观测性。
-- [ ] ISSUE-007：整理 README 与默认运行入口的功能对齐矩阵，避免文档描述与实际行为偏离。
+- [x] ISSUE-004：为数据库引入 schema 版本元数据与数据库概览接口，先建立版本化迁移基线；后续再逐步替换旧的删表式升级逻辑。
+- [x] ISSUE-005：增强 Web Session 的安全属性，加入登录限速与可配置 Cookie 安全参数；会话持久化后续再做数据库化。
+- [x] ISSUE-006：增加运行摘要状态写入、健康检查扩展与运行时状态 API，先提供最小可观测性。
+- [x] ISSUE-007：新增功能对齐矩阵文档，标明默认入口、兼容入口、自动化覆盖与缺口。
 
 ## P2
 
-- [ ] ISSUE-008：抽象 notifier capability，统一 Telegram / OneBot / AstrBot 的能力边界与降级行为。
-- [ ] ISSUE-009：补充数据库维护工具（备份、清理、表统计）。
-- [ ] ISSUE-010：建立推荐质量评估闭环，为后续 embedding / AI scorer 调优提供基线。
+- [x] ISSUE-008：为 notifier 增加 capability 声明，并补文档说明能力边界。
+- [x] ISSUE-009：新增数据库维护脚本，支持 overview / backup / cleanup。
+- [x] ISSUE-010：新增推荐质量基线脚本，先基于 `strategy_stats` 导出可读统计。

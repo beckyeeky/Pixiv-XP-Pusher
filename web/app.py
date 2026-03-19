@@ -9,7 +9,7 @@ import subprocess
 import os
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -42,7 +42,10 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # 会话存储（简易实现）
 sessions: dict[str, datetime] = {}
+login_attempts: dict[str, list[datetime]] = {}
 SESSION_EXPIRE_HOURS = 24 * 30
+LOGIN_ATTEMPT_WINDOW_MINUTES = 15
+MAX_LOGIN_ATTEMPTS = 10
 
 
 def load_config() -> dict:
@@ -65,6 +68,24 @@ def save_config(config: dict):
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
+
+
+def _get_web_security_config() -> dict:
+    config = load_config()
+    return config.get("web", {}) if isinstance(config, dict) else {}
+
+
+def _get_client_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _prune_login_attempts(client_key: str):
+    cutoff = datetime.now() - timedelta(minutes=LOGIN_ATTEMPT_WINDOW_MINUTES)
+    attempts = [ts for ts in login_attempts.get(client_key, []) if ts >= cutoff]
+    if attempts:
+        login_attempts[client_key] = attempts
+    elif client_key in login_attempts:
+        del login_attempts[client_key]
 
 
 def verify_session(request: Request) -> bool:
@@ -145,8 +166,13 @@ async def login(request: Request, password: str = Form(...)):
     """登录 - 密码错误时返回页面内提示"""
     config = load_config()
     stored_hash = config.get("web", {}).get("password", "")
+    client_key = _get_client_key(request)
+    _prune_login_attempts(client_key)
+    if len(login_attempts.get(client_key, [])) >= MAX_LOGIN_ATTEMPTS:
+        raise HTTPException(429, f"登录失败次数过多，请 {LOGIN_ATTEMPT_WINDOW_MINUTES} 分钟后重试")
     
     if hash_password(password) != stored_hash:
+        login_attempts.setdefault(client_key, []).append(datetime.now())
         # 密码错误，返回登录页面并显示错误信息
         return templates.TemplateResponse("login.html", {
             "request": request,
@@ -154,11 +180,19 @@ async def login(request: Request, password: str = Form(...)):
             "error": "密码错误，请重试"
         })
     
+    login_attempts.pop(client_key, None)
     session_id = secrets.token_hex(32)
     sessions[session_id] = datetime.now()
-    
+    web_cfg = _get_web_security_config()
     response = RedirectResponse("/dashboard", status_code=303)
-    response.set_cookie("session_id", session_id, httponly=True)
+    response.set_cookie(
+        "session_id",
+        session_id,
+        httponly=True,
+        secure=bool(web_cfg.get("secure_cookies", False)),
+        samesite=web_cfg.get("cookie_samesite", "lax"),
+        max_age=SESSION_EXPIRE_HOURS * 3600,
+    )
     return response
 
 
@@ -687,7 +721,19 @@ async def api_xp_profile(request: Request, _=Depends(require_auth)):
 @app.get("/health")
 async def health():
     """健康检查端点 (无需认证)"""
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+    runtime = await db.get_state("runtime.last_run_summary")
+    schema_version = await db.get_schema_version()
+    return {"status": "ok", "timestamp": datetime.now().isoformat(), "schema_version": schema_version, "last_run_summary": runtime}
+
+
+@app.get("/api/runtime-status")
+async def api_runtime_status(request: Request, _=Depends(require_auth)):
+    """获取运行时状态与数据库概览"""
+    return {
+        "last_run_summary": await db.get_state("runtime.last_run_summary"),
+        "last_run_started_at": await db.get_state("runtime.last_run_started_at"),
+        "db": await db.get_db_overview(),
+    }
 
 
 @app.get("/api/stats")
