@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 
 class AstrBotNotifier(BaseNotifier):
     """AstrBot HTTP API 推送器"""
+
+    CAPABILITIES = {
+        **BaseNotifier.CAPABILITIES,
+        "batch_mode": False,
+    }
+    
     
     def __init__(
         self,
