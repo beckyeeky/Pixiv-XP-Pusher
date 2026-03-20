@@ -756,13 +756,17 @@ async def api_gallery(request: Request, page: int = 1, limit: int = 25, _=Depend
     """获取推送历史 (API)"""
     offset = (page - 1) * limit
     items, total = await db.get_push_history_paginated(limit=limit, offset=offset)
-    
+    total_pages = (total // limit) + (1 if total % limit else 0)
+    has_more = page < total_pages
+
     return {
         "items": items,
         "total": total,
         "page": page,
         "limit": limit,
-        "pages": (total // limit) + (1 if total % limit else 0)
+        "pages": total_pages,
+        "has_more": has_more,
+        "next_page": page + 1 if has_more else None,
     }
 
 
