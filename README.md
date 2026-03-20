@@ -262,6 +262,48 @@ scheduler:
 
 ---
 
+## 📋 日志查看
+
+### Systemd 服务日志
+```bash
+# 实时跟踪推送日志
+journalctl -u pixiv-pusher -f
+
+# 最近 100 行
+journalctl -u pixiv-pusher -n 100
+
+# 今天的日志
+journalctl -u pixiv-pusher --since today
+
+# 指定时间范围
+journalctl -u pixiv-pusher --since "2026-03-19 23:00" --until "2026-03-20 02:00"
+```
+
+### 直接查看日志文件
+```bash
+# 实时跟踪（Ctrl+C 退出）
+tail -f /opt/Pixiv-XP-Pusher/service.log
+
+# 最近 50 行
+tail -50 /opt/Pixiv-XP-Pusher/service.log
+
+# 搜索关键词
+grep "ERROR\|WARNING\|推送" /opt/Pixiv-XP-Pusher/service.log | tail -20
+
+# 查看 Telegram 冲突记录
+grep -i "Conflict\|getUpdates" /opt/Pixiv-XP-Pusher/service.log
+
+# 统计推送数量
+grep "推送完成" /opt/Pixiv-XP-Pusher/service.log | wc -l
+```
+
+### Web 服务日志
+```bash
+journalctl -u pixiv-web -n 50
+```
+
+---
+
 ## 💬 常见问题 (FAQ)
 
 **Q: 启动后终端报错 `NetworkError` 或 `ConnectError`？**
