@@ -13,7 +13,14 @@
         {% if items %}
         <div class="gallery-toolbar">
             <span class="gallery-toolbar__label">布局</span>
-            <span class="gallery-toolbar__badge">Masonry + Infinite Scroll</span>
+            <div class="gallery-layout-switch" role="group" aria-label="Gallery layout mode">
+                <button type="button" class="btn gallery-layout-option" id="galleryPagedButton" data-layout="paged" aria-pressed="true">
+                    分页模式
+                </button>
+                <button type="button" class="btn gallery-layout-option" id="galleryMasonryButton" data-layout="masonry" aria-pressed="false">
+                    Pinterest 瀑布流
+                </button>
+            </div>
         </div>
         {% endif %}
     </div>
@@ -79,7 +86,8 @@
     const galleryGrid = document.getElementById('galleryGrid');
     const autoLoadStatus = document.getElementById('galleryAutoLoadStatus');
     const sentinel = document.getElementById('galleryAutoLoadSentinel');
-    const layoutToggleButton = document.getElementById('galleryLayoutToggle');
+    const pagedModeButton = document.getElementById('galleryPagedButton');
+    const masonryModeButton = document.getElementById('galleryMasonryButton');
     const pagination = document.getElementById('galleryPagination');
     const pageIndicator = document.getElementById('galleryPageIndicator');
     const pageJumpInput = document.getElementById('pageJump');
@@ -327,7 +335,7 @@
     }
 
     function applyLayoutMode(mode) {
-        if (!galleryGrid || !layoutToggleButton) {
+        if (!galleryGrid || !pagedModeButton || !masonryModeButton) {
             return;
         }
 
@@ -336,8 +344,10 @@
 
         galleryGrid.classList.toggle('gallery-grid--masonry', masonryEnabled);
         galleryGrid.classList.toggle('gallery-grid--paged', !masonryEnabled);
-        layoutToggleButton.setAttribute('aria-pressed', String(masonryEnabled));
-        layoutToggleButton.textContent = `Pinterest 瀑布流：${masonryEnabled ? '开' : '关'}`;
+        pagedModeButton.setAttribute('aria-pressed', String(!masonryEnabled));
+        masonryModeButton.setAttribute('aria-pressed', String(masonryEnabled));
+        pagedModeButton.classList.toggle('is-active', !masonryEnabled);
+        masonryModeButton.classList.toggle('is-active', masonryEnabled);
 
         if (pagination) {
             pagination.hidden = masonryEnabled;
@@ -385,11 +395,17 @@
 
         window.addEventListener('resize', () => scheduleMasonryLayout());
 
-        if (layoutToggleButton) {
-            layoutToggleButton.addEventListener('click', () => {
-                const nextMode = isMasonryMode() ? 'paged' : 'masonry';
-                localStorage.setItem(layoutStorageKey, nextMode);
-                applyLayoutMode(nextMode);
+        if (pagedModeButton) {
+            pagedModeButton.addEventListener('click', () => {
+                localStorage.setItem(layoutStorageKey, 'paged');
+                applyLayoutMode('paged');
+            });
+        }
+
+        if (masonryModeButton) {
+            masonryModeButton.addEventListener('click', () => {
+                localStorage.setItem(layoutStorageKey, 'masonry');
+                applyLayoutMode('masonry');
             });
         }
     }
