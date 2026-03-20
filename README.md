@@ -264,8 +264,14 @@ scheduler:
 
 ## 📋 日志查看
 
+> ⚠️ 日志文件在**首次成功运行后**才会生成（`logs/` 目录由 app 自动创建，相对 WorkingDirectory）。
+> systemd 部署时 WorkingDirectory=`/opt/Pixiv-XP-Pusher`，所以日志在 `/opt/Pixiv-XP-Pusher/logs/`。
+
 ### 主日志（推荐）
 ```bash
+# 先确认日志目录存在
+ls /opt/Pixiv-XP-Pusher/logs/
+
 # 实时跟踪
 tail -f /opt/Pixiv-XP-Pusher/logs/pixiv_xp.log
 
