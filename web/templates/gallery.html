@@ -4,13 +4,25 @@
 
 {% block content %}
 <div class="card">
-    <div class="card-header">
-        <h2 class="card-title">🖼️ 推送历史画廊</h2>
-        <span style="color: var(--text-secondary);">共 {{ total }} 张作品</span>
+    <div class="card-header gallery-header">
+        <div>
+            <h2 class="card-title">🖼️ 推送历史画廊</h2>
+            <span style="color: var(--text-secondary);">共 {{ total }} 张作品</span>
+        </div>
+
+        {% if items %}
+        <div class="gallery-toolbar">
+            <span class="gallery-toolbar__label">布局</span>
+            <button type="button" class="btn gallery-layout-toggle" id="galleryLayoutToggle" aria-pressed="false">
+                Pinterest 瀑布流：关
+            </button>
+        </div>
+        {% endif %}
     </div>
 
     {% if items %}
-    <div class="gallery-grid">
+    <p class="gallery-hint">默认每页显示 25 张作品；关闭瀑布流时为 5×5 网格，开启后切换为 Pinterest 风格瀑布流。</p>
+    <div class="gallery-grid" id="galleryGrid">
         {% for item in items %}
         <div class="gallery-item">
             <!-- 使用 wsrv.nl 全球免费图像缓存代理，将源图实时缩放压缩，节省海量客户端带宽与内存 -->
@@ -52,19 +64,47 @@
             <button onclick="jumpToPage()" class="btn" style="padding: 0.3rem 0.8rem;">Go</button>
         </div>
     </div>
+    {% endif %}
+
     <script>
     function jumpToPage() {
         const input = document.getElementById('pageJump');
         let p = parseInt(input.value);
-        if (p && p >= 1 && p <= {{ total_pages }}) {
+        if (p && p >= 1 && p <= {{ total_pages if total > limit else 1 }}) {
             window.location.href = '/gallery?page=' + p;
         }
     }
-    document.getElementById('pageJump').addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') { jumpToPage(); }
-    });
+
+    const grid = document.getElementById('galleryGrid');
+    const toggleButton = document.getElementById('galleryLayoutToggle');
+    const layoutStorageKey = 'gallery-layout-mode';
+
+    function applyGalleryLayout(mode) {
+        if (!grid || !toggleButton) return;
+        const useMasonry = mode === 'masonry';
+        grid.classList.toggle('gallery-grid--masonry', useMasonry);
+        toggleButton.setAttribute('aria-pressed', String(useMasonry));
+        toggleButton.textContent = `Pinterest 瀑布流：${useMasonry ? '开' : '关'}`;
+    }
+
+    if (grid && toggleButton) {
+        const savedMode = localStorage.getItem(layoutStorageKey) || 'grid';
+        applyGalleryLayout(savedMode);
+
+        toggleButton.addEventListener('click', function() {
+            const nextMode = grid.classList.contains('gallery-grid--masonry') ? 'grid' : 'masonry';
+            localStorage.setItem(layoutStorageKey, nextMode);
+            applyGalleryLayout(nextMode);
+        });
+    }
+
+    const pageJump = document.getElementById('pageJump');
+    if (pageJump) {
+        pageJump.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') { jumpToPage(); }
+        });
+    }
     </script>
-    {% endif %}
 
     {% else %}
     <p style="color: var(--text-secondary); text-align: center; padding: 2rem;">
