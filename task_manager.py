@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import database as db_module
 import json
 import logging
 from datetime import datetime
@@ -659,7 +660,6 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
                  pass
              
             # 获取完整的 XP Profile 用于匹配度计算
-            import database as db_module
             xp_profile = await db_module.get_xp_profile()
         
             # 2. 获取内容
@@ -1204,5 +1204,4 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
                     await n.close()
                 except:
                     pass
-
 
