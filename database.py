@@ -395,7 +395,7 @@ async def get_push_source(illust_id: int) -> Optional[str]:
             return row[0] if row else None
 
 
-async def get_push_history_paginated(limit: int = 24, offset: int = 0) -> tuple[list[dict], int]:
+async def get_push_history_paginated(limit: int = 25, offset: int = 0) -> tuple[list[dict], int]:
     """
     获取分页的推送历史
     

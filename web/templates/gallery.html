@@ -14,14 +14,14 @@
         <div class="gallery-toolbar">
             <span class="gallery-toolbar__label">布局</span>
             <button type="button" class="btn gallery-layout-toggle" id="galleryLayoutToggle" aria-pressed="false">
-                瀑布流：关
+                Pinterest 瀑布流：关
             </button>
         </div>
         {% endif %}
     </div>
 
     {% if items %}
-    <p class="gallery-hint">默认每页显示 25 张作品；大屏幕下采用 5 列网格，可切换为瀑布流浏览。</p>
+    <p class="gallery-hint">默认每页显示 25 张作品；关闭瀑布流时为 5×5 网格，开启后切换为 Pinterest 风格瀑布流。</p>
     <div class="gallery-grid" id="galleryGrid">
         {% for item in items %}
         <div class="gallery-item">
@@ -84,7 +84,7 @@
         const useMasonry = mode === 'masonry';
         grid.classList.toggle('gallery-grid--masonry', useMasonry);
         toggleButton.setAttribute('aria-pressed', String(useMasonry));
-        toggleButton.textContent = `瀑布流：${useMasonry ? '开' : '关'}`;
+        toggleButton.textContent = `Pinterest 瀑布流：${useMasonry ? '开' : '关'}`;
     }
 
     if (grid && toggleButton) {
