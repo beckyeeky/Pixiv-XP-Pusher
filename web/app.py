@@ -43,14 +43,10 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # 会话存储（简易实现）
 sessions: dict[str, datetime] = {}
-<<<<<<< HEAD
-SESSION_EXPIRE_HOURS = 24 * 30
-=======
 login_attempts: dict[str, list[datetime]] = {}
 SESSION_EXPIRE_HOURS = 24 * 30
 LOGIN_ATTEMPT_WINDOW_MINUTES = 15
 MAX_LOGIN_ATTEMPTS = 10
->>>>>>> 7b0f146118bc27dc90e98577c1745288ebb202c5
 
 
 def load_config() -> dict:
@@ -169,10 +165,7 @@ async def login(request: Request, password: str = Form(...)):
         raise HTTPException(429, f"登录失败次数过多，请 {LOGIN_ATTEMPT_WINDOW_MINUTES} 分钟后重试")
     
     if hash_password(password) != stored_hash:
-<<<<<<< HEAD
-=======
         login_attempts.setdefault(client_key, []).append(datetime.now())
->>>>>>> 7b0f146118bc27dc90e98577c1745288ebb202c5
         # 密码错误，返回登录页面并显示错误信息
         return templates.TemplateResponse("login.html", {
             "request": request,
@@ -252,7 +245,7 @@ async def gallery(request: Request, page: int = Query(1, ge=1)):
     if not verify_session(request):
         return RedirectResponse("/", status_code=302)
     
-    limit = 24
+    limit = 25
     offset = (page - 1) * limit
     
     # 获取推送历史
@@ -759,7 +752,7 @@ async def api_stats(request: Request, days: int = 7, _=Depends(require_auth)):
 
 
 @app.get("/api/gallery")
-async def api_gallery(request: Request, page: int = 1, limit: int = 24, _=Depends(require_auth)):
+async def api_gallery(request: Request, page: int = 1, limit: int = 25, _=Depends(require_auth)):
     """获取推送历史 (API)"""
     offset = (page - 1) * limit
     items, total = await db.get_push_history_paginated(limit=limit, offset=offset)
