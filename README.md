@@ -264,6 +264,24 @@ scheduler:
 
 ## 📋 日志查看
 
+### 主日志（推荐）
+```bash
+# 实时跟踪
+tail -f /opt/Pixiv-XP-Pusher/logs/pixiv_xp.log
+
+# 最近 50 行
+tail -50 /opt/Pixiv-XP-Pusher/logs/pixiv_xp.log
+
+# 搜索关键词
+grep "ERROR\|WARNING\|推送" /opt/Pixiv-XP-Pusher/logs/pixiv_xp.log | tail -20
+
+# 查看 Telegram 冲突记录
+grep -i "Conflict\|getUpdates" /opt/Pixiv-XP-Pusher/logs/pixiv_xp.log
+
+# 统计推送数量
+grep "推送完成" /opt/Pixiv-XP-Pusher/logs/pixiv_xp.log | wc -l
+```
+
 ### Systemd 服务日志
 ```bash
 # 实时跟踪推送日志
@@ -279,27 +297,21 @@ journalctl -u pixiv-pusher --since today
 journalctl -u pixiv-pusher --since "2026-03-19 23:00" --until "2026-03-20 02:00"
 ```
 
-### 直接查看日志文件
-```bash
-# 实时跟踪（Ctrl+C 退出）
-tail -f /opt/Pixiv-XP-Pusher/service.log
-
-# 最近 50 行
-tail -50 /opt/Pixiv-XP-Pusher/service.log
-
-# 搜索关键词
-grep "ERROR\|WARNING\|推送" /opt/Pixiv-XP-Pusher/service.log | tail -20
-
-# 查看 Telegram 冲突记录
-grep -i "Conflict\|getUpdates" /opt/Pixiv-XP-Pusher/service.log
-
-# 统计推送数量
-grep "推送完成" /opt/Pixiv-XP-Pusher/service.log | wc -l
-```
-
 ### Web 服务日志
 ```bash
 journalctl -u pixiv-web -n 50
+```
+
+### 日志清理
+主日志自动轮转（最大 5MB，保留 3 份），无需手动清理。
+
+手动清理旧日志：
+```bash
+# 删除旧版 service.log（如从 launcher.py 遗留）
+rm -f /opt/Pixiv-XP-Pusher/service.log
+
+# 删除旧的调试日志
+rm -f /opt/Pixiv-XP-Pusher/logs/debug_push_*.log
 ```
 
 ---
