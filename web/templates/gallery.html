@@ -21,11 +21,11 @@
     {% if items %}
     {% set total_pages = (total // limit) + (1 if total % limit else 0) %}
     <p class="gallery-hint">
-        画廊默认采用 Masonry 砌体布局：桌面端 4 列，平板 3 列，手机 2/1 列；继续向下滚动时会自动加载下一页作品，无需再点击分页按钮。
+        关闭瀑布流时保留原本分页浏览；开启 Pinterest 瀑布流后会从当前页继续向后自动加载更大的页码内容。
     </p>
 
     <div
-        class="gallery-grid gallery-grid--masonry"
+        class="gallery-grid gallery-grid--paged"
         id="galleryGrid"
         data-current-page="{{ page }}"
         data-total-pages="{{ total_pages }}"
@@ -54,8 +54,23 @@
     </div>
 
     {% if total > limit %}
-    <div id="galleryAutoLoadStatus" class="gallery-auto-load gallery-auto-load--visible" aria-live="polite">
-        已加载第 {{ page }} / {{ total_pages }} 页，继续下滑将自动获取更多作品。
+    <div id="galleryAutoLoadStatus" class="gallery-auto-load" aria-live="polite" hidden></div>
+    <div id="galleryAutoLoadSentinel" class="gallery-sentinel" aria-hidden="true" hidden></div>
+
+    <div class="gallery-pagination" id="galleryPagination">
+        <div class="gallery-pagination__buttons">
+            <a href="/gallery?page=1" class="btn" style="{% if page == 1 %}opacity: 0.5; pointer-events: none;{% endif %}">首页</a>
+            <a href="/gallery?page={{ page - 1 }}" class="btn" style="{% if page <= 1 %}opacity: 0.5; pointer-events: none;{% endif %}">上一页</a>
+            <span class="gallery-pagination__indicator" id="galleryPageIndicator">{{ page }} / {{ total_pages }}</span>
+            <a href="/gallery?page={{ page + 1 }}" class="btn" style="{% if page >= total_pages %}opacity: 0.5; pointer-events: none;{% endif %}">下一页</a>
+            <a href="/gallery?page={{ total_pages }}" class="btn" style="{% if page >= total_pages %}opacity: 0.5; pointer-events: none;{% endif %}">尾页</a>
+        </div>
+
+        <div class="gallery-pagination__jump">
+            <span>跳至</span>
+            <input type="number" id="pageJump" min="1" max="{{ total_pages }}" value="{{ page }}">
+            <button type="button" class="btn" id="pageJumpButton">Go</button>
+        </div>
     </div>
     <div id="galleryAutoLoadSentinel" class="gallery-sentinel" aria-hidden="true"></div>
     {% endif %}
@@ -64,12 +79,19 @@
     const galleryGrid = document.getElementById('galleryGrid');
     const autoLoadStatus = document.getElementById('galleryAutoLoadStatus');
     const sentinel = document.getElementById('galleryAutoLoadSentinel');
+    const layoutToggleButton = document.getElementById('galleryLayoutToggle');
+    const pagination = document.getElementById('galleryPagination');
+    const pageIndicator = document.getElementById('galleryPageIndicator');
+    const pageJumpInput = document.getElementById('pageJump');
+    const pageJumpButton = document.getElementById('pageJumpButton');
+    const layoutStorageKey = 'gallery-layout-mode';
 
     const masonryState = {
         isLoading: false,
         observer: null,
         resizeObserver: null,
         pendingLayoutFrame: null,
+        mode: 'paged',
     };
 
     function getGridGap() {
@@ -92,6 +114,10 @@
         return getCurrentPage() < getTotalPages();
     }
 
+    function isMasonryMode() {
+        return masonryState.mode === 'masonry';
+    }
+
     function updateStatus(message) {
         if (!autoLoadStatus) {
             return;
@@ -99,8 +125,20 @@
         autoLoadStatus.textContent = message;
     }
 
+    function updatePaginationIndicator() {
+        if (pageIndicator) {
+            pageIndicator.textContent = `${getCurrentPage()} / ${getTotalPages()}`;
+        }
+        if (pageJumpInput) {
+            pageJumpInput.value = String(getCurrentPage());
+        }
+    }
+
     function resizeMasonryItem(item) {
-        if (!galleryGrid || !item) {
+        if (!galleryGrid || !item || !isMasonryMode()) {
+            if (item) {
+                item.style.gridRowEnd = '';
+            }
             return;
         }
 
@@ -117,7 +155,7 @@
     }
 
     function layoutMasonry(items) {
-        if (!galleryGrid) {
+        if (!galleryGrid || !isMasonryMode()) {
             return;
         }
 
@@ -126,6 +164,10 @@
     }
 
     function scheduleMasonryLayout(items) {
+        if (!isMasonryMode()) {
+            return;
+        }
+
         if (masonryState.pendingLayoutFrame) {
             cancelAnimationFrame(masonryState.pendingLayoutFrame);
         }
@@ -142,8 +184,8 @@
             if (image.complete) {
                 resizeMasonryItem(item);
             } else {
-                image.addEventListener('load', () => resizeMasonryItem(item), { once: true });
-                image.addEventListener('error', () => resizeMasonryItem(item), { once: true });
+                image.addEventListener('load', () => resizeMasonryItem(item));
+                image.addEventListener('error', () => resizeMasonryItem(item));
             }
         }
 
@@ -201,7 +243,7 @@
     }
 
     async function loadNextPage() {
-        if (!galleryGrid || !hasMorePages() || masonryState.isLoading) {
+        if (!galleryGrid || !isMasonryMode() || !hasMorePages() || masonryState.isLoading) {
             return;
         }
 
@@ -232,14 +274,16 @@
             galleryGrid.appendChild(fragment);
             galleryGrid.dataset.currentPage = String(data.page || nextPage);
             galleryGrid.dataset.totalPages = String(data.pages || getTotalPages());
+            updatePaginationIndicator();
             scheduleMasonryLayout(newItems);
 
             if (data.has_more) {
                 updateStatus(`已加载第 ${data.page} / ${data.pages} 页，继续下滑将自动获取更多作品。`);
             } else {
                 updateStatus('全部作品已加载完成。');
-                if (masonryState.observer && sentinel) {
-                    masonryState.observer.unobserve(sentinel);
+                stopInfiniteScroll();
+                if (sentinel) {
+                    sentinel.hidden = true;
                 }
             }
         } catch (error) {
@@ -250,19 +294,115 @@
         }
     }
 
-    function initInfiniteScroll() {
+    function startInfiniteScroll() {
         if (!sentinel || !('IntersectionObserver' in window)) {
             return;
         }
 
-        masonryState.observer = new IntersectionObserver((entries) => {
-            entries.forEach((entry) => {
-                if (entry.isIntersecting) {
-                    loadNextPage();
-                }
+        if (!masonryState.observer) {
+            masonryState.observer = new IntersectionObserver((entries) => {
+                entries.forEach((entry) => {
+                    if (entry.isIntersecting) {
+                        loadNextPage();
+                    }
+                });
+            }, {
+                rootMargin: '800px 0px 800px 0px'
             });
-        }, {
-            rootMargin: '800px 0px 800px 0px'
+        }
+
+        if (hasMorePages()) {
+            sentinel.hidden = false;
+            masonryState.observer.observe(sentinel);
+        } else {
+            updateStatus('全部作品已加载完成。');
+            sentinel.hidden = true;
+        }
+    }
+
+    function stopInfiniteScroll() {
+        if (masonryState.observer && sentinel) {
+            masonryState.observer.unobserve(sentinel);
+        }
+    }
+
+    function applyLayoutMode(mode) {
+        if (!galleryGrid || !layoutToggleButton) {
+            return;
+        }
+
+        masonryState.mode = mode === 'masonry' ? 'masonry' : 'paged';
+        const masonryEnabled = isMasonryMode();
+
+        galleryGrid.classList.toggle('gallery-grid--masonry', masonryEnabled);
+        galleryGrid.classList.toggle('gallery-grid--paged', !masonryEnabled);
+        layoutToggleButton.setAttribute('aria-pressed', String(masonryEnabled));
+        layoutToggleButton.textContent = `Pinterest 瀑布流：${masonryEnabled ? '开' : '关'}`;
+
+        if (pagination) {
+            pagination.hidden = masonryEnabled;
+        }
+
+        if (autoLoadStatus) {
+            autoLoadStatus.hidden = !masonryEnabled;
+        }
+
+        if (masonryEnabled) {
+            updateStatus(hasMorePages()
+                ? `已从第 ${getCurrentPage()} / ${getTotalPages()} 页进入瀑布流，继续下滑将自动加载后续页码。`
+                : '当前已是最后一页，没有更多作品可加载。');
+            scheduleMasonryLayout();
+            startInfiniteScroll();
+        } else {
+            stopInfiniteScroll();
+            if (sentinel) {
+                sentinel.hidden = true;
+            }
+            galleryGrid.querySelectorAll('.gallery-item').forEach((item) => {
+                item.style.gridRowEnd = '';
+            });
+        }
+    }
+
+    function jumpToPage() {
+        if (!pageJumpInput) {
+            return;
+        }
+
+        const nextPage = Number(pageJumpInput.value);
+        if (nextPage >= 1 && nextPage <= getTotalPages()) {
+            window.location.href = `/gallery?page=${nextPage}`;
+        }
+    }
+
+    if (galleryGrid) {
+        const initialItems = galleryGrid.querySelectorAll('.gallery-item');
+        initialItems.forEach((item) => attachItemObservers(item));
+        updatePaginationIndicator();
+
+        const savedMode = localStorage.getItem(layoutStorageKey) || 'paged';
+        applyLayoutMode(savedMode);
+
+        window.addEventListener('resize', () => scheduleMasonryLayout());
+
+        if (layoutToggleButton) {
+            layoutToggleButton.addEventListener('click', () => {
+                const nextMode = isMasonryMode() ? 'paged' : 'masonry';
+                localStorage.setItem(layoutStorageKey, nextMode);
+                applyLayoutMode(nextMode);
+            });
+        }
+    }
+
+    if (pageJumpButton) {
+        pageJumpButton.addEventListener('click', jumpToPage);
+    }
+
+    if (pageJumpInput) {
+        pageJumpInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                jumpToPage();
+            }
         });
 
         if (hasMorePages()) {
