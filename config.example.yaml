@@ -254,5 +254,6 @@ network:
 
 web:
   enabled: false
+  require_login_password: true  # 设为 false 可关闭 Web 登录密码验证（仅建议内网/本机使用）
   password: "YOUR_PASSWORD_HERE"
   port: 8000

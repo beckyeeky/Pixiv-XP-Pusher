@@ -381,6 +381,32 @@
             </div>
             
             <div class="form-group">
+                <label class="form-label">Web 登录验证</label>
+                <label class="toggle-switch">
+                    <input type="checkbox" name="require_login_password" id="require_login_password"
+                           {% if config.web.require_login_password | default(config.web.password | default('')) %}checked{% endif %}
+                           onchange="toggleWebPasswordFields()">
+                    <span>启用密码验证</span>
+                </label>
+                <div class="help-text" style="margin-top: 0.5rem;">
+                    关闭后，访问 Web 管理面板将不再需要输入密码，适合仅本机/内网环境。
+                </div>
+            </div>
+
+            <div id="webPasswordFields">
+                <div class="form-group">
+                    <label class="form-label">新的 Web 登录密码</label>
+                    <input type="password" class="form-control" name="web_password" id="web_password"
+                           placeholder="留空表示保留当前密码">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">确认新的 Web 登录密码</label>
+                    <input type="password" class="form-control" name="web_password_confirm" id="web_password_confirm"
+                           placeholder="再次输入新密码">
+                </div>
+            </div>
+
+            <div class="form-group">
                 <label class="form-label">
                     Telegram Proxy
                     <span class="tooltip-icon" data-tooltip="连接 Telegram Bot API 的代理服务器&#10;&#10;格式: http://主机:端口&#10;示例: http://127.0.0.1:7890&#10;&#10;国内用户: 建议填写 Clash/V2Ray 本地代理&#10;海外服务器: 可留空&#10;&#10;推荐: http://127.0.0.1:7890 (Clash 默认)">ⓘ</span>
@@ -766,6 +792,14 @@ function syncIP() {
     });
 }
 
+function toggleWebPasswordFields() {
+    const enabled = document.getElementById('require_login_password').checked;
+    const fields = document.getElementById('webPasswordFields');
+    fields.style.display = enabled ? 'block' : 'none';
+    document.getElementById('web_password').required = false;
+    document.getElementById('web_password_confirm').required = false;
+}
+
 // 保存设置
 function saveSettings() {
     const btn = document.querySelector('.save-bar .btn-primary');
@@ -781,6 +815,7 @@ function saveSettings() {
     // 收集布尔值
     const exclude_ai = form.querySelector('input[name="exclude_ai"]').checked;
     const skip_ugoira = form.querySelector('input[name="skip_ugoira"]').checked;
+    const require_login_password = form.querySelector('input[name="require_login_password"]').checked;
     
     const formData = new FormData(form);
     const data = Object.fromEntries(formData);
@@ -804,6 +839,7 @@ function saveSettings() {
     data.strategies = strategies;
     data.exclude_ai = exclude_ai;
     data.skip_ugoira = skip_ugoira;
+    data.require_login_password = require_login_password;
     
     btn.disabled = true;
     btn.innerText = '保存中...';
@@ -837,5 +873,6 @@ function saveSettings() {
         }, 3000);
     });
 }
+toggleWebPasswordFields();
 </script>
 {% endblock %}

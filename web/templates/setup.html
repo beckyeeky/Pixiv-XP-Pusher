@@ -6,14 +6,39 @@
 <div style="max-width: 400px; margin: 5rem auto;">
     <div class="card">
         <h1 style="text-align: center; margin-bottom: 0.5rem; color: var(--accent);">🔐 首次设置</h1>
-        <p style="text-align: center; color: var(--text-secondary); margin-bottom: 2rem;">请设置访问密码</p>
+        <p style="text-align: center; color: var(--text-secondary); margin-bottom: 2rem;">请选择管理面板的访问验证方式</p>
 
-        <form method="post" action="/setup">
-            <input type="password" name="password" placeholder="设置密码 (至少6位)" required minlength="6"
-                style="width: 100%; margin-bottom: 1rem;">
-            <input type="password" name="confirm" placeholder="确认密码" required style="width: 100%; margin-bottom: 1rem;">
+        <form method="post" action="/setup" onsubmit="return toggleSetupValidation()">
+            <div style="margin-bottom: 1rem; display: grid; gap: 0.75rem;">
+                <label style="display:flex; gap:0.5rem; align-items:flex-start;">
+                    <input type="radio" name="auth_mode" value="password" checked onchange="toggleSetupMode()">
+                    <span>启用密码验证（推荐）</span>
+                </label>
+                <label style="display:flex; gap:0.5rem; align-items:flex-start;">
+                    <input type="radio" name="auth_mode" value="none" onchange="toggleSetupMode()">
+                    <span>不需要密码验证<span style="display:block; color: var(--text-secondary); font-size: 0.85rem;">适合仅本机/内网使用，任何可访问该页面的人都能直接进入后台。</span></span>
+                </label>
+            </div>
+            <div id="setupPasswordFields">
+                <input type="password" id="setup_password" name="password" placeholder="设置密码 (至少6位)" required minlength="6"
+                    style="width: 100%; margin-bottom: 1rem;">
+                <input type="password" id="setup_confirm" name="confirm" placeholder="确认密码" required style="width: 100%; margin-bottom: 1rem;">
+            </div>
             <button type="submit" class="btn" style="width: 100%;">确认</button>
         </form>
+        <script>
+        function toggleSetupMode() {
+            const usePassword = document.querySelector('input[name="auth_mode"]:checked').value === 'password';
+            document.getElementById('setupPasswordFields').style.display = usePassword ? 'block' : 'none';
+            document.getElementById('setup_password').required = usePassword;
+            document.getElementById('setup_confirm').required = usePassword;
+        }
+        function toggleSetupValidation() {
+            toggleSetupMode();
+            return true;
+        }
+        toggleSetupMode();
+        </script>
     </div>
 </div>
 {% endblock %}

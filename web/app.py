@@ -81,7 +81,23 @@ def _prune_login_attempts(client_key: str):
         del login_attempts[client_key]
 
 
+def is_password_auth_enabled(web_cfg: Optional[dict] = None) -> bool:
+    web_cfg = web_cfg or _get_web_security_config()
+    if "require_login_password" in web_cfg:
+        return bool(web_cfg.get("require_login_password"))
+    return bool(web_cfg.get("password"))
+
+
+def needs_initial_security_setup(web_cfg: Optional[dict] = None) -> bool:
+    web_cfg = web_cfg or _get_web_security_config()
+    return "require_login_password" not in web_cfg and not web_cfg.get("password")
+
+
 def verify_session(request: Request) -> bool:
+    web_cfg = _get_web_security_config()
+    if not needs_initial_security_setup(web_cfg) and not is_password_auth_enabled(web_cfg):
+        return True
+
     session_id = request.cookies.get("session_id")
     if not session_id or session_id not in sessions:
         return False
@@ -108,10 +124,12 @@ async def index(request: Request):
         web_cfg = config.get("web", {})
         logger.info(f"web_cfg: {web_cfg}, password: {web_cfg.get('password')}")
         
-        # 检查是否已设置密码
-        if not web_cfg.get("password"):
-            logger.info("密码为空，重定向到 /setup")
+        if needs_initial_security_setup(web_cfg):
+            logger.info("尚未完成安全设置，重定向到 /setup")
             return RedirectResponse("/setup")
+
+        if not is_password_auth_enabled(web_cfg):
+            return RedirectResponse("/dashboard")
         
         if verify_session(request):
             return RedirectResponse("/dashboard")
@@ -128,7 +146,7 @@ async def setup_page(request: Request):
     """首次设置密码页"""
     try:
         config = load_config()
-        if config.get("web", {}).get("password"):
+        if not needs_initial_security_setup(config.get("web", {})):
             return RedirectResponse("/")
         
         return templates.TemplateResponse("setup.html", {"request": request, "active_page": ""})
@@ -138,19 +156,30 @@ async def setup_page(request: Request):
 
 
 @app.post("/setup")
-async def do_setup(password: str = Form(...), confirm: str = Form(...)):
-    """设置密码"""
-    if password != confirm:
-        raise HTTPException(400, "密码不一致")
-    if len(password) < 6:
-        raise HTTPException(400, "密码至少6位")
-    
+async def do_setup(
+    auth_mode: str = Form("password"),
+    password: str = Form(""),
+    confirm: str = Form(""),
+):
+    """首次设置访问验证方式"""
     config = load_config()
     if "web" not in config:
         config["web"] = {}
-    config["web"]["password"] = hash_password(password)
+
+    if auth_mode == "password":
+        if password != confirm:
+            raise HTTPException(400, "密码不一致")
+        if len(password) < 6:
+            raise HTTPException(400, "密码至少6位")
+        config["web"]["require_login_password"] = True
+        config["web"]["password"] = hash_password(password)
+    elif auth_mode == "none":
+        config["web"]["require_login_password"] = False
+        config["web"]["password"] = ""
+    else:
+        raise HTTPException(400, "无效的验证方式")
+
     save_config(config)
-    
     return RedirectResponse("/", status_code=303)
 
 
@@ -158,7 +187,11 @@ async def do_setup(password: str = Form(...), confirm: str = Form(...)):
 async def login(request: Request, password: str = Form(...)):
     """登录 - 密码错误时返回页面内提示"""
     config = load_config()
-    stored_hash = config.get("web", {}).get("password", "")
+    web_cfg = config.get("web", {})
+    if not is_password_auth_enabled(web_cfg):
+        return RedirectResponse("/dashboard", status_code=303)
+
+    stored_hash = web_cfg.get("password", "")
     client_key = _get_client_key(request)
     _prune_login_attempts(client_key)
     if len(login_attempts.get(client_key, [])) >= MAX_LOGIN_ATTEMPTS:
@@ -298,6 +331,9 @@ class FeedbackRequest(BaseModel):
     action: str  # 'like' | 'dislike'
 
 class SettingsRequest(BaseModel):
+    require_login_password: Optional[bool] = True
+    web_password: Optional[str] = ""
+    web_password_confirm: Optional[str] = ""
     user_id: int
     cron: str
     ip_weight_discount: float
@@ -380,7 +416,24 @@ async def save_settings(req: SettingsRequest, _=Depends(require_auth)):
         else:
             config["notifier"]["telegram"]["proxy_url"] = None
         
-        # 8. Network
+        # 8. Web 安全设置
+        if "web" not in config:
+            config["web"] = {}
+        config["web"]["require_login_password"] = bool(req.require_login_password)
+        if req.require_login_password:
+            new_password = (req.web_password or "").strip()
+            confirm_password = (req.web_password_confirm or "").strip()
+            existing_password = config["web"].get("password", "")
+            if new_password or confirm_password or not existing_password:
+                if new_password != confirm_password:
+                    return {"success": False, "error": "Web 登录密码两次输入不一致"}
+                if len(new_password) < 6:
+                    return {"success": False, "error": "Web 登录密码至少 6 位"}
+                config["web"]["password"] = hash_password(new_password)
+        else:
+            config["web"]["password"] = ""
+
+        # 9. Network
         if "network" not in config: config["network"] = {}
         config["network"]["max_concurrency"] = req.max_concurrency
         config["network"]["requests_per_minute"] = req.requests_per_minute
@@ -884,6 +937,7 @@ def generate_commented_yaml(config: dict) -> str:
         },
         "web": {
             "_desc": "Web UI 配置",
+            "require_login_password": "是否启用 Web 登录密码验证",
             "password": "登录密码（SHA256 哈希）"
         }
     }
