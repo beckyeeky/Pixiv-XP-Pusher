@@ -79,6 +79,7 @@
             <button type="button" class="btn" id="pageJumpButton">Go</button>
         </div>
     </div>
+    <div id="galleryAutoLoadSentinel" class="gallery-sentinel" aria-hidden="true"></div>
     {% endif %}
 
     <script>
@@ -419,6 +420,20 @@
                 jumpToPage();
             }
         });
+
+        if (hasMorePages()) {
+            masonryState.observer.observe(sentinel);
+        } else {
+            updateStatus('全部作品已加载完成。');
+        }
+    }
+
+    if (galleryGrid) {
+        const initialItems = galleryGrid.querySelectorAll('.gallery-item');
+        initialItems.forEach((item) => attachItemObservers(item));
+        scheduleMasonryLayout(initialItems);
+        window.addEventListener('resize', () => scheduleMasonryLayout());
+        initInfiniteScroll();
     }
     </script>
 
