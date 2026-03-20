@@ -7,101 +7,417 @@
     <div class="card-header gallery-header">
         <div>
             <h2 class="card-title">🖼️ 推送历史画廊</h2>
-            <span style="color: var(--text-secondary);">共 {{ total }} 张作品</span>
+            <span class="gallery-total">共 {{ total }} 张作品</span>
         </div>
 
         {% if items %}
         <div class="gallery-toolbar">
             <span class="gallery-toolbar__label">布局</span>
-            <button type="button" class="btn gallery-layout-toggle" id="galleryLayoutToggle" aria-pressed="false">
-                Pinterest 瀑布流：关
-            </button>
+            <div class="gallery-layout-switch" role="group" aria-label="Gallery layout mode">
+                <button type="button" class="btn gallery-layout-option" id="galleryPagedButton" data-layout="paged" aria-pressed="true">
+                    分页模式
+                </button>
+                <button type="button" class="btn gallery-layout-option" id="galleryMasonryButton" data-layout="masonry" aria-pressed="false">
+                    Pinterest 瀑布流
+                </button>
+            </div>
         </div>
         {% endif %}
     </div>
 
     {% if items %}
-    <p class="gallery-hint">默认每页显示 25 张作品；关闭瀑布流时为 5×5 网格，开启后切换为 Pinterest 风格瀑布流。</p>
-    <div class="gallery-grid" id="galleryGrid">
+    {% set total_pages = (total // limit) + (1 if total % limit else 0) %}
+    <p class="gallery-hint">
+        关闭瀑布流时保留原本分页浏览；开启 Pinterest 瀑布流后会从当前页继续向后自动加载更大的页码内容。
+    </p>
+
+    <div
+        class="gallery-grid gallery-grid--paged"
+        id="galleryGrid"
+        data-current-page="{{ page }}"
+        data-total-pages="{{ total_pages }}"
+        data-page-limit="{{ limit }}"
+        data-grid-row="8"
+        data-grid-gap="16"
+    >
         {% for item in items %}
-        <div class="gallery-item">
-            <!-- 使用 wsrv.nl 全球免费图像缓存代理，将源图实时缩放压缩，节省海量客户端带宽与内存 -->
-            <img src="https://wsrv.nl/?url=pixiv.cat/{{ item.illust_id }}.jpg&w=500&output=webp" 
-                 onerror="this.onerror=null; this.src='https://pixiv.cat/{{ item.illust_id }}.jpg';" 
-                 alt="Illust {{ item.illust_id }}" loading="lazy"
-                 style="background: #2a2a3e;">
-            <div class="overlay">
-                <a href="https://www.pixiv.net/artworks/{{ item.illust_id }}" target="_blank">
-                    #{{ item.illust_id }}
-                </a>
+        <article class="gallery-item" data-illust-id="{{ item.illust_id }}">
+            <div class="gallery-item__inner">
+                <!-- 使用 wsrv.nl 全球免费图像缓存代理，将源图实时缩放压缩，节省海量客户端带宽与内存 -->
+                <img
+                    src="https://wsrv.nl/?url=pixiv.cat/{{ item.illust_id }}.jpg&w=500&output=webp"
+                    onerror="this.onerror=null; this.src='https://pixiv.cat/{{ item.illust_id }}.jpg';"
+                    alt="Illust {{ item.illust_id }}"
+                    loading="lazy"
+                >
+                <div class="overlay">
+                    <a href="https://www.pixiv.net/artworks/{{ item.illust_id }}" target="_blank" rel="noreferrer">
+                        #{{ item.illust_id }}
+                    </a>
+                </div>
             </div>
-        </div>
+        </article>
         {% endfor %}
     </div>
 
-    <!-- 分页 -->
     {% if total > limit %}
-    {% set total_pages = (total // limit) + (1 if total % limit else 0) %}
-    <div style="margin-top: 2rem; display: flex; flex-direction: column; align-items: center; gap: 1rem;">
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center;">
+    <div id="galleryAutoLoadStatus" class="gallery-auto-load" aria-live="polite" hidden></div>
+    <div id="galleryAutoLoadSentinel" class="gallery-sentinel" aria-hidden="true" hidden></div>
+
+    <div class="gallery-pagination" id="galleryPagination">
+        <div class="gallery-pagination__buttons">
             <a href="/gallery?page=1" class="btn" style="{% if page == 1 %}opacity: 0.5; pointer-events: none;{% endif %}">首页</a>
-            
             <a href="/gallery?page={{ page - 1 }}" class="btn" style="{% if page <= 1 %}opacity: 0.5; pointer-events: none;{% endif %}">上一页</a>
-            
-            <span style="display: inline-flex; align-items: center; padding: 0 1rem; background: var(--bg-secondary); border-radius: 6px; font-weight: 500;">
-                {{ page }} / {{ total_pages }}
-            </span>
-            
+            <span class="gallery-pagination__indicator" id="galleryPageIndicator">{{ page }} / {{ total_pages }}</span>
             <a href="/gallery?page={{ page + 1 }}" class="btn" style="{% if page >= total_pages %}opacity: 0.5; pointer-events: none;{% endif %}">下一页</a>
-            
             <a href="/gallery?page={{ total_pages }}" class="btn" style="{% if page >= total_pages %}opacity: 0.5; pointer-events: none;{% endif %}">尾页</a>
         </div>
-        
-        <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <span style="color: var(--text-secondary); font-size: 0.9rem;">跳至</span>
-            <input type="number" id="pageJump" min="1" max="{{ total_pages }}" value="{{ page }}" 
-                   style="width: 60px; padding: 0.3rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-primary); color: white; text-align: center;">
-            <button onclick="jumpToPage()" class="btn" style="padding: 0.3rem 0.8rem;">Go</button>
+
+        <div class="gallery-pagination__jump">
+            <span>跳至</span>
+            <input type="number" id="pageJump" min="1" max="{{ total_pages }}" value="{{ page }}">
+            <button type="button" class="btn" id="pageJumpButton">Go</button>
         </div>
     </div>
     {% endif %}
 
     <script>
-    function jumpToPage() {
-        const input = document.getElementById('pageJump');
-        let p = parseInt(input.value);
-        if (p && p >= 1 && p <= {{ total_pages if total > limit else 1 }}) {
-            window.location.href = '/gallery?page=' + p;
+    const galleryGrid = document.getElementById('galleryGrid');
+    const autoLoadStatus = document.getElementById('galleryAutoLoadStatus');
+    const sentinel = document.getElementById('galleryAutoLoadSentinel');
+    const pagedModeButton = document.getElementById('galleryPagedButton');
+    const masonryModeButton = document.getElementById('galleryMasonryButton');
+    const pagination = document.getElementById('galleryPagination');
+    const pageIndicator = document.getElementById('galleryPageIndicator');
+    const pageJumpInput = document.getElementById('pageJump');
+    const pageJumpButton = document.getElementById('pageJumpButton');
+    const layoutStorageKey = 'gallery-layout-mode';
+
+    const masonryState = {
+        isLoading: false,
+        observer: null,
+        resizeObserver: null,
+        pendingLayoutFrame: null,
+        mode: 'paged',
+    };
+
+    function getGridGap() {
+        return Number(galleryGrid?.dataset.gridGap || 16);
+    }
+
+    function getGridRowSize() {
+        return Number(galleryGrid?.dataset.gridRow || 8);
+    }
+
+    function getCurrentPage() {
+        return Number(galleryGrid?.dataset.currentPage || 1);
+    }
+
+    function getTotalPages() {
+        return Number(galleryGrid?.dataset.totalPages || 1);
+    }
+
+    function hasMorePages() {
+        return getCurrentPage() < getTotalPages();
+    }
+
+    function isMasonryMode() {
+        return masonryState.mode === 'masonry';
+    }
+
+    function updateStatus(message) {
+        if (!autoLoadStatus) {
+            return;
+        }
+        autoLoadStatus.textContent = message;
+    }
+
+    function updatePaginationIndicator() {
+        if (pageIndicator) {
+            pageIndicator.textContent = `${getCurrentPage()} / ${getTotalPages()}`;
+        }
+        if (pageJumpInput) {
+            pageJumpInput.value = String(getCurrentPage());
         }
     }
 
-    const grid = document.getElementById('galleryGrid');
-    const toggleButton = document.getElementById('galleryLayoutToggle');
-    const layoutStorageKey = 'gallery-layout-mode';
+    function resizeMasonryItem(item) {
+        if (!galleryGrid || !item || !isMasonryMode()) {
+            if (item) {
+                item.style.gridRowEnd = '';
+            }
+            return;
+        }
 
-    function applyGalleryLayout(mode) {
-        if (!grid || !toggleButton) return;
-        const useMasonry = mode === 'masonry';
-        grid.classList.toggle('gallery-grid--masonry', useMasonry);
-        toggleButton.setAttribute('aria-pressed', String(useMasonry));
-        toggleButton.textContent = `Pinterest 瀑布流：${useMasonry ? '开' : '关'}`;
+        const inner = item.querySelector('.gallery-item__inner');
+        if (!inner) {
+            return;
+        }
+
+        const rowSize = getGridRowSize();
+        const rowGap = getGridGap();
+        const contentHeight = inner.getBoundingClientRect().height;
+        const rowSpan = Math.max(1, Math.ceil((contentHeight + rowGap) / (rowSize + rowGap)));
+        item.style.gridRowEnd = `span ${rowSpan}`;
     }
 
-    if (grid && toggleButton) {
-        const savedMode = localStorage.getItem(layoutStorageKey) || 'grid';
-        applyGalleryLayout(savedMode);
+    function layoutMasonry(items) {
+        if (!galleryGrid || !isMasonryMode()) {
+            return;
+        }
 
-        toggleButton.addEventListener('click', function() {
-            const nextMode = grid.classList.contains('gallery-grid--masonry') ? 'grid' : 'masonry';
-            localStorage.setItem(layoutStorageKey, nextMode);
-            applyGalleryLayout(nextMode);
+        const targets = items || galleryGrid.querySelectorAll('.gallery-item');
+        targets.forEach((item) => resizeMasonryItem(item));
+    }
+
+    function scheduleMasonryLayout(items) {
+        if (!isMasonryMode()) {
+            return;
+        }
+
+        if (masonryState.pendingLayoutFrame) {
+            cancelAnimationFrame(masonryState.pendingLayoutFrame);
+        }
+
+        masonryState.pendingLayoutFrame = requestAnimationFrame(() => {
+            layoutMasonry(items);
+            masonryState.pendingLayoutFrame = null;
         });
     }
 
-    const pageJump = document.getElementById('pageJump');
-    if (pageJump) {
-        pageJump.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') { jumpToPage(); }
+    function attachItemObservers(item) {
+        const image = item.querySelector('img');
+        if (image) {
+            if (image.complete) {
+                resizeMasonryItem(item);
+            } else {
+                image.addEventListener('load', () => resizeMasonryItem(item));
+                image.addEventListener('error', () => resizeMasonryItem(item));
+            }
+        }
+
+        if ('ResizeObserver' in window) {
+            if (!masonryState.resizeObserver) {
+                masonryState.resizeObserver = new ResizeObserver((entries) => {
+                    entries.forEach((entry) => {
+                        const targetItem = entry.target.closest('.gallery-item');
+                        if (targetItem) {
+                            resizeMasonryItem(targetItem);
+                        }
+                    });
+                });
+            }
+
+            const inner = item.querySelector('.gallery-item__inner');
+            if (inner) {
+                masonryState.resizeObserver.observe(inner);
+            }
+        }
+    }
+
+    function buildGalleryItem(item) {
+        const wrapper = document.createElement('article');
+        wrapper.className = 'gallery-item';
+        wrapper.dataset.illustId = item.illust_id;
+
+        const inner = document.createElement('div');
+        inner.className = 'gallery-item__inner';
+
+        const img = document.createElement('img');
+        img.src = `https://wsrv.nl/?url=pixiv.cat/${item.illust_id}.jpg&w=500&output=webp`;
+        img.alt = `Illust ${item.illust_id}`;
+        img.loading = 'lazy';
+        img.onerror = function () {
+            this.onerror = null;
+            this.src = `https://pixiv.cat/${item.illust_id}.jpg`;
+        };
+
+        const overlay = document.createElement('div');
+        overlay.className = 'overlay';
+
+        const link = document.createElement('a');
+        link.href = `https://www.pixiv.net/artworks/${item.illust_id}`;
+        link.target = '_blank';
+        link.rel = 'noreferrer';
+        link.textContent = `#${item.illust_id}`;
+
+        overlay.appendChild(link);
+        inner.appendChild(img);
+        inner.appendChild(overlay);
+        wrapper.appendChild(inner);
+        attachItemObservers(wrapper);
+        return wrapper;
+    }
+
+    async function loadNextPage() {
+        if (!galleryGrid || !isMasonryMode() || !hasMorePages() || masonryState.isLoading) {
+            return;
+        }
+
+        masonryState.isLoading = true;
+        const nextPage = getCurrentPage() + 1;
+        updateStatus(`正在加载第 ${nextPage} / ${getTotalPages()} 页作品…`);
+
+        try {
+            const response = await fetch(`/api/gallery?page=${nextPage}&limit=${galleryGrid.dataset.pageLimit || 25}`, {
+                headers: {
+                    'X-Requested-With': 'fetch',
+                    'Accept': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+            const fragment = document.createDocumentFragment();
+            const newItems = (data.items || []).map((item) => {
+                const node = buildGalleryItem(item);
+                fragment.appendChild(node);
+                return node;
+            });
+
+            galleryGrid.appendChild(fragment);
+            galleryGrid.dataset.currentPage = String(data.page || nextPage);
+            galleryGrid.dataset.totalPages = String(data.pages || getTotalPages());
+            updatePaginationIndicator();
+            scheduleMasonryLayout(newItems);
+
+            if (data.has_more) {
+                updateStatus(`已加载第 ${data.page} / ${data.pages} 页，继续下滑将自动获取更多作品。`);
+            } else {
+                updateStatus('全部作品已加载完成。');
+                stopInfiniteScroll();
+                if (sentinel) {
+                    sentinel.hidden = true;
+                }
+            }
+        } catch (error) {
+            console.error('加载更多画廊作品失败:', error);
+            updateStatus('自动加载失败，请刷新页面后重试。');
+        } finally {
+            masonryState.isLoading = false;
+        }
+    }
+
+    function startInfiniteScroll() {
+        if (!sentinel || !('IntersectionObserver' in window)) {
+            return;
+        }
+
+        if (!masonryState.observer) {
+            masonryState.observer = new IntersectionObserver((entries) => {
+                entries.forEach((entry) => {
+                    if (entry.isIntersecting) {
+                        loadNextPage();
+                    }
+                });
+            }, {
+                rootMargin: '800px 0px 800px 0px'
+            });
+        }
+
+        if (hasMorePages()) {
+            sentinel.hidden = false;
+            masonryState.observer.observe(sentinel);
+        } else {
+            updateStatus('全部作品已加载完成。');
+            sentinel.hidden = true;
+        }
+    }
+
+    function stopInfiniteScroll() {
+        if (masonryState.observer && sentinel) {
+            masonryState.observer.unobserve(sentinel);
+        }
+    }
+
+    function applyLayoutMode(mode) {
+        if (!galleryGrid || !pagedModeButton || !masonryModeButton) {
+            return;
+        }
+
+        masonryState.mode = mode === 'masonry' ? 'masonry' : 'paged';
+        const masonryEnabled = isMasonryMode();
+
+        galleryGrid.classList.toggle('gallery-grid--masonry', masonryEnabled);
+        galleryGrid.classList.toggle('gallery-grid--paged', !masonryEnabled);
+        pagedModeButton.setAttribute('aria-pressed', String(!masonryEnabled));
+        masonryModeButton.setAttribute('aria-pressed', String(masonryEnabled));
+        pagedModeButton.classList.toggle('is-active', !masonryEnabled);
+        masonryModeButton.classList.toggle('is-active', masonryEnabled);
+
+        if (pagination) {
+            pagination.hidden = masonryEnabled;
+        }
+
+        if (autoLoadStatus) {
+            autoLoadStatus.hidden = !masonryEnabled;
+        }
+
+        if (masonryEnabled) {
+            updateStatus(hasMorePages()
+                ? `已从第 ${getCurrentPage()} / ${getTotalPages()} 页进入瀑布流，继续下滑将自动加载后续页码。`
+                : '当前已是最后一页，没有更多作品可加载。');
+            scheduleMasonryLayout();
+            startInfiniteScroll();
+        } else {
+            stopInfiniteScroll();
+            if (sentinel) {
+                sentinel.hidden = true;
+            }
+            galleryGrid.querySelectorAll('.gallery-item').forEach((item) => {
+                item.style.gridRowEnd = '';
+            });
+        }
+    }
+
+    function jumpToPage() {
+        if (!pageJumpInput) {
+            return;
+        }
+
+        const nextPage = Number(pageJumpInput.value);
+        if (nextPage >= 1 && nextPage <= getTotalPages()) {
+            window.location.href = `/gallery?page=${nextPage}`;
+        }
+    }
+
+    if (galleryGrid) {
+        const initialItems = galleryGrid.querySelectorAll('.gallery-item');
+        initialItems.forEach((item) => attachItemObservers(item));
+        updatePaginationIndicator();
+
+        const savedMode = localStorage.getItem(layoutStorageKey) || 'paged';
+        applyLayoutMode(savedMode);
+
+        window.addEventListener('resize', () => scheduleMasonryLayout());
+
+        if (pagedModeButton) {
+            pagedModeButton.addEventListener('click', () => {
+                localStorage.setItem(layoutStorageKey, 'paged');
+                applyLayoutMode('paged');
+            });
+        }
+
+        if (masonryModeButton) {
+            masonryModeButton.addEventListener('click', () => {
+                localStorage.setItem(layoutStorageKey, 'masonry');
+                applyLayoutMode('masonry');
+            });
+        }
+    }
+
+    if (pageJumpButton) {
+        pageJumpButton.addEventListener('click', jumpToPage);
+    }
+
+    if (pageJumpInput) {
+        pageJumpInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                jumpToPage();
+            }
         });
     }
     </script>
