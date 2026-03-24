@@ -3,6 +3,7 @@ Telegram 推送实现
 """
 import asyncio
 import logging
+import re
 from io import BytesIO
 from typing import Callable, Optional
 
@@ -21,6 +22,81 @@ except ImportError:
     HAS_PILLOW = False
 
 logger = logging.getLogger(__name__)
+
+
+PIXIV_URL_PATTERNS = {
+    "illust": [
+        re.compile(r"(?:https?://)?(?:www\.)?pixiv\.net/(?:[a-z]{2}/)?artworks/(\d+)", re.IGNORECASE),
+        re.compile(r"(?:https?://)?(?:www\.)?pixiv\.net/(?:[a-z]{2}/)?member_illust\.php\?[^\\s#]*illust_id=(\d+)", re.IGNORECASE),
+    ],
+    "artist": [
+        re.compile(r"(?:https?://)?(?:www\.)?pixiv\.net/(?:[a-z]{2}/)?users/(\d+)", re.IGNORECASE),
+        re.compile(r"(?:https?://)?(?:www\.)?pixiv\.net/(?:[a-z]{2}/)?member\.php\?[^\\s#]*id=(\d+)", re.IGNORECASE),
+    ],
+}
+
+
+def _extract_pixiv_targets(text: str) -> list[dict]:
+    """从文本中提取 Pixiv 作品/画师目标。"""
+    results: list[dict] = []
+    if not text:
+        return results
+
+    text = text.strip()
+
+    if text.isdigit():
+        results.append({"type": "numeric", "id": int(text), "source": "digit", "raw": text})
+
+    for target_type, patterns in PIXIV_URL_PATTERNS.items():
+        for pattern in patterns:
+            for match in pattern.finditer(text):
+                target_id = int(match.group(1))
+                if not any(item["type"] == target_type and item["id"] == target_id for item in results):
+                    results.append({
+                        "type": target_type,
+                        "id": target_id,
+                        "source": "url",
+                        "raw": match.group(0),
+                    })
+
+    return results
+
+
+def _parse_pixiv_input(text: str, expected: str | None = None) -> dict:
+    """解析用户输入，支持纯数字、作品链接、画师链接。"""
+    targets = _extract_pixiv_targets(text)
+    if not targets:
+        return {"ok": False, "reason": "not_found", "targets": []}
+
+    if expected == "illust":
+        for target in targets:
+            if target["type"] == "illust":
+                return {"ok": True, "target": target, "targets": targets}
+        numeric = next((t for t in targets if t["type"] == "numeric"), None)
+        if numeric:
+            numeric["type"] = "illust"
+            return {"ok": True, "target": numeric, "targets": targets}
+        return {"ok": False, "reason": "type_mismatch", "targets": targets}
+
+    if expected == "artist":
+        for target in targets:
+            if target["type"] == "artist":
+                return {"ok": True, "target": target, "targets": targets}
+        numeric = next((t for t in targets if t["type"] == "numeric"), None)
+        if numeric:
+            numeric["type"] = "artist"
+            return {"ok": True, "target": numeric, "targets": targets}
+        return {"ok": False, "reason": "type_mismatch", "targets": targets}
+
+    typed_targets = [t for t in targets if t["type"] in {"illust", "artist"}]
+    if len(typed_targets) == 1:
+        return {"ok": True, "target": typed_targets[0], "targets": targets}
+    if len(typed_targets) > 1:
+        return {"ok": False, "reason": "ambiguous", "targets": typed_targets}
+    numeric = next((t for t in targets if t["type"] == "numeric"), None)
+    if numeric:
+        return {"ok": True, "target": numeric, "targets": targets}
+    return {"ok": False, "reason": "not_found", "targets": targets}
 
 
 async def _retry_on_flood(coro_func, max_retries=3):
@@ -811,6 +887,63 @@ class TelegramNotifier(BaseNotifier):
                 await _handle_schedule_callback(query, data)
                 return
 
+            # ===== 直接粘贴 Pixiv 链接快捷入口 =====
+            if data.startswith("direct_pixiv:") or data.startswith("direct_artist_range:"):
+                if data == "direct_pixiv:cancel":
+                    try:
+                        await query.message.delete()
+                    except Exception:
+                        try:
+                            await query.edit_message_reply_markup(reply_markup=None)
+                        except Exception:
+                            pass
+                    return
+
+                if data.startswith("direct_artist_range:"):
+                    _, artist_id, days = data.split(":")
+                    try:
+                        await query.message.delete()
+                    except Exception:
+                        pass
+                    await _handle_push_direct(user_id, query.message.chat_id, ["a", artist_id, days])
+                    return
+
+                _, action, target_id = data.split(":")
+                if action == "illust":
+                    try:
+                        await query.message.delete()
+                    except Exception:
+                        pass
+                    await _handle_push_direct(user_id, query.message.chat_id, [target_id])
+                    return
+
+                if action == "artist":
+                    await _show_direct_artist_range_menu(
+                        query.message.chat_id,
+                        int(target_id),
+                        title=f"🎨 *已识别画师*: `{target_id}`",
+                    )
+                    return
+
+                if action == "artist_from_illust":
+                    try:
+                        if not self.client:
+                            await query.answer("⚠️ Pixiv 客户端未初始化", show_alert=True)
+                            return
+                        illust = await self.client.get_illust_detail(int(target_id))
+                        if not illust:
+                            await query.answer("❌ 未找到该作品", show_alert=True)
+                            return
+                        await _show_direct_artist_range_menu(
+                            query.message.chat_id,
+                            illust.user_id,
+                            title=f"🎨 *已识别作品作者*: `{illust.user_id}`",
+                        )
+                    except Exception as e:
+                        logger.error(f"普通链接快捷抓作者失败: {e}")
+                        await query.answer(f"❌ 获取作品作者失败: {e}", show_alert=True)
+                    return
+
             if data == "batch_like":
                 # 显示作品选择按钮
                 import database as db
@@ -977,33 +1110,57 @@ class TelegramNotifier(BaseNotifier):
                 push_session["user_message_ids"].append(message.message_id)
 
                 if step == "input_artist_id":
-                    if not text.isdigit():
-                        await message.reply_text("❌ 画师ID必须是数字")
+                    parsed = _parse_pixiv_input(text, expected="artist")
+                    if parsed["ok"]:
+                        artist_id = parsed["target"]["id"]
+                        session = self._push_sessions.get(user_id, {})
+                        session["artist_id"] = artist_id
+                        session["step"] = "select_artist_range"
+                        await _show_artist_range_menu(
+                            chat_id,
+                            user_id,
+                            edit_message=message,
+                            title=f"🎨 *已识别画师*: `{artist_id}`",
+                        )
                         return
 
-                    artist_id = int(text)
-                    # 删除消息并执行
-                    await _delete_push_messages(user_id, chat_id)
-                    if user_id in self._push_sessions:
-                        del self._push_sessions[user_id]
-
-                    # 执行画师推送
-                    await _handle_push_direct(user_id, chat_id, ["a", str(artist_id)])
+                    if parsed["reason"] == "type_mismatch":
+                        await _prompt_push_type_switch(message, user_id, chat_id, parsed["targets"], expected="artist")
+                    else:
+                        await message.reply_text(
+                            "❌ 没识别到有效的 Pixiv 画师。\n"
+                            "支持输入：画师ID 或 Pixiv 画师链接\n\n"
+                            "例如：\n"
+                            "• `16419396`\n"
+                            "• `https://www.pixiv.net/users/16419396`",
+                            parse_mode="Markdown"
+                        )
                     return
 
                 elif step == "input_illust_id":
-                    if not text.isdigit():
-                        await message.reply_text("❌ 作品ID必须是数字")
+                    parsed = _parse_pixiv_input(text, expected="illust")
+                    if parsed["ok"]:
+                        illust_id = parsed["target"]["id"]
+                        # 删除消息并执行
+                        await _delete_push_messages(user_id, chat_id)
+                        if user_id in self._push_sessions:
+                            del self._push_sessions[user_id]
+
+                        # 执行作品推送
+                        await _handle_push_direct(user_id, chat_id, [str(illust_id)])
                         return
 
-                    illust_id = int(text)
-                    # 删除消息并执行
-                    await _delete_push_messages(user_id, chat_id)
-                    if user_id in self._push_sessions:
-                        del self._push_sessions[user_id]
-
-                    # 执行作品推送
-                    await _handle_push_direct(user_id, chat_id, [str(illust_id)])
+                    if parsed["reason"] == "type_mismatch":
+                        await _prompt_push_type_switch(message, user_id, chat_id, parsed["targets"], expected="illust")
+                    else:
+                        await message.reply_text(
+                            "❌ 没识别到有效的 Pixiv 作品。\n"
+                            "支持输入：作品ID 或 Pixiv 作品链接\n\n"
+                            "例如：\n"
+                            "• `12345678`\n"
+                            "• `https://www.pixiv.net/artworks/12345678`",
+                            parse_mode="Markdown"
+                        )
                     return
 
             # ===== 处理搜索向导会话 =====
@@ -1186,6 +1343,9 @@ class TelegramNotifier(BaseNotifier):
 
                 return
 
+            if await _handle_direct_pixiv_message(message):
+                return
+
             if not message.reply_to_message:
                 return
 
@@ -1282,6 +1442,127 @@ class TelegramNotifier(BaseNotifier):
             )
             self._push_sessions[user_id]["message_ids"].append(msg.message_id)
 
+        async def _show_artist_range_menu(chat_id: int, user_id: int, edit_message=None, title: str | None = None):
+            """显示画师作品时间范围选择菜单。"""
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📅 最近 30 天", callback_data="push_artist_range:30")],
+                [InlineKeyboardButton("📅 最近 90 天", callback_data="push_artist_range:90")],
+                [InlineKeyboardButton("📅 最近 180 天（推荐）", callback_data="push_artist_range:180")],
+                [InlineKeyboardButton("📅 最近 365 天", callback_data="push_artist_range:365")],
+                [InlineKeyboardButton("♾️ 不限时间", callback_data="push_artist_range:0")],
+                [InlineKeyboardButton("❌ 取消", callback_data="push_cancel")],
+            ])
+
+            text = (
+                f"{title}\n\n" if title else ""
+            ) + (
+                "🗂️ *选择抓取范围*\n\n"
+                "将从该画师在指定时间范围内的公开作品中抽取最多 20 张生成精选集。"
+            )
+
+            if edit_message:
+                msg = await edit_message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+                self._push_sessions[user_id]["message_ids"].append(msg.message_id)
+            else:
+                session = self._push_sessions.get(user_id)
+                if session and session.get("message_ids"):
+                    last_msg_id = session["message_ids"][-1]
+                    try:
+                        await self.bot.edit_message_text(
+                            text=text,
+                            chat_id=chat_id,
+                            message_id=last_msg_id,
+                            reply_markup=keyboard,
+                            parse_mode="Markdown"
+                        )
+                        return
+                    except Exception as e:
+                        logger.debug(f"更新画师时间范围菜单失败，改为发送新消息: {e}")
+
+                msg = await self.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard, parse_mode="Markdown")
+                if session is not None:
+                    session.setdefault("message_ids", []).append(msg.message_id)
+
+        def _build_push_type_switch_keyboard(targets: list[dict], expected: str) -> InlineKeyboardMarkup:
+            """构建类型纠偏按钮。"""
+            rows = []
+            for target in targets:
+                if target["type"] == "illust":
+                    rows.append([InlineKeyboardButton("📌 改为推送该作品", callback_data=f"push_switch:illust:{target['id']}")])
+                    rows.append([InlineKeyboardButton("🎨 抓这张作品的作者", callback_data=f"push_switch_from_illust:{target['id']}")])
+                elif target["type"] == "artist":
+                    rows.append([InlineKeyboardButton("🎨 改为抓该画师作品", callback_data=f"push_switch:artist:{target['id']}")])
+            rows.append([InlineKeyboardButton("⬅️ 继续当前输入", callback_data=f"push_retry:{expected}")])
+            rows.append([InlineKeyboardButton("❌ 取消", callback_data="push_cancel")])
+            return InlineKeyboardMarkup(rows)
+
+        async def _prompt_push_type_switch(message, user_id: int, chat_id: int, targets: list[dict], expected: str):
+            """当用户输入类型与当前步骤不匹配时，提供纠偏按钮。"""
+            if not targets:
+                await message.reply_text("❌ 没识别到可用的 Pixiv 链接，请重新输入。")
+                return
+
+            expected_text = "画师" if expected == "artist" else "作品"
+            msg = await message.reply_text(
+                f"🤔 识别到你发的是 *另一种类型* 的 Pixiv 链接。\n"
+                f"当前步骤在等 *{expected_text}*，你要不要直接切换操作？",
+                parse_mode="Markdown",
+                reply_markup=_build_push_type_switch_keyboard(targets, expected)
+            )
+            session = self._push_sessions.get(user_id)
+            if session is not None:
+                session.setdefault("message_ids", []).append(msg.message_id)
+
+        def _build_direct_pixiv_keyboard(parsed: dict) -> InlineKeyboardMarkup:
+            target = parsed["target"]
+            if target["type"] == "illust":
+                rows = [
+                    [InlineKeyboardButton("📌 推送这张作品", callback_data=f"direct_pixiv:illust:{target['id']}")],
+                    [InlineKeyboardButton("🎨 抓这位画师", callback_data=f"direct_pixiv:artist_from_illust:{target['id']}")],
+                ]
+            else:
+                rows = [
+                    [InlineKeyboardButton("🎨 抓该画师作品", callback_data=f"direct_pixiv:artist:{target['id']}")],
+                ]
+            rows.append([InlineKeyboardButton("❌ 取消", callback_data="direct_pixiv:cancel")])
+            return InlineKeyboardMarkup(rows)
+
+        async def _show_direct_artist_range_menu(chat_id: int, artist_id: int, base_message=None, title: str | None = None):
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📅 最近 30 天", callback_data=f"direct_artist_range:{artist_id}:30")],
+                [InlineKeyboardButton("📅 最近 90 天", callback_data=f"direct_artist_range:{artist_id}:90")],
+                [InlineKeyboardButton("📅 最近 180 天（推荐）", callback_data=f"direct_artist_range:{artist_id}:180")],
+                [InlineKeyboardButton("📅 最近 365 天", callback_data=f"direct_artist_range:{artist_id}:365")],
+                [InlineKeyboardButton("♾️ 不限时间", callback_data=f"direct_artist_range:{artist_id}:0")],
+                [InlineKeyboardButton("❌ 取消", callback_data="direct_pixiv:cancel")],
+            ])
+            text = (
+                f"{title}\n\n" if title else ""
+            ) + "🗂️ *选择抓取范围*\n\n将从该画师在指定时间范围内的公开作品中抽取最多 20 张生成精选集。"
+            if base_message:
+                await base_message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            else:
+                await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=keyboard)
+
+        async def _handle_direct_pixiv_message(message):
+            """普通消息中的 Pixiv 链接快捷入口。"""
+            text = (message.text or "").strip()
+            parsed = _parse_pixiv_input(text)
+            if not parsed["ok"]:
+                return False
+
+            target = parsed["target"]
+            if target["type"] not in {"illust", "artist"}:
+                return False
+
+            target_text = "作品" if target["type"] == "illust" else "画师"
+            await message.reply_text(
+                f"🔎 已识别到 Pixiv {target_text}链接：`{target['id']}`\n请选择下一步操作：",
+                parse_mode="Markdown",
+                reply_markup=_build_direct_pixiv_keyboard(parsed)
+            )
+            return True
+
         async def _handle_push_direct(user_id: int, chat_id: int, args: list):
             if not args:
                 await self.bot.send_message(chat_id, "❌ 缺少参数")
@@ -1336,27 +1617,31 @@ class TelegramNotifier(BaseNotifier):
                 elif len(args) > 1 and args[0] == "a" and args[1].isdigit():
                     # 推送指定画师近1年的随机作品
                     artist_id = int(args[1])
+                    days = int(args[2]) if len(args) > 2 and str(args[2]).isdigit() else 365
                     status_msg = await self.bot.send_message(chat_id, f"🔍 正在获取画师 {artist_id} 的作品库...")
 
                     try:
                         if self.client:
                             from datetime import datetime, timedelta, timezone
                             import random
-                            one_year_ago = datetime.now(timezone.utc) - timedelta(days=365)
-                            illusts = await self.client.get_user_illusts(artist_id, since=one_year_ago, limit=100)
+                            since = None if days == 0 else datetime.now(timezone.utc) - timedelta(days=days)
+                            illusts = await self.client.get_user_illusts(artist_id, since=since, limit=100)
 
                             if illusts:
                                 sample_size = min(20, len(illusts))
                                 sampled = random.sample(illusts, sample_size)
+                                range_text = "不限时间" if days == 0 else f"近 {days} 天"
                                 await self.bot.edit_message_text(
-                                    f"🎲 正在为您生成画师 {artist_id} 的精选集... (抽取了 {sample_size}/{len(illusts)} 张)",
+                                    f"🎲 正在为您生成画师 {artist_id} 的精选集...\n"
+                                    f"📅 范围：{range_text}\n"
+                                    f"🖼️ 抽取：{sample_size}/{len(illusts)} 张",
                                     chat_id=chat_id,
                                     message_id=status_msg.message_id
                                 )
 
                                 original_mode = self.batch_mode
                                 self.batch_mode = "telegraph"
-                                custom_title = f"画师 {artist_id} 精选集"
+                                custom_title = f"画师 {artist_id} 精选集（{range_text}）"
                                 sent_ids = await self.send(sampled, custom_title)
                                 self.batch_mode = original_mode
 
@@ -1367,12 +1652,13 @@ class TelegramNotifier(BaseNotifier):
                                     pass
 
                                 if sent_ids:
-                                    await self.bot.send_message(chat_id, f"✅ 画师作品集生成完毕 (共 {sample_size} 张图，已加入队列)")
+                                    await self.bot.send_message(chat_id, f"✅ 画师作品集生成完毕（{range_text}，共 {sample_size} 张图，已加入队列）")
                                 else:
                                     await self.bot.send_message(chat_id, "❌ 生成画师作品集失败")
                             else:
+                                range_text = "不限时间" if days == 0 else f"近 {days} 天"
                                 await self.bot.edit_message_text(
-                                    f"❌ 未找到画师 {artist_id} 在近一年内的公开作品",
+                                    f"❌ 未找到画师 {artist_id} 在 {range_text} 内的公开作品",
                                     chat_id=chat_id,
                                     message_id=status_msg.message_id
                                 )
@@ -1492,7 +1778,11 @@ class TelegramNotifier(BaseNotifier):
                 session["step"] = "input_artist_id"
 
                 await query.edit_message_text(
-                    "🎨 *画师作品集*\n\n请输入画师ID:\n\n_例: `16419396`_",
+                    "🎨 *画师作品集*\n\n"
+                    "请输入画师ID或 Pixiv 画师链接。\n\n"
+                    "例如：\n"
+                    "• `16419396`\n"
+                    "• `https://www.pixiv.net/users/16419396`",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 取消", callback_data="push_cancel")]]),
                     parse_mode="Markdown"
                 )
@@ -1503,7 +1793,85 @@ class TelegramNotifier(BaseNotifier):
                 session["step"] = "input_illust_id"
 
                 await query.edit_message_text(
-                    "📌 *指定作品推送*\n\n请输入作品ID:\n\n_例: `12345678`_",
+                    "📌 *指定作品推送*\n\n"
+                    "请输入作品ID或 Pixiv 作品链接。\n\n"
+                    "例如：\n"
+                    "• `12345678`\n"
+                    "• `https://www.pixiv.net/artworks/12345678`",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 取消", callback_data="push_cancel")]]),
+                    parse_mode="Markdown"
+                )
+                return
+
+            if data.startswith("push_artist_range:"):
+                days = int(data.split(":", 1)[1])
+                session = self._push_sessions.get(user_id, {})
+                artist_id = session.get("artist_id")
+                if not artist_id:
+                    await query.edit_message_text("⚠️ 当前画师会话已失效，请重新使用 /push")
+                    return
+
+                await _delete_push_messages(user_id, chat_id)
+                if user_id in self._push_sessions:
+                    del self._push_sessions[user_id]
+
+                await _handle_push_direct(user_id, chat_id, ["a", str(artist_id), str(days)])
+                return
+
+            if data.startswith("push_switch:"):
+                _, target_type, target_id = data.split(":")
+                session = self._push_sessions.get(user_id, {})
+                if target_type == "artist":
+                    session["artist_id"] = int(target_id)
+                    session["step"] = "select_artist_range"
+                    await _show_artist_range_menu(
+                        chat_id,
+                        user_id,
+                        title=f"🎨 *已切换为画师模式*: `{target_id}`",
+                    )
+                    return
+
+                if target_type == "illust":
+                    await _delete_push_messages(user_id, chat_id)
+                    if user_id in self._push_sessions:
+                        del self._push_sessions[user_id]
+                    await _handle_push_direct(user_id, chat_id, [target_id])
+                    return
+
+            if data.startswith("push_switch_from_illust:"):
+                illust_id = int(data.split(":", 1)[1])
+                try:
+                    if not self.client:
+                        await query.answer("⚠️ Pixiv 客户端未初始化", show_alert=True)
+                        return
+                    illust = await self.client.get_illust_detail(illust_id)
+                    if not illust:
+                        await query.answer("❌ 未找到该作品", show_alert=True)
+                        return
+                    session = self._push_sessions.get(user_id, {})
+                    session["artist_id"] = illust.user_id
+                    session["step"] = "select_artist_range"
+                    await _show_artist_range_menu(
+                        chat_id,
+                        user_id,
+                        title=f"🎨 *已识别作品作者*: `{illust.user_id}`",
+                    )
+                except Exception as e:
+                    logger.error(f"从作品切换到画师模式失败: {e}")
+                    await query.answer(f"❌ 获取作品作者失败: {e}", show_alert=True)
+                return
+
+            if data.startswith("push_retry:"):
+                expected = data.split(":", 1)[1]
+                text = (
+                    "🎨 *画师作品集*\n\n请输入画师ID或 Pixiv 画师链接。\n\n"
+                    "例如：\n• `16419396`\n• `https://www.pixiv.net/users/16419396`"
+                    if expected == "artist"
+                    else "📌 *指定作品推送*\n\n请输入作品ID或 Pixiv 作品链接。\n\n"
+                    "例如：\n• `12345678`\n• `https://www.pixiv.net/artworks/12345678`"
+                )
+                await query.edit_message_text(
+                    text,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 取消", callback_data="push_cancel")]]),
                     parse_mode="Markdown"
                 )
@@ -2886,7 +3254,7 @@ class TelegramNotifier(BaseNotifier):
         self._app.add_handler(CommandHandler("start", cmd_menu))  # /start 也打开菜单
         self._app.add_handler(CommandHandler("help", cmd_help))
         self._app.add_handler(CallbackQueryHandler(callback_handler))
-        self._app.add_handler(MessageHandler(filters.REPLY & filters.TEXT, reply_handler))
+        self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_handler))
 
         # 添加错误处理器，捕获轮询过程中的错误
         async def error_handler(update, context):
@@ -3761,5 +4129,3 @@ class TelegramNotifier(BaseNotifier):
         finally:
             if typing_task:
                 typing_task.cancel()
-
-
