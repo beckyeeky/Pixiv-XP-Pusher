@@ -298,6 +298,14 @@ TAG_ALIASES = {
 
 _pattern_users = re.compile(r"^(.*?)\d+users入り$", re.IGNORECASE)
 
+_TOP_RANK_ICONS = {
+    1: "🥇",
+    2: "🥈",
+    3: "🥉",
+}
+
+_TELEGRAM_MARKDOWN_ESCAPE_CHARS = r"_*`["
+
 def normalize_tag(tag: str) -> str:
     """
     Tag归一化 (Shared logic)
@@ -326,6 +334,39 @@ def normalize_tag(tag: str) -> str:
     tag = tag.replace(" ", "_")
     
     return tag
+
+
+def escape_telegram_markdown(text: str) -> str:
+    """转义 Telegram Markdown 特殊字符（兼容 parse_mode='Markdown'）。"""
+    escaped = text
+    for char in _TELEGRAM_MARKDOWN_ESCAPE_CHARS:
+        escaped = escaped.replace(char, f"\\{char}")
+    return escaped
+
+
+def format_xp_profile_lines(
+    top_tags: list[tuple[str, float]],
+    title: str,
+    markdown: bool = False,
+) -> list[str]:
+    """
+    格式化 XP 画像展示文案。
+    以分数和相对强度替代难以理解的黑条，前 3 名使用奖牌强调。
+    """
+    lines = [title]
+    if not top_tags:
+        return lines
+
+    max_weight = max(weight for _, weight in top_tags)
+    safe_max_weight = max(max_weight, 0.0)
+
+    for index, (tag, weight) in enumerate(top_tags, 1):
+        rank = _TOP_RANK_ICONS.get(index, f"{index}.")
+        intensity = 0 if safe_max_weight <= 0 else round((weight / safe_max_weight) * 100)
+        rendered_tag = escape_telegram_markdown(tag) if markdown else tag
+        lines.append(f"{rank} {rendered_tag} · {weight:.1f} 分 · 强度 {intensity}%")
+
+    return lines
 
 
 def convert_ugoira_to_mp4(zip_data: bytes, frames: list[dict]) -> bytes:

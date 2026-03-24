@@ -11,7 +11,7 @@ import aiohttp
 
 from .base import BaseNotifier
 from pixiv_client import Illust
-from utils import get_pixiv_cat_url
+from utils import format_xp_profile_lines, get_pixiv_cat_url
 import base64
 
 logger = logging.getLogger(__name__)
@@ -400,11 +400,8 @@ class OneBotNotifier(BaseNotifier):
                     if not top_tags:
                         await self._send_message("📊 暂无 XP 画像数据", "private", sender_id)
                         return
-                    
-                    lines = ["🎯 您的 XP 画像 Top 15"]
-                    for i, (tag, weight) in enumerate(top_tags, 1):
-                        bar = "█" * min(int(weight), 10)
-                        lines.append(f"{i}. {tag} {bar} ({weight:.1f})")
+
+                    lines = format_xp_profile_lines(top_tags, "🎯 您的 XP 画像 Top 15")
                     await self._send_message("\n".join(lines), "private", sender_id)
                 except Exception as e:
                     await self._send_message(f"❌ 获取 XP 失败: {e}", "private", sender_id)

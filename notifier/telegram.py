@@ -12,7 +12,7 @@ from telegram.ext import Application, CallbackQueryHandler
 
 from .base import BaseNotifier
 from pixiv_client import Illust, PixivClient
-from utils import get_pixiv_cat_url
+from utils import format_xp_profile_lines, get_pixiv_cat_url
 
 try:
     from PIL import Image
@@ -401,9 +401,7 @@ class TelegramNotifier(BaseNotifier):
         # XP画像
         elif action == "xp":
             top_tags = await db.get_top_xp_tags(15)
-            lines = ["🎯 *XP 画像 Top 15*\n"]
-            for i, (tag, weight) in enumerate(top_tags, 1):
-                lines.append(f"{i}. `{tag}` ({weight:.2f})")
+            lines = format_xp_profile_lines(top_tags, "🎯 *XP 画像 Top 15*", markdown=True)
 
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")
@@ -2055,11 +2053,7 @@ class TelegramNotifier(BaseNotifier):
                     await update.message.reply_text("📊 暂无 XP 画像数据")
                     return
 
-                lines = ["🎯 *您的 XP 画像 Top 15*\n"]
-                for i, (tag, weight) in enumerate(top_tags, 1):
-                    bar = "█" * min(int(weight), 10)
-                    # Tag 用反引号包裹防止解析错误
-                    lines.append(f"{i}. `{tag}` {bar} ({weight:.1f})")
+                lines = format_xp_profile_lines(top_tags, "🎯 *您的 XP 画像 Top 15*", markdown=True)
 
                 await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
             except Exception as e:
