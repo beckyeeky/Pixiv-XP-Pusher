@@ -12,6 +12,7 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+from copy import deepcopy
 
 from fastapi import FastAPI, Request, HTTPException, Depends, Form, Query, Response, Body
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -66,6 +67,34 @@ def hash_password(password: str) -> str:
 def _get_web_security_config() -> dict:
     config = load_config()
     return config.get("web", {}) if isinstance(config, dict) else {}
+
+
+SENSITIVE_CONFIG_KEYS = {
+    "password",
+    "web_password",
+    "bot_token",
+    "api_key",
+    "token",
+    "refresh_token",
+    "access_token",
+    "secret",
+}
+
+
+def _redact_sensitive_config(data: Any) -> Any:
+    """递归脱敏配置数据，避免通过 API 意外暴露凭据。"""
+    if isinstance(data, dict):
+        redacted: Dict[str, Any] = {}
+        for key, value in data.items():
+            key_lower = key.lower()
+            if any(sensitive in key_lower for sensitive in SENSITIVE_CONFIG_KEYS):
+                redacted[key] = "***REDACTED***"
+            else:
+                redacted[key] = _redact_sensitive_config(value)
+        return redacted
+    if isinstance(data, list):
+        return [_redact_sensitive_config(item) for item in data]
+    return data
 
 
 def _get_client_key(request: Request) -> str:
@@ -493,7 +522,7 @@ async def sync_ip_list(req: SyncRequest, _=Depends(require_auth)):
 @app.get("/api/config")
 async def get_config_section(section: str = Query(None), _=Depends(require_auth)):
     """获取配置的特定部分"""
-    config = load_config()
+    config = _redact_sensitive_config(deepcopy(load_config()))
     if section:
         return {section: config.get(section, {})}
     return config
