@@ -3,6 +3,7 @@ import sys
 import subprocess
 import time
 import shutil
+import yaml
 
 # 设置编码
 sys.stdout.reconfigure(encoding='utf-8')
@@ -24,6 +25,12 @@ def run_command(cmd, shell=True, ignore_errors=False):
         return True
     except subprocess.CalledProcessError:
         return False
+
+def to_int_or_raw(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
 
 def check_env():
     print_header("[1/8] 环境检查")
@@ -72,7 +79,7 @@ def setup_user_id():
     
     user_id = input("   请输入 User ID (直接回车跳过): ").strip()
     if user_id:
-        update_config('user_id', user_id)
+        update_config_value(["pixiv", "user_id"], to_int_or_raw(user_id))
         print(f"   已保存 User ID: {user_id}")
 
 def setup_schedule():
@@ -87,7 +94,7 @@ def setup_schedule():
             h, m = map(int, t_input.split(":"))
             if 0 <= h < 24 and 0 <= m < 60:
                 cron = f"{m} {h} * * *"
-                update_config('cron', cron, section='scheduler')
+                update_config_value(["scheduler", "cron"], cron)
                 print(f"   已更新: 每天 {h:02d}:{m:02d} 执行")
             else:
                 print("   ⚠️ 时间超出范围，未修改")
@@ -105,11 +112,11 @@ def setup_ai():
         base_url = input("   API Base URL (留空使用 OpenAI): ").strip()
         model = input("   模型名称 (默认 gpt-4o-mini): ").strip() or "gpt-4o-mini"
         
-        update_config('enabled', 'true', section='ai')
-        update_config('api_key', api_key, section='ai')
+        update_config_value(["profiler", "ai", "enabled"], True)
+        update_config_value(["profiler", "ai", "api_key"], api_key)
         if base_url:
-            update_config('base_url', base_url, section='ai')
-        update_config('model', model, section='ai')
+            update_config_value(["profiler", "ai", "base_url"], base_url)
+        update_config_value(["profiler", "ai", "model"], model)
         print("   AI 已配置")
     else:
         print("   已跳过 AI 配置")
@@ -124,76 +131,69 @@ def setup_notifier():
     
     if choice == '1':
         token = input("   Bot Token: ").strip()
-        chat_id = input("   Chat ID: ").strip()
-        update_config('type', 'telegram')
-        update_config('bot_token', token)
-        update_config('chat_id', chat_id)
+        chat_id = input("   Chat ID (支持负数群组ID): ").strip()
+        notifier_types = load_config_value(["notifier", "types"], default=[])
+        if "telegram" not in notifier_types:
+            notifier_types.append("telegram")
+        update_config_value(["notifier", "types"], notifier_types)
+        update_config_value(["notifier", "telegram", "bot_token"], token)
+        update_config_value(["notifier", "telegram", "chat_ids"], [to_int_or_raw(chat_id)])
         print("   Telegram 已配置")
         
     elif choice == '2':
         url = input("   WebSocket URL: ").strip()
         tid = input("   目标 QQ/群号: ").strip()
         type_choice = input("   类型 (1=私聊, 2=群聊): ").strip()
-        ttype = "group" if type_choice == '2' else "private"
-        
-        update_config('type', 'onebot')
-        update_config('ws_url', url)
-        update_config('target_id', tid)
-        update_config('target_type', ttype)
+        notifier_types = load_config_value(["notifier", "types"], default=[])
+        if "onebot" not in notifier_types:
+            notifier_types.append("onebot")
+        update_config_value(["notifier", "types"], notifier_types)
+        update_config_value(["notifier", "onebot", "ws_url"], url)
+        if type_choice == '2':
+            update_config_value(["notifier", "onebot", "group_id"], to_int_or_raw(tid))
+            update_config_value(["notifier", "onebot", "push_to_group"], True)
+            update_config_value(["notifier", "onebot", "push_to_private"], False)
+        else:
+            update_config_value(["notifier", "onebot", "private_id"], to_int_or_raw(tid))
+            update_config_value(["notifier", "onebot", "push_to_private"], True)
+            update_config_value(["notifier", "onebot", "push_to_group"], False)
         print("   OneBot 已配置")
 
-def update_config(key, value, section=None):
-    """更新配置文件
-    
-    Args:
-        key: 配置键名
-        value: 配置值
-        section: 所属段落（如 'ai' 表示 profiler.ai 下的键）
-    """
+def load_config_file():
+    if not os.path.exists("config.yaml"):
+        return {}
     try:
         with open("config.yaml", "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        
-        new_lines = []
-        in_section = False
-        section_indent = 0
-        
-        for i, line in enumerate(lines):
-            stripped = line.lstrip()
-            current_indent = len(line) - len(stripped)
-            
-            if section:
-                # 查找目标 section
-                if stripped.startswith(f"{section}:"):
-                    in_section = True
-                    section_indent = current_indent
-                    new_lines.append(line)
-                    continue
-                
-                # 在 section 内查找 key
-                if in_section:
-                    # 检查是否离开了 section
-                    if stripped and current_indent <= section_indent and not stripped.startswith(f"{key}:"):
-                        in_section = False
-                    elif stripped.startswith(f"{key}:"):
-                        # 找到目标 key，替换值
-                        indent = " " * current_indent
-                        new_lines.append(f"{indent}{key}: {value}\n")
-                        continue
-                
-                new_lines.append(line)
-            else:
-                # 简单替换
-                if stripped.startswith(f"{key}:"):
-                    indent = " " * current_indent
-                    new_lines.append(f"{indent}{key}: {value}\n")
-                else:
-                    new_lines.append(line)
-        
-        with open("config.yaml", "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
+            return yaml.safe_load(f) or {}
     except Exception as e:
-        print(f"   配置更新失败: {e}")
+        print(f"   读取配置失败: {e}")
+        return {}
+
+def save_config_file(config):
+    try:
+        with open("config.yaml", "w", encoding="utf-8") as f:
+            yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
+    except Exception as e:
+        print(f"   保存配置失败: {e}")
+
+def update_config_value(path, value):
+    config = load_config_file()
+    current = config
+    for key in path[:-1]:
+        if not isinstance(current.get(key), dict):
+            current[key] = {}
+        current = current[key]
+    current[path[-1]] = value
+    save_config_file(config)
+
+def load_config_value(path, default=None):
+    config = load_config_file()
+    current = config
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return default
+        current = current[key]
+    return current
 
 def main_menu():
     while True:

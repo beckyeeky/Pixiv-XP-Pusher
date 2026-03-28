@@ -68,10 +68,25 @@ python main.py --now
 - [快速上手（详细版）](docs/quickstart.md)
 - [配置说明](docs/configuration.md)
 - [Telegram 命令与交互说明](docs/telegram_commands.md)
-- [运维与诊断脚本](docs/operations.md)
+- [运维与诊断脚本（含守护进程配置）](docs/operations.md)
 - [测试与开发说明](docs/development.md)
 - [功能矩阵](docs/feature_matrix.md)
 - [Notifier 能力矩阵](docs/notifier_capabilities.md)
+
+---
+
+## 守护进程与更新（迁移说明）
+
+原 README 中的守护进程部署配置已迁移到：
+
+- [docs/operations.md](docs/operations.md) 的「守护进程（systemd）配置」章节
+
+推荐更新方式：
+
+```bash
+git pull
+# 然后重启所有相关服务（如 pusher/web）
+```
 
 ---
 
