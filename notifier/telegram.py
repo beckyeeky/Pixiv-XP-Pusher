@@ -3399,8 +3399,8 @@ class TelegramNotifier(BaseNotifier):
         await self.send_queue.put((illusts, custom_title, self.batch_mode))
         logger.info(f"已将 {len(illusts)} 个作品加入推送队列 (mode={self.batch_mode})")
 
-        # 返回占位符，表示已接受 (避免阻塞调用方)
-        return [-1]
+        # 返回已入队的作品 ID（表示任务已被接受，实际发送由后台 worker 完成）
+        return [ill.id for ill in illusts]
 
     async def _send_direct(self, illusts: list[Illust], custom_title: str = None, batch_mode: str = None) -> list[int]:
         """直接发送推送 (内部方法)"""
