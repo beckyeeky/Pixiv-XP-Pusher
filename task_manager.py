@@ -856,7 +856,7 @@ async def main_task(
                                 source = getattr(illust, 'source', 'unknown')
                                 stats.record_push_success(source)
                             else:
-                                stats.record_push_success('unknown')
+                                logger.warning(f"收到未匹配的推送结果 ID: {pid}，跳过统计归因")
                 
                     if all_sent_ids:
                         # 记录推送历史
