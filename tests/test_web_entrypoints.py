@@ -128,3 +128,23 @@ class WebSecurityOptionTests(unittest.TestCase):
         cfg = self.read_config()
         self.assertFalse(cfg["web"]["require_login_password"])
         self.assertEqual(cfg["web"]["password"], "")
+
+    def test_config_api_redacts_sensitive_values(self):
+        initial = {
+            "web": {"require_login_password": True, "password": "hashed-secret"},
+            "pixiv": {"refresh_token": "pixiv-refresh"},
+            "notifier": {"telegram": {"bot_token": "telegram-token"}},
+            "profiler": {"danbooru_api_key": "db-key", "boost_tags": {"cat": 1.8}},
+        }
+        self.config_path.write_text(yaml.safe_dump(initial, allow_unicode=True), encoding="utf-8")
+        session_id = "test-session"
+        web_app_module.sessions[session_id] = web_app_module.datetime.now()
+
+        response = self.client.get("/api/config", cookies={"session_id": session_id})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["web"]["password"], "***REDACTED***")
+        self.assertEqual(payload["pixiv"]["refresh_token"], "***REDACTED***")
+        self.assertEqual(payload["notifier"]["telegram"]["bot_token"], "***REDACTED***")
+        self.assertEqual(payload["profiler"]["danbooru_api_key"], "***REDACTED***")
+        self.assertEqual(payload["profiler"]["boost_tags"]["cat"], 1.8)
