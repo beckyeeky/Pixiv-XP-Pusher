@@ -12,15 +12,17 @@
 
         {% if items %}
         <div class="gallery-toolbar">
-            <span class="gallery-toolbar__label">布局</span>
-            <div class="gallery-layout-switch" role="group" aria-label="Gallery layout mode">
-                <button type="button" class="btn gallery-layout-option" id="galleryPagedButton" data-layout="paged" aria-pressed="true">
-                    分页模式
-                </button>
-                <button type="button" class="btn gallery-layout-option" id="galleryMasonryButton" data-layout="masonry" aria-pressed="false">
-                    Pinterest 瀑布流
-                </button>
-            </div>
+            <button type="button" class="btn gallery-toolbar-btn" id="galleryLayoutToggleButton" aria-pressed="false">
+                切换为 Pinterest 瀑布流
+            </button>
+            <a
+                href="/gallery?page=1{% if not favorites_only %}&favorites_only=true{% endif %}"
+                class="btn gallery-toolbar-btn {% if favorites_only %}is-active{% endif %}"
+                id="galleryFavoriteFilterButton"
+                aria-pressed="{{ 'true' if favorites_only else 'false' }}"
+            >
+                {% if favorites_only %}显示全部作品{% else %}仅看已收藏{% endif %}
+            </a>
         </div>
         {% endif %}
     </div>
@@ -66,11 +68,11 @@
 
     <div class="gallery-pagination" id="galleryPagination">
         <div class="gallery-pagination__buttons">
-            <a href="/gallery?page=1" class="btn" style="{% if page == 1 %}opacity: 0.5; pointer-events: none;{% endif %}">首页</a>
-            <a href="/gallery?page={{ page - 1 }}" class="btn" style="{% if page <= 1 %}opacity: 0.5; pointer-events: none;{% endif %}">上一页</a>
+            <a href="/gallery?page=1{% if favorites_only %}&favorites_only=true{% endif %}" class="btn" style="{% if page == 1 %}opacity: 0.5; pointer-events: none;{% endif %}">首页</a>
+            <a href="/gallery?page={{ page - 1 }}{% if favorites_only %}&favorites_only=true{% endif %}" class="btn" style="{% if page <= 1 %}opacity: 0.5; pointer-events: none;{% endif %}">上一页</a>
             <span class="gallery-pagination__indicator" id="galleryPageIndicator">{{ page }} / {{ total_pages }}</span>
-            <a href="/gallery?page={{ page + 1 }}" class="btn" style="{% if page >= total_pages %}opacity: 0.5; pointer-events: none;{% endif %}">下一页</a>
-            <a href="/gallery?page={{ total_pages }}" class="btn" style="{% if page >= total_pages %}opacity: 0.5; pointer-events: none;{% endif %}">尾页</a>
+            <a href="/gallery?page={{ page + 1 }}{% if favorites_only %}&favorites_only=true{% endif %}" class="btn" style="{% if page >= total_pages %}opacity: 0.5; pointer-events: none;{% endif %}">下一页</a>
+            <a href="/gallery?page={{ total_pages }}{% if favorites_only %}&favorites_only=true{% endif %}" class="btn" style="{% if page >= total_pages %}opacity: 0.5; pointer-events: none;{% endif %}">尾页</a>
         </div>
 
         <div class="gallery-pagination__jump">
@@ -79,20 +81,19 @@
             <button type="button" class="btn" id="pageJumpButton">Go</button>
         </div>
     </div>
-    <div id="galleryAutoLoadSentinel" class="gallery-sentinel" aria-hidden="true"></div>
     {% endif %}
 
     <script>
     const galleryGrid = document.getElementById('galleryGrid');
     const autoLoadStatus = document.getElementById('galleryAutoLoadStatus');
     const sentinel = document.getElementById('galleryAutoLoadSentinel');
-    const pagedModeButton = document.getElementById('galleryPagedButton');
-    const masonryModeButton = document.getElementById('galleryMasonryButton');
+    const layoutToggleButton = document.getElementById('galleryLayoutToggleButton');
     const pagination = document.getElementById('galleryPagination');
     const pageIndicator = document.getElementById('galleryPageIndicator');
     const pageJumpInput = document.getElementById('pageJump');
     const pageJumpButton = document.getElementById('pageJumpButton');
     const layoutStorageKey = 'gallery-layout-mode';
+    const favoritesOnly = {{ 'true' if favorites_only else 'false' }};
 
     const masonryState = {
         isLoading: false,
@@ -260,7 +261,7 @@
         updateStatus(`正在加载第 ${nextPage} / ${getTotalPages()} 页作品…`);
 
         try {
-            const response = await fetch(`/api/gallery?page=${nextPage}&limit=${galleryGrid.dataset.pageLimit || 25}`, {
+            const response = await fetch(`/api/gallery?page=${nextPage}&limit=${galleryGrid.dataset.pageLimit || 25}&favorites_only=${favoritesOnly}`, {
                 headers: {
                     'X-Requested-With': 'fetch',
                     'Accept': 'application/json'
@@ -335,7 +336,7 @@
     }
 
     function applyLayoutMode(mode) {
-        if (!galleryGrid || !pagedModeButton || !masonryModeButton) {
+        if (!galleryGrid) {
             return;
         }
 
@@ -344,10 +345,11 @@
 
         galleryGrid.classList.toggle('gallery-grid--masonry', masonryEnabled);
         galleryGrid.classList.toggle('gallery-grid--paged', !masonryEnabled);
-        pagedModeButton.setAttribute('aria-pressed', String(!masonryEnabled));
-        masonryModeButton.setAttribute('aria-pressed', String(masonryEnabled));
-        pagedModeButton.classList.toggle('is-active', !masonryEnabled);
-        masonryModeButton.classList.toggle('is-active', masonryEnabled);
+        if (layoutToggleButton) {
+            layoutToggleButton.setAttribute('aria-pressed', String(masonryEnabled));
+            layoutToggleButton.textContent = masonryEnabled ? '切换为分页模式' : '切换为 Pinterest 瀑布流';
+            layoutToggleButton.classList.toggle('is-active', masonryEnabled);
+        }
 
         if (pagination) {
             pagination.hidden = masonryEnabled;
@@ -381,7 +383,8 @@
 
         const nextPage = Number(pageJumpInput.value);
         if (nextPage >= 1 && nextPage <= getTotalPages()) {
-            window.location.href = `/gallery?page=${nextPage}`;
+            const favoriteQuery = favoritesOnly ? '&favorites_only=true' : '';
+            window.location.href = `/gallery?page=${nextPage}${favoriteQuery}`;
         }
     }
 
@@ -395,17 +398,11 @@
 
         window.addEventListener('resize', () => scheduleMasonryLayout());
 
-        if (pagedModeButton) {
-            pagedModeButton.addEventListener('click', () => {
-                localStorage.setItem(layoutStorageKey, 'paged');
-                applyLayoutMode('paged');
-            });
-        }
-
-        if (masonryModeButton) {
-            masonryModeButton.addEventListener('click', () => {
-                localStorage.setItem(layoutStorageKey, 'masonry');
-                applyLayoutMode('masonry');
+        if (layoutToggleButton) {
+            layoutToggleButton.addEventListener('click', () => {
+                const nextMode = isMasonryMode() ? 'paged' : 'masonry';
+                localStorage.setItem(layoutStorageKey, nextMode);
+                applyLayoutMode(nextMode);
             });
         }
     }
@@ -420,20 +417,6 @@
                 jumpToPage();
             }
         });
-
-        if (hasMorePages()) {
-            masonryState.observer.observe(sentinel);
-        } else {
-            updateStatus('全部作品已加载完成。');
-        }
-    }
-
-    if (galleryGrid) {
-        const initialItems = galleryGrid.querySelectorAll('.gallery-item');
-        initialItems.forEach((item) => attachItemObservers(item));
-        scheduleMasonryLayout(initialItems);
-        window.addEventListener('resize', () => scheduleMasonryLayout());
-        initInfiniteScroll();
     }
     </script>
 

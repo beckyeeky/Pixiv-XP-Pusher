@@ -166,7 +166,6 @@
         }
 
         .gallery-total,
-        .gallery-toolbar__label,
         .gallery-hint,
         .gallery-auto-load,
         .gallery-pagination__jump {
@@ -181,21 +180,14 @@
             flex-wrap: wrap;
         }
 
-        .gallery-layout-switch {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
-
-        .gallery-layout-option {
-            min-width: 7.5rem;
+        .gallery-toolbar-btn {
+            min-width: 8.5rem;
             background: rgba(255, 255, 255, 0.04);
             border-color: var(--border);
             box-shadow: none;
         }
 
-        .gallery-layout-option.is-active {
+        .gallery-toolbar-btn.is-active {
             background: var(--accent);
             border-color: rgba(225, 29, 72, 0.45);
             box-shadow: 0 8px 18px rgba(225, 29, 72, 0.12);
