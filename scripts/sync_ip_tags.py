@@ -11,16 +11,32 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(PROJECT_ROOT))
+
+from config import load_config
 
 # === Configuration ===
-DANBOORU_LOGIN = os.getenv("DANBOORU_LOGIN", "your_username")
-DANBOORU_API_KEY = os.getenv("DANBOORU_API_KEY", "your_api_key")
 MIN_POST_COUNT = 1000      # Minimum posts to include
 LIMIT = 2000               # Max tags to fetch
 OUTPUT_FILE = PROJECT_ROOT / "data" / "ip_tags.json"
 
 
-def fetch_copyright_tags():
+def load_danbooru_credentials() -> tuple[str, str]:
+    """环境变量优先，其次回退到 config.yaml 中的 profiler 配置。"""
+    env_login = os.getenv("DANBOORU_LOGIN", "").strip()
+    env_api_key = os.getenv("DANBOORU_API_KEY", "").strip()
+    if env_login and env_api_key:
+        return env_login, env_api_key
+
+    config = load_config(PROJECT_ROOT / "config.yaml")
+    profiler_cfg = config.get("profiler", {}) if isinstance(config, dict) else {}
+    cfg_login = str(profiler_cfg.get("danbooru_login", "") or "").strip()
+    cfg_api_key = str(profiler_cfg.get("danbooru_api_key", "") or "").strip()
+
+    return env_login or cfg_login, env_api_key or cfg_api_key
+
+
+def fetch_copyright_tags(login: str, api_key: str):
     """Fetch category=3 (copyright) tags from Danbooru API"""
     url = "https://danbooru.donmai.us/tags.json"
     all_tags = []
@@ -33,8 +49,8 @@ def fetch_copyright_tags():
             "search[order]": "count",
             "limit": 200,
             "page": page,
-            "login": DANBOORU_LOGIN,
-            "api_key": DANBOORU_API_KEY,
+            "login": login,
+            "api_key": api_key,
         }
         
         try:
@@ -67,15 +83,16 @@ def main():
     print("=" * 50)
     print("Danbooru Copyright Tags Sync")
     print("=" * 50)
-    
-    if DANBOORU_LOGIN == "your_username" or DANBOORU_API_KEY == "your_api_key":
+
+    danbooru_login, danbooru_api_key = load_danbooru_credentials()
+    if not danbooru_login or not danbooru_api_key:
         print("\n[Warning] Please set DANBOORU_LOGIN and DANBOORU_API_KEY")
         print("Options:")
-        print("  1. Edit this script")
-        print("  2. Set env vars: export DANBOORU_LOGIN=xxx")
+        print("  1. Set env vars: export DANBOORU_LOGIN=xxx")
+        print("  2. Or fill profiler.danbooru_login / profiler.danbooru_api_key in config.yaml")
         sys.exit(1)
-    
-    tags = fetch_copyright_tags()
+
+    tags = fetch_copyright_tags(danbooru_login, danbooru_api_key)
     if not tags:
         print("\n[Error] No tags fetched, aborting without overwriting existing file")
         sys.exit(1)
