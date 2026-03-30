@@ -395,7 +395,11 @@ async def get_push_source(illust_id: int) -> Optional[str]:
             return row[0] if row else None
 
 
-async def get_push_history_paginated(limit: int = 25, offset: int = 0) -> tuple[list[dict], int]:
+async def get_push_history_paginated(
+    limit: int = 25,
+    offset: int = 0,
+    favorites_only: bool = False
+) -> tuple[list[dict], int]:
     """
     获取分页的推送历史
     
@@ -405,15 +409,36 @@ async def get_push_history_paginated(limit: int = 25, offset: int = 0) -> tuple[
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         
+        if favorites_only:
+            count_sql = """
+                SELECT COUNT(*)
+                FROM push_history ph
+                INNER JOIN feedback fb ON fb.illust_id = ph.illust_id
+                WHERE fb.action = 'like'
+            """
+            data_sql = """
+                SELECT ph.illust_id, ph.pushed_at, ph.source
+                FROM push_history ph
+                INNER JOIN feedback fb ON fb.illust_id = ph.illust_id
+                WHERE fb.action = 'like'
+                ORDER BY ph.pushed_at DESC
+                LIMIT ? OFFSET ?
+            """
+        else:
+            count_sql = "SELECT COUNT(*) FROM push_history"
+            data_sql = """
+                SELECT illust_id, pushed_at, source
+                FROM push_history
+                ORDER BY pushed_at DESC
+                LIMIT ? OFFSET ?
+            """
+
         # 获取总数
-        cursor = await db.execute("SELECT COUNT(*) FROM push_history")
+        cursor = await db.execute(count_sql)
         total = (await cursor.fetchone())[0]
-        
+
         # 获取分页数据
-        cursor = await db.execute(
-            "SELECT illust_id, pushed_at, source FROM push_history ORDER BY pushed_at DESC LIMIT ? OFFSET ?",
-            (limit, offset)
-        )
+        cursor = await db.execute(data_sql, (limit, offset))
         rows = await cursor.fetchall()
         
         items = [{"illust_id": row["illust_id"], "pushed_at": row["pushed_at"], "source": row["source"]} for row in rows]

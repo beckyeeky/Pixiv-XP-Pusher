@@ -301,7 +301,11 @@ SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_ip_tags.py"
 IP_TAGS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 @app.get("/gallery", response_class=HTMLResponse)
-async def gallery(request: Request, page: int = Query(1, ge=1)):
+async def gallery(
+    request: Request,
+    page: int = Query(1, ge=1),
+    favorites_only: bool = Query(False)
+):
     """推送历史画廊"""
     # 检查登录状态，未登录重定向到登录页
     if not verify_session(request):
@@ -311,7 +315,11 @@ async def gallery(request: Request, page: int = Query(1, ge=1)):
     offset = (page - 1) * limit
     
     # 获取推送历史
-    items, total = await db.get_push_history_paginated(limit=limit, offset=offset)
+    items, total = await db.get_push_history_paginated(
+        limit=limit,
+        offset=offset,
+        favorites_only=favorites_only
+    )
     
     return templates.TemplateResponse("gallery.html", {
         "request": request,
@@ -319,7 +327,8 @@ async def gallery(request: Request, page: int = Query(1, ge=1)):
         "items": items,
         "total": total,
         "page": page,
-        "limit": limit
+        "limit": limit,
+        "favorites_only": favorites_only
     })
 
 
@@ -834,10 +843,20 @@ async def api_stats(request: Request, days: int = 7, _=Depends(require_auth)):
 
 
 @app.get("/api/gallery")
-async def api_gallery(request: Request, page: int = 1, limit: int = 25, _=Depends(require_auth)):
+async def api_gallery(
+    request: Request,
+    page: int = 1,
+    limit: int = 25,
+    favorites_only: bool = False,
+    _=Depends(require_auth)
+):
     """获取推送历史 (API)"""
     offset = (page - 1) * limit
-    items, total = await db.get_push_history_paginated(limit=limit, offset=offset)
+    items, total = await db.get_push_history_paginated(
+        limit=limit,
+        offset=offset,
+        favorites_only=favorites_only
+    )
     total_pages = (total // limit) + (1 if total % limit else 0)
     has_more = page < total_pages
 
@@ -846,6 +865,7 @@ async def api_gallery(request: Request, page: int = 1, limit: int = 25, _=Depend
         "total": total,
         "page": page,
         "limit": limit,
+        "favorites_only": favorites_only,
         "pages": total_pages,
         "has_more": has_more,
         "next_page": page + 1 if has_more else None,
