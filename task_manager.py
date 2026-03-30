@@ -391,7 +391,17 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
              # 使用 create_task 异步执行，避免阻塞 Bot 响应
              # force=True 跳过队列限制
              # 返回 task 对象以便调用者可以等待任务完成
-             task = asyncio.create_task(main_task(config, client, profiler, notifiers, sync_client, force=True))
+             task = asyncio.create_task(
+                 main_task(
+                     config,
+                     client,
+                     profiler,
+                     notifiers,
+                     sync_client,
+                     force=True,
+                     send_summary=False,
+                 )
+             )
              return task
 
         elif action == "run_task_historical":
@@ -400,7 +410,9 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
             logger.info(f"🤖 收到 Bot 历史补充推送指令（近{days}天）(跳过队列)")
             task = asyncio.create_task(main_task(
                 config, client, profiler, notifiers, sync_client, 
-                force=True, historical_days=days
+                force=True,
+                historical_days=days,
+                send_summary=False,
             ))
             return task
 
@@ -592,7 +604,17 @@ async def setup_services(config: dict):
     return main_client, sync_client, profiler, notifiers
 
 
-async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, notifiers: list, sync_client: PixivClient = None, force: bool = False, historical_days: int = None) -> PushStats:
+async def main_task(
+    config: dict,
+    client: PixivClient,
+    profiler: XPProfiler,
+    notifiers: list,
+    sync_client: PixivClient = None,
+    force: bool = False,
+    historical_days: int = None,
+    send_summary: bool = True,
+    summary_title: str = "今日精选推送完成",
+) -> PushStats:
     """
     执行一次完整的推送任务 (依赖外部服务)
     
@@ -834,7 +856,7 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
                                 source = getattr(illust, 'source', 'unknown')
                                 stats.record_push_success(source)
                             else:
-                                stats.record_push_success('unknown')
+                                logger.warning(f"收到未匹配的推送结果 ID: {pid}，跳过统计归因")
                 
                     if all_sent_ids:
                         # 记录推送历史
@@ -903,13 +925,24 @@ async def main_task(config: dict, client: PixivClient, profiler: XPProfiler, not
     
         summary = {
             "finished_at": datetime.now().isoformat(),
-            "fetch_count": getattr(stats, "fetched_total", 0),
-            "filtered_count": getattr(stats, "filtered_count", 0),
-            "pushed": getattr(stats, "push_success_total", 0),
-            "failed": getattr(stats, "push_failed_total", 0),
+            "fetch_count": getattr(stats, "fetch_total", 0),
+            "filtered_count": getattr(stats, "filter_after_count", 0),
+            "pushed": getattr(stats, "push_success_count", 0),
+            "failed": getattr(stats, "push_failed_count", 0),
         }
         await db_module.set_state("runtime.last_run_summary", json.dumps(summary, ensure_ascii=False))
         logger.info("运行摘要: %s", summary)
+        if send_summary and notifiers and hasattr(stats, "format_report"):
+            try:
+                report = stats.format_report()
+                if summary_title != "今日精选推送完成":
+                    report = report.replace("今日精选推送完成", summary_title)
+                for notifier in notifiers:
+                    if hasattr(notifier, "send_text"):
+                        await notifier.send_text(report)
+                        break
+            except Exception as e:
+                logger.warning(f"发送运行摘要失败: {e}")
         logger.info("=== 推送任务结束 ===")
         return stats
     finally:
@@ -1204,4 +1237,3 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
                     await n.close()
                 except:
                     pass
-
