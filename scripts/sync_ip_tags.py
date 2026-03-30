@@ -7,14 +7,17 @@ Run manually or via cron: python scripts/sync_ip_tags.py
 import requests
 import json
 import os
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # === Configuration ===
 DANBOORU_LOGIN = os.getenv("DANBOORU_LOGIN", "your_username")
 DANBOORU_API_KEY = os.getenv("DANBOORU_API_KEY", "your_api_key")
 MIN_POST_COUNT = 1000      # Minimum posts to include
 LIMIT = 2000               # Max tags to fetch
-OUTPUT_FILE = "data/ip_tags.json"
+OUTPUT_FILE = PROJECT_ROOT / "data" / "ip_tags.json"
 
 
 def fetch_copyright_tags():
@@ -65,17 +68,20 @@ def main():
     print("Danbooru Copyright Tags Sync")
     print("=" * 50)
     
-    if DANBOORU_LOGIN == "your_username":
+    if DANBOORU_LOGIN == "your_username" or DANBOORU_API_KEY == "your_api_key":
         print("\n[Warning] Please set DANBOORU_LOGIN and DANBOORU_API_KEY")
         print("Options:")
         print("  1. Edit this script")
         print("  2. Set env vars: export DANBOORU_LOGIN=xxx")
-        return
+        sys.exit(1)
     
     tags = fetch_copyright_tags()
+    if not tags:
+        print("\n[Error] No tags fetched, aborting without overwriting existing file")
+        sys.exit(1)
     
     # Ensure output directory exists
-    Path(OUTPUT_FILE).parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     
     # Save to JSON
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
