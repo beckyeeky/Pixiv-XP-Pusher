@@ -251,13 +251,14 @@
         return wrapper;
     }
 
-    async function loadNextPage() {
+    async function loadNextPage({ preload = 0 } = {}) {
         if (!galleryGrid || !isMasonryMode() || !hasMorePages() || masonryState.isLoading) {
             return;
         }
 
         masonryState.isLoading = true;
         const nextPage = getCurrentPage() + 1;
+        let shouldLoadBufferedPage = false;
         updateStatus(`正在加载第 ${nextPage} / ${getTotalPages()} 页作品…`);
 
         try {
@@ -288,6 +289,7 @@
 
             if (data.has_more) {
                 updateStatus(`已加载第 ${data.page} / ${data.pages} 页，继续下滑将自动获取更多作品。`);
+                shouldLoadBufferedPage = preload > 0;
             } else {
                 updateStatus('全部作品已加载完成。');
                 stopInfiniteScroll();
@@ -301,6 +303,10 @@
         } finally {
             masonryState.isLoading = false;
         }
+
+        if (shouldLoadBufferedPage) {
+            loadNextPage({ preload: preload - 1 });
+        }
     }
 
     function startInfiniteScroll() {
@@ -312,7 +318,7 @@
             masonryState.observer = new IntersectionObserver((entries) => {
                 entries.forEach((entry) => {
                     if (entry.isIntersecting) {
-                        loadNextPage();
+                        loadNextPage({ preload: 1 });
                     }
                 });
             }, {
