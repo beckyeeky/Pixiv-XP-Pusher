@@ -838,6 +838,7 @@ async def main_task(
                 content_type=filter_cfg.get("content_type", "all"),
                 # 新增：借鉴 X 算法的增强选项
                 author_diversity=filter_cfg.get("author_diversity"),
+                ip_diversity=filter_cfg.get("ip_diversity"),
                 source_boost=filter_cfg.get("source_boost"),
                 embedder=embedder,  # 可选的语义匹配
                 ai_scorer=ai_scorer,  # 可选的 LLM 精排

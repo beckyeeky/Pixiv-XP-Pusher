@@ -1,4 +1,5 @@
 import re
+import asyncio
 import tempfile
 import unittest
 from inspect import signature
@@ -6,12 +7,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
-from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 import database as db_module
 import web.app as web_app_module
 from web.app import app as canonical_app
-from web.app import api_gallery, gallery
+from web.app import SettingsRequest, api_gallery, do_setup, gallery, get_config_section, index, save_settings
 from web.app_v2 import app as compat_app
 
 
@@ -42,7 +43,6 @@ class WebSecurityOptionTests(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.config_path = Path(self.tmpdir.name) / "config.yaml"
         self.config_path.write_text("{}\n", encoding="utf-8")
-        self.client = TestClient(canonical_app)
         web_app_module.sessions.clear()
         web_app_module.login_attempts.clear()
         self.config_patch = patch.object(web_app_module, "CONFIG_PATH", self.config_path)
@@ -57,12 +57,28 @@ class WebSecurityOptionTests(unittest.TestCase):
     def read_config(self):
         return yaml.safe_load(self.config_path.read_text(encoding="utf-8")) or {}
 
+    def make_request(self, cookies: dict[str, str] | None = None) -> Request:
+        cookie_header = b""
+        if cookies:
+            cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items()).encode()
+
+        headers = []
+        if cookie_header:
+            headers.append((b"cookie", cookie_header))
+
+        return Request({
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "headers": headers,
+            "query_string": b"",
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+            "scheme": "http",
+        })
+
     def test_setup_can_disable_password_auth(self):
-        response = self.client.post(
-            "/setup",
-            data={"auth_mode": "none", "password": "", "confirm": ""},
-            follow_redirects=False,
-        )
+        response = asyncio.run(do_setup(auth_mode="none", password="", confirm=""))
         self.assertEqual(response.status_code, 303)
         cfg = self.read_config()
         self.assertFalse(cfg["web"]["require_login_password"])
@@ -73,7 +89,7 @@ class WebSecurityOptionTests(unittest.TestCase):
             yaml.safe_dump({"web": {"require_login_password": False, "password": ""}}, allow_unicode=True),
             encoding="utf-8",
         )
-        response = self.client.get("/", follow_redirects=False)
+        response = asyncio.run(index(self.make_request()))
         self.assertEqual(response.status_code, 307)
         self.assertEqual(response.headers["location"], "/dashboard")
 
@@ -92,39 +108,39 @@ class WebSecurityOptionTests(unittest.TestCase):
         self.config_path.write_text(yaml.safe_dump(initial, allow_unicode=True), encoding="utf-8")
         session_id = "test-session"
         web_app_module.sessions[session_id] = web_app_module.datetime.now()
-        response = self.client.post(
-            "/api/settings",
-            cookies={"session_id": session_id},
-            json={
-                "user_id": 1,
-                "cron": "0 12 * * *",
-                "ip_weight_discount": 1.0,
-                "danbooru_login": "",
-                "danbooru_api_key": "",
-                "strategies": ["xp_search"],
-                "r18_mode": "safe",
-                "proxy_url": "",
-                "search_limit": 50,
-                "date_range_days": 7,
-                "bookmark_threshold_search": 100,
-                "bookmark_threshold_subscription": 0,
-                "bookmark_threshold_related": 50,
-                "daily_limit": 20,
-                "max_per_artist": 3,
-                "exclude_ai": True,
-                "skip_ugoira": True,
-                "batch_mode": "album",
-                "image_quality": 85,
-                "max_image_size": 2000,
-                "max_concurrency": 5,
-                "requests_per_minute": 60,
-                "require_login_password": False,
-                "web_password": "",
-                "web_password_confirm": "",
-            },
+        asyncio.run(web_app_module.require_auth(self.make_request({"session_id": session_id})))
+        response = asyncio.run(
+            save_settings(
+                SettingsRequest(
+                    user_id=1,
+                    cron="0 12 * * *",
+                    ip_weight_discount=1.0,
+                    danbooru_login="",
+                    danbooru_api_key="",
+                    strategies=["xp_search"],
+                    r18_mode="safe",
+                    proxy_url="",
+                    search_limit=50,
+                    date_range_days=7,
+                    bookmark_threshold_search=100,
+                    bookmark_threshold_subscription=0,
+                    bookmark_threshold_related=50,
+                    daily_limit=20,
+                    max_per_artist=3,
+                    exclude_ai=True,
+                    skip_ugoira=True,
+                    batch_mode="album",
+                    image_quality=85,
+                    max_image_size=2000,
+                    max_concurrency=5,
+                    requests_per_minute=60,
+                    require_login_password=False,
+                    web_password="",
+                    web_password_confirm="",
+                )
+            )
         )
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["success"])
+        self.assertTrue(response["success"])
         cfg = self.read_config()
         self.assertFalse(cfg["web"]["require_login_password"])
         self.assertEqual(cfg["web"]["password"], "")
@@ -140,9 +156,8 @@ class WebSecurityOptionTests(unittest.TestCase):
         session_id = "test-session"
         web_app_module.sessions[session_id] = web_app_module.datetime.now()
 
-        response = self.client.get("/api/config", cookies={"session_id": session_id})
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
+        asyncio.run(web_app_module.require_auth(self.make_request({"session_id": session_id})))
+        payload = asyncio.run(get_config_section(section=None))
         self.assertEqual(payload["web"]["password"], "***REDACTED***")
         self.assertEqual(payload["pixiv"]["refresh_token"], "***REDACTED***")
         self.assertEqual(payload["notifier"]["telegram"]["bot_token"], "***REDACTED***")

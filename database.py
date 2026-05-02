@@ -4,6 +4,7 @@ SQLite 数据层
 import json
 import aiosqlite
 import logging
+import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
@@ -16,29 +17,33 @@ SCHEMA_VERSION = 2
 
 async def init_db():
     """初始化数据库表结构"""
+    _init_db_sync()
+
+
+def _init_db_sync():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    
-    async with aiosqlite.connect(DB_PATH) as db:
+
+    with sqlite3.connect(DB_PATH) as db:
         # ============ 简易迁移逻辑 ============
         # 检查 xp_bookmarks 表是否包含 user_id 列 (旧版没有)
         try:
-             await db.execute("SELECT user_id FROM xp_bookmarks LIMIT 0")
+             db.execute("SELECT user_id FROM xp_bookmarks LIMIT 0")
         except Exception:
-             await db.execute("DROP TABLE IF EXISTS xp_bookmarks")
-             await db.commit()
-             await db.execute("DROP TABLE IF EXISTS xp_profile")
-             await db.execute("DROP TABLE IF EXISTS xp_tag_pairs")
-             await db.commit()
+             db.execute("DROP TABLE IF EXISTS xp_bookmarks")
+             db.commit()
+             db.execute("DROP TABLE IF EXISTS xp_profile")
+             db.execute("DROP TABLE IF EXISTS xp_tag_pairs")
+             db.commit()
         
         # 检查 illust_cache 表是否包含 user_id 列 (v2 新增)
         try:
-             await db.execute("SELECT user_id FROM illust_cache LIMIT 0")
+             db.execute("SELECT user_id FROM illust_cache LIMIT 0")
         except Exception:
              # 旧表只有 tags，删除重建
-             await db.execute("DROP TABLE IF EXISTS illust_cache")
-             await db.commit()
+             db.execute("DROP TABLE IF EXISTS illust_cache")
+             db.commit()
         
-        await db.executescript("""
+        db.executescript("""
             -- 推送历史
             CREATE TABLE IF NOT EXISTS push_history (
                 illust_id INTEGER PRIMARY KEY,
@@ -212,31 +217,31 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        await db.commit()
+        db.commit()
         
         # === 迁移：为 illust_cache 添加 source 和 chain 列 ===
         try:
-            await db.execute("ALTER TABLE illust_cache ADD COLUMN source TEXT DEFAULT 'xp_search'")
-            await db.commit()
+            db.execute("ALTER TABLE illust_cache ADD COLUMN source TEXT DEFAULT 'xp_search'")
+            db.commit()
             logger.info("迁移：illust_cache 添加 source 列")
         except:
             pass  # 列已存在
         
         try:
-            await db.execute("ALTER TABLE illust_cache ADD COLUMN chain_depth INTEGER DEFAULT 0")
-            await db.execute("ALTER TABLE illust_cache ADD COLUMN chain_parent_id INTEGER")
-            await db.execute("ALTER TABLE illust_cache ADD COLUMN chain_msg_id INTEGER")
-            await db.commit()
+            db.execute("ALTER TABLE illust_cache ADD COLUMN chain_depth INTEGER DEFAULT 0")
+            db.execute("ALTER TABLE illust_cache ADD COLUMN chain_parent_id INTEGER")
+            db.execute("ALTER TABLE illust_cache ADD COLUMN chain_msg_id INTEGER")
+            db.commit()
             logger.info("迁移：illust_cache 添加 chain 列")
         except:
             pass  # 列已存在
         
         # === 初始化 schema 版本元数据（兼容旧实例，不做破坏性升级） ===
-        await db.execute(
+        db.execute(
             "INSERT OR IGNORE INTO system_state (key, value, updated_at) VALUES (?, ?, ?)",
             ("schema_version", str(SCHEMA_VERSION), datetime.now())
         )
-        await db.execute(
+        db.execute(
             "UPDATE system_state SET value = ?, updated_at = ? WHERE key = ?",
             (str(SCHEMA_VERSION), datetime.now(), "schema_version")
         )
@@ -244,11 +249,11 @@ async def init_db():
         # === 初始化 MAB 策略统计 (确保所有策略都有记录) ===
         default_strategies = ['xp_search', 'subscription', 'ranking', 'related', 'related_chain']
         for strategy in default_strategies:
-            await db.execute(
+            db.execute(
                 "INSERT OR IGNORE INTO strategy_stats (strategy, success_count, total_count) VALUES (?, 0, 0)",
                 (strategy,)
             )
-        await db.commit()
+        db.commit()
 
 
 async def cleanup_old_records(days: int = 180):

@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 def calculate_match_score(
     illust: Illust, 
     xp_profile: dict[str, float],
-    negative_profile: dict[str, float] = None  # 负向画像
+    negative_profile: dict[str, float] = None,  # 负向画像
+    tag_classifications: Optional[dict] = None,
 ) -> float:
     """
     计算作品与 XP 画像的匹配度（改进版）
@@ -47,7 +48,6 @@ def calculate_match_score(
     
     for tag in illust.tags:
         # 使用统一的归一化逻辑
-        from utils import normalize_tag
         normalized_tag = normalize_tag(tag)
         
         # 正向匹配
@@ -59,7 +59,13 @@ def calculate_match_score(
             weight = xp_profile[tag.lower()]
         
         if weight is not None:
-            total_score += weight
+            tag_multiplier = 1.0
+            classification = (tag_classifications or {}).get(normalized_tag)
+            if classification and getattr(classification, "classification", None) == "feature":
+                tag_multiplier = 1.3
+
+            effective_weight = weight * tag_multiplier
+            total_score += effective_weight
             matched_count += 1
             if weight >= top_threshold:
                 high_weight_matches += 1
@@ -120,6 +126,7 @@ class ContentFilter:
         content_type: str = "all",  # 内容类型过滤: "all", "illust", "manga"
         tag_classifier = None,
         display_tags_max_ip_count: int = 2,
+        ip_diversity: Optional[dict] = None,
     ):
         self.blacklist_tags = set(t.lower() for t in (blacklist_tags or []))
         self.daily_limit = daily_limit
@@ -140,8 +147,13 @@ class ContentFilter:
         # 公式: multiplier(position) = (1.0 - floor) × decay^position + floor
         diversity_cfg = author_diversity or {}
         self.diversity_enabled = diversity_cfg.get("enabled", False)
-        self.diversity_decay = diversity_cfg.get("decay_factor", 0.7)
+        self.diversity_decay = diversity_cfg.get("decay_factor", 0.5)
         self.diversity_floor = diversity_cfg.get("floor", 0.1)
+
+        ip_diversity_cfg = ip_diversity or {}
+        self.ip_diversity_enabled = ip_diversity_cfg.get("enabled", False)
+        self.ip_diversity_decay = ip_diversity_cfg.get("decay_factor", 0.6)
+        self.ip_diversity_floor = ip_diversity_cfg.get("floor", 0.1)
         
         # 来源加成 (借鉴 X 算法 OON Scorer)
         self.source_boost = source_boost or {
@@ -299,6 +311,8 @@ class ContentFilter:
             if illust.id not in seen_ids:
                 seen_ids.add(illust.id)
                 unique_result.append(illust)
+
+        tag_classifications = await self._classify_tags_for_illusts(unique_result)
         
         # 5. 计算匹配度并过滤 + 画师权重加成 + 负向画像惩罚 + 语义匹配(可选)
         negative_profile = await db.get_negative_profile()  # 加载负向画像
@@ -341,7 +355,12 @@ class ContentFilter:
         
         for illust in unique_result:
             if xp_profile:
-                score = calculate_match_score(illust, xp_profile, negative_profile)
+                score = calculate_match_score(
+                    illust,
+                    xp_profile,
+                    negative_profile,
+                    tag_classifications=tag_classifications,
+                )
                 
                 # 画师权重加成：关注画师的作品额外加成
                 if illust.user_id in self.subscribed_artists:
@@ -440,7 +459,7 @@ class ContentFilter:
         
         # 优化标签展示顺序：feature-first，IP 数量受限，AI 判定的 IP 靠后
         if xp_profile:
-            await self._apply_display_tags(sorted_illusts, xp_profile)
+            await self._apply_display_tags(sorted_illusts, xp_profile, tag_classifications=tag_classifications)
         
         # 6.1 AI 精排 (可选) - 使用 LLM 对候选作品进行二次评分
         if self.ai_scorer and self.ai_scorer.enabled and xp_profile:
@@ -469,7 +488,23 @@ class ContentFilter:
             except Exception as e:
                 logger.warning(f"AI 精排失败: {e}")
         
-        # 7. 多样性控制：画师多样性衰减 + 硬性限制
+        # 7. 多样性控制：IP / 画师多样性衰减 + 硬性限制
+        if self.ip_diversity_enabled:
+            ip_position = {}
+            for illust, score in scored_result:
+                primary_ip = self._get_primary_ip_tag(illust, tag_classifications, xp_profile)
+                if not primary_ip:
+                    continue
+
+                pos = ip_position.get(primary_ip, 0)
+                multiplier = (1.0 - self.ip_diversity_floor) * (self.ip_diversity_decay ** pos) + self.ip_diversity_floor
+                score_map[illust.id] = score * multiplier
+                ip_position[primary_ip] = pos + 1
+
+            scored_result = [(ill, score_map[ill.id]) for ill, _ in scored_result]
+            scored_result.sort(key=lambda x: x[1], reverse=True)
+            sorted_illusts = [item[0] for item in scored_result]
+
         # 借鉴 X 算法 AuthorDiversityScorer: 同一画师后续作品分数递减
         if self.diversity_enabled:
             # 应用画师多样性衰减
@@ -548,9 +583,33 @@ class ContentFilter:
         logger.info(f"过滤后剩余 {len(final_result)} 个作品 (涉及 {len(artist_count)} 个画师)")
         return final_result
 
-    async def _apply_display_tags(self, illusts: list[Illust], xp_profile: dict[str, float]) -> None:
-        """构建用于消息展示的标签顺序。"""
+    async def _classify_tags_for_illusts(self, illusts: list[Illust]) -> dict:
+        if not self.tag_classifier or not illusts:
+            return {}
+
         normalized_tags: list[str] = []
+        for illust in illusts:
+            for tag in illust.tags or []:
+                normalized = normalize_tag(tag)
+                if normalized:
+                    normalized_tags.append(normalized)
+
+        if not normalized_tags:
+            return {}
+
+        try:
+            return await self.tag_classifier.classify_tags(normalized_tags)
+        except Exception as e:
+            logger.warning(f"标签分类失败，回退为 XP 权重排序: {e}")
+            return {}
+
+    async def _apply_display_tags(
+        self,
+        illusts: list[Illust],
+        xp_profile: dict[str, float],
+        tag_classifications: Optional[dict] = None,
+    ) -> None:
+        """构建用于消息展示的标签顺序。"""
         per_illust_tags: dict[int, list[tuple[str, str, float]]] = {}
 
         for illust in illusts:
@@ -563,16 +622,12 @@ class ContentFilter:
 
                 score = xp_profile.get(normalized_tag, xp_profile.get(tag_lower, 0.0))
                 tag_rows.append((tag, normalized_tag, score))
-                normalized_tags.append(normalized_tag)
 
             per_illust_tags[illust.id] = tag_rows
 
-        classifications = {}
-        if self.tag_classifier and normalized_tags:
-            try:
-                classifications = await self.tag_classifier.classify_tags(normalized_tags)
-            except Exception as e:
-                logger.warning(f"标签分类失败，回退为 XP 权重排序: {e}")
+        classifications = tag_classifications or {}
+        if not classifications and self.tag_classifier:
+            classifications = await self._classify_tags_for_illusts(illusts)
 
         for illust in illusts:
             feature_tags: list[tuple[str, float]] = []
@@ -592,6 +647,31 @@ class ContentFilter:
                 *(tag for tag, _ in feature_tags),
                 *(tag for tag, _, _ in ip_tags[:self.display_tags_max_ip_count]),
             ]
+
+    @staticmethod
+    def _get_primary_ip_tag(
+        illust: Illust,
+        tag_classifications: Optional[dict] = None,
+        xp_profile: Optional[dict[str, float]] = None,
+    ) -> Optional[str]:
+        primary_ip = None
+        primary_ip_score = float("-inf")
+
+        for tag in illust.tags or []:
+            normalized_tag = normalize_tag(tag)
+            classification = (tag_classifications or {}).get(normalized_tag)
+            if not classification or getattr(classification, "classification", None) != "ip":
+                continue
+
+            tag_score = 0.0
+            if xp_profile:
+                tag_score = xp_profile.get(normalized_tag, xp_profile.get(tag.lower(), 0.0))
+
+            if primary_ip is None or tag_score > primary_ip_score:
+                primary_ip = normalized_tag
+                primary_ip_score = tag_score
+
+        return primary_ip
 
     @staticmethod
     def _normalize_max_ip_count(value) -> int:
