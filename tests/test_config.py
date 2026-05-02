@@ -42,6 +42,24 @@ class ConfigNormalizationTests(unittest.TestCase):
             path.write_text("- just\n- a\n- list\n", encoding="utf-8")
             self.assertEqual(config.load_config(path), {})
 
+    def test_global_key_inheritance(self):
+        """profiler.ai.api_key → scorer + tag_classifier 自动继承"""
+        cfg = config.normalize_config({
+            "profiler": {"ai": {"api_key": "sk-shared"}},
+            "ai": {"scorer": {"enabled": True}},
+            "tag_classifier": {"enabled": True},
+        })
+        self.assertEqual(cfg["ai"]["scorer"]["api_key"], "sk-shared")
+        self.assertEqual(cfg["tag_classifier"]["api_key"], "sk-shared")
+
+    def test_global_key_no_override_existing(self):
+        """已有自己的 key 时不被覆盖"""
+        cfg = config.normalize_config({
+            "profiler": {"ai": {"api_key": "sk-shared"}},
+            "tag_classifier": {"api_key": "sk-own", "enabled": True},
+        })
+        self.assertEqual(cfg["tag_classifier"]["api_key"], "sk-own")
+
 
 if __name__ == "__main__":
     unittest.main()

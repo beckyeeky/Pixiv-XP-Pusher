@@ -92,6 +92,22 @@ def normalize_config(config: dict) -> dict:
         field_name="tag_classifier.concurrency",
     ))
 
+    # === 全局 API Key 继承：profiler.ai → scorer / tag_classifier ===
+    shared_key = (
+        normalized.get("profiler", {}).get("ai", {}).get("api_key", "").strip()
+    )
+    if shared_key:
+        # scorer
+        scorer_cfg = normalized.get("ai", {}).get("scorer")
+        if isinstance(scorer_cfg, dict) and not scorer_cfg.get("api_key", "").strip():
+            scorer_cfg["api_key"] = shared_key
+            logger.debug("ai.scorer.api_key 已从 profiler.ai 继承")
+
+        # tag_classifier
+        if not tag_classifier_cfg.get("api_key", "").strip():
+            tag_classifier_cfg["api_key"] = shared_key
+            logger.debug("tag_classifier.api_key 已从 profiler.ai 继承")
+
     return normalized
 
 
