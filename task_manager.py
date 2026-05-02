@@ -12,10 +12,19 @@ from pixiv_client import PixivClient
 from profiler import XPProfiler
 from fetcher import ContentFetcher
 from filter import ContentFilter
+from tag_classifier import TagClassifier
 from notifier.telegram import TelegramNotifier
 from notifier.onebot import OneBotNotifier
 from push_stats import PushStats, create_stats, set_current_stats
 logger = logging.getLogger(__name__)
+
+
+def _get_display_tags_max_ip_count(filter_cfg: dict) -> int:
+    display_tags_cfg = filter_cfg.get("display_tags", {}) if isinstance(filter_cfg, dict) else {}
+    if not isinstance(display_tags_cfg, dict):
+        return 2
+    return display_tags_cfg.get("max_ip_count", 2)
+
 
 async def retry_async(coro_func, *args, max_retries: int = 3, delay: float = 5.0, backoff: float = 2.0, **kwargs):
     """
@@ -109,13 +118,25 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                 from filter import ContentFilter
                 # 临时构造 filter 配置
                 filter_cfg = config.get("filter", {})
+                profiler_cfg = config.get("profiler", {})
+                tag_classifier = None
+                try:
+                    tag_classifier = TagClassifier(
+                        config.get("tag_classifier", {}),
+                        ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),
+                    )
+                except Exception as e:
+                    logger.warning(f"TagClassifier 初始化失败，连锁推送将仅使用 XP 排序: {e}")
+
                 c_filter = ContentFilter(
                     blacklist_tags=list(profiler.stop_words), # 使用实时黑名单
                     exclude_ai=filter_cfg.get("exclude_ai", True),
                     r18_mode=filter_cfg.get("r18_mode", False),
                     min_create_days=filter_cfg.get("min_create_days", 0),
                     skip_ugoira=filter_cfg.get("skip_ugoira", False),
-                    content_type=filter_cfg.get("content_type", "all")
+                    content_type=filter_cfg.get("content_type", "all"),
+                    tag_classifier=tag_classifier,
+                    display_tags_max_ip_count=_get_display_tags_max_ip_count(filter_cfg),
                 )
             
                 # 使用简单的过滤逻辑 (不去重 SENT_HISTORY，因为这是用户主动要求的)
@@ -193,6 +214,8 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                 top_results = [x[0] for x in filtered[:push_limit]]
                 
                 if top_results:
+                    await c_filter._apply_display_tags(top_results, xp_profile)
+
                     # 构建消息前缀（包含源作品信息）
                     source_title = getattr(seed_illust, 'title', f'#{seed_illust.id}')
                     message_prefix = f"🔗 连锁推荐 (源自: {source_title})"
@@ -790,7 +813,16 @@ async def main_task(
                         logger.info(f"已启用 AI 精排评分 (model={ai_scorer.model})")
                 except Exception as e:
                     logger.warning(f"AIScorer 初始化失败: {e}")
-        
+
+            tag_classifier = None
+            try:
+                tag_classifier = TagClassifier(
+                    config.get("tag_classifier", {}),
+                    ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),
+                )
+            except Exception as e:
+                logger.warning(f"TagClassifier 初始化失败，将仅使用 XP 排序: {e}")
+
             content_filter = ContentFilter(
                 blacklist_tags=filter_cfg.get("blacklist_tags"),
                 daily_limit=filter_cfg.get("daily_limit", 20),
@@ -811,7 +843,9 @@ async def main_task(
                 ai_scorer=ai_scorer,  # 可选的 LLM 精排
                 # 多样性增强
                 shuffle_factor=filter_cfg.get("shuffle_factor", 0.0),
-                exploration_ratio=filter_cfg.get("exploration_ratio", 0.0)
+                exploration_ratio=filter_cfg.get("exploration_ratio", 0.0),
+                tag_classifier=tag_classifier,
+                display_tags_max_ip_count=_get_display_tags_max_ip_count(filter_cfg),
             )
         
             pixiv_uid = config.get("pixiv", {}).get("user_id", 0)

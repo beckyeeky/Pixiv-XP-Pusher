@@ -31,6 +31,7 @@ class DatabaseInitTests(unittest.TestCase):
             self.assertIn("push_history", tables)
             self.assertIn("xp_profile", tables)
             self.assertIn("strategy_stats", tables)
+            self.assertIn("tag_classification_cache", tables)
 
 
 if __name__ == "__main__":

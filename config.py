@@ -47,6 +47,51 @@ def normalize_config(config: dict) -> dict:
             field_name="filter.daily_limit",
         )
 
+    display_tags_cfg = filter_cfg.get("display_tags")
+    if display_tags_cfg is None:
+        display_tags_cfg = {}
+        filter_cfg["display_tags"] = display_tags_cfg
+    elif not isinstance(display_tags_cfg, dict):
+        logger.warning("配置项 filter.display_tags 必须是对象，已回退为默认值")
+        display_tags_cfg = {}
+        filter_cfg["display_tags"] = display_tags_cfg
+
+    max_ip_count = _coerce_int(
+        display_tags_cfg.get("max_ip_count", 2),
+        default=2,
+        field_name="filter.display_tags.max_ip_count",
+    )
+    display_tags_cfg["max_ip_count"] = max(0, max_ip_count)
+
+    tag_classifier_cfg = normalized.get("tag_classifier")
+    if tag_classifier_cfg is None:
+        tag_classifier_cfg = {}
+        normalized["tag_classifier"] = tag_classifier_cfg
+    elif not isinstance(tag_classifier_cfg, dict):
+        logger.warning("配置项 tag_classifier 必须是对象，已回退为默认值")
+        tag_classifier_cfg = {}
+        normalized["tag_classifier"] = tag_classifier_cfg
+
+    tag_classifier_cfg.setdefault("enabled", False)
+    tag_classifier_cfg.setdefault("api_key", "")
+    tag_classifier_cfg.setdefault("base_url", "https://api.deepseek.com/v1")
+    tag_classifier_cfg.setdefault("model", "deepseek-chat")
+    tag_classifier_cfg["ttl_days"] = max(1, _coerce_int(
+        tag_classifier_cfg.get("ttl_days", 30),
+        default=30,
+        field_name="tag_classifier.ttl_days",
+    ))
+    tag_classifier_cfg["batch_size"] = max(1, _coerce_int(
+        tag_classifier_cfg.get("batch_size", 50),
+        default=50,
+        field_name="tag_classifier.batch_size",
+    ))
+    tag_classifier_cfg["concurrency"] = max(1, _coerce_int(
+        tag_classifier_cfg.get("concurrency", 5),
+        default=5,
+        field_name="tag_classifier.concurrency",
+    ))
+
     return normalized
 
 
