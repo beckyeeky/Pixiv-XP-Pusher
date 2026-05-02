@@ -26,7 +26,7 @@ class ConfigNormalizationTests(unittest.TestCase):
         cfg = config.normalize_config({"tag_classifier": {"ttl_days": "14", "batch_size": "bad"}})
         self.assertFalse(cfg["tag_classifier"]["enabled"])
         self.assertEqual(cfg["tag_classifier"]["base_url"], "https://api.deepseek.com/v1")
-        self.assertEqual(cfg["tag_classifier"]["model"], "deepseek-chat")
+        self.assertEqual(cfg["tag_classifier"]["model"], "deepseek-v4-flash")
         self.assertEqual(cfg["tag_classifier"]["ttl_days"], 14)
         self.assertEqual(cfg["tag_classifier"]["batch_size"], 50)
         self.assertEqual(cfg["tag_classifier"]["concurrency"], 5)
@@ -59,6 +59,18 @@ class ConfigNormalizationTests(unittest.TestCase):
             "tag_classifier": {"api_key": "sk-own", "enabled": True},
         })
         self.assertEqual(cfg["tag_classifier"]["api_key"], "sk-own")
+
+    def test_normalize_ip_diversity_defaults_and_invalid_values(self):
+        cfg = config.normalize_config({"filter": {"ip_diversity": {"enabled": 1, "decay_factor": "bad", "floor": 2}}})
+        self.assertTrue(cfg["filter"]["ip_diversity"]["enabled"])
+        self.assertEqual(cfg["filter"]["ip_diversity"]["decay_factor"], 0.6)
+        self.assertEqual(cfg["filter"]["ip_diversity"]["floor"], 1.0)
+
+    def test_normalize_author_diversity_uses_tuned_default(self):
+        cfg = config.normalize_config({"filter": {"author_diversity": "bad"}})
+        self.assertFalse(cfg["filter"]["author_diversity"]["enabled"])
+        self.assertEqual(cfg["filter"]["author_diversity"]["decay_factor"], 0.5)
+        self.assertEqual(cfg["filter"]["author_diversity"]["floor"], 0.1)
 
 
 if __name__ == "__main__":

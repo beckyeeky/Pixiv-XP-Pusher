@@ -63,6 +63,41 @@ def normalize_config(config: dict) -> dict:
     )
     display_tags_cfg["max_ip_count"] = max(0, max_ip_count)
 
+    def _normalize_diversity_block(name: str, default_decay: float) -> dict:
+        raw_cfg = filter_cfg.get(name)
+        if raw_cfg is None:
+            raw_cfg = {}
+            filter_cfg[name] = raw_cfg
+        elif not isinstance(raw_cfg, dict):
+            logger.warning("配置项 filter.%s 必须是对象，已回退为默认值", name)
+            raw_cfg = {}
+            filter_cfg[name] = raw_cfg
+
+        raw_cfg["enabled"] = bool(raw_cfg.get("enabled", False))
+        decay_value = raw_cfg.get("decay_factor", default_decay)
+        floor_value = raw_cfg.get("floor", 0.1)
+
+        try:
+            if isinstance(decay_value, bool):
+                raise ValueError
+            raw_cfg["decay_factor"] = min(1.0, max(0.0, float(decay_value)))
+        except (TypeError, ValueError):
+            logger.warning("配置项 filter.%s.decay_factor 非法，已回退为默认值 %s", name, default_decay)
+            raw_cfg["decay_factor"] = default_decay
+
+        try:
+            if isinstance(floor_value, bool):
+                raise ValueError
+            raw_cfg["floor"] = min(1.0, max(0.0, float(floor_value)))
+        except (TypeError, ValueError):
+            logger.warning("配置项 filter.%s.floor 非法，已回退为默认值 0.1", name)
+            raw_cfg["floor"] = 0.1
+
+        return raw_cfg
+
+    _normalize_diversity_block("author_diversity", 0.5)
+    _normalize_diversity_block("ip_diversity", 0.6)
+
     tag_classifier_cfg = normalized.get("tag_classifier")
     if tag_classifier_cfg is None:
         tag_classifier_cfg = {}
