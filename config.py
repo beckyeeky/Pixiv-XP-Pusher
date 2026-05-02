@@ -74,8 +74,8 @@ def normalize_config(config: dict) -> dict:
 
     tag_classifier_cfg.setdefault("enabled", False)
     tag_classifier_cfg.setdefault("api_key", "")
-    tag_classifier_cfg.setdefault("base_url", "https://api.deepseek.com/v1")
-    tag_classifier_cfg.setdefault("model", "deepseek-chat")
+    tag_classifier_cfg.setdefault("base_url", "https://api.deepseek.com")
+    tag_classifier_cfg.setdefault("model", "deepseek-v4-flash")
     tag_classifier_cfg["ttl_days"] = max(1, _coerce_int(
         tag_classifier_cfg.get("ttl_days", 30),
         default=30,
