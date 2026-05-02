@@ -1,11 +1,22 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 import json
+import sys
+import types
+
+sys.modules.setdefault(
+    "pixivpy_async",
+    types.SimpleNamespace(AppPixivAPI=object),
+)
 
 import task_manager
 
 
 class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_display_tags_max_ip_count_helper_handles_malformed_direct_config(self):
+        self.assertEqual(task_manager._get_display_tags_max_ip_count({"display_tags": "bad"}), 2)
+        self.assertEqual(task_manager._get_display_tags_max_ip_count({"display_tags": {"max_ip_count": "4"}}), "4")
+
     async def test_main_task_does_not_raise_unboundlocal_when_profile_build_fails_early(self):
         config = {
             "pixiv": {"user_id": 123},

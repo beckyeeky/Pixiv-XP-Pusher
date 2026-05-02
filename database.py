@@ -11,7 +11,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 async def init_db():
@@ -125,6 +125,14 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS ai_tag_cache (
                 original_tag TEXT PRIMARY KEY,
                 cleaned_tag TEXT,  -- NULL 表示被过滤(meaningless)
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Tag 分类缓存 (feature/ip)
+            CREATE TABLE IF NOT EXISTS tag_classification_cache (
+                normalized_tag TEXT PRIMARY KEY,
+                classification TEXT NOT NULL,
+                source TEXT NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             
@@ -302,6 +310,55 @@ async def update_ai_cache(cache_data: dict[str, str | None]):
         await db.executemany(
             "INSERT OR REPLACE INTO ai_tag_cache (original_tag, cleaned_tag) VALUES (?, ?)",
             [(k, v) for k, v in cache_data.items()]
+        )
+        await db.commit()
+
+
+async def get_tag_classifications(
+    normalized_tags: list[str],
+    ttl_days: int = 30,
+) -> dict[str, dict[str, str]]:
+    """批量获取未过期的 Tag 分类缓存。"""
+    if not normalized_tags:
+        return {}
+
+    unique_tags = list(dict.fromkeys(normalized_tags))
+    cutoff = (datetime.now() - timedelta(days=ttl_days)).strftime("%Y-%m-%d %H:%M:%S")
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        placeholders = ",".join("?" * len(unique_tags))
+        cursor = await db.execute(
+            f"""
+            SELECT normalized_tag, classification, source
+            FROM tag_classification_cache
+            WHERE normalized_tag IN ({placeholders}) AND updated_at >= ?
+            """,
+            [*unique_tags, cutoff],
+        )
+        rows = await cursor.fetchall()
+        return {
+            row[0]: {"classification": row[1], "source": row[2]}
+            for row in rows
+        }
+
+
+async def save_tag_classifications(items: list[tuple[str, str, str]]):
+    """批量写入 Tag 分类缓存。"""
+    if not items:
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            """
+            INSERT INTO tag_classification_cache (
+                normalized_tag, classification, source, updated_at
+            ) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(normalized_tag) DO UPDATE SET
+                classification = excluded.classification,
+                source = excluded.source,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            items,
         )
         await db.commit()
 

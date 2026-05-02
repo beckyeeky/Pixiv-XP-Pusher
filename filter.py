@@ -7,6 +7,7 @@ from typing import Optional
 
 from pixiv_client import Illust
 import database as db
+from utils import normalize_tag
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,9 @@ class ContentFilter:
         shuffle_factor: float = 0.0,  # 随机打散因子 (0-0.5)
         exploration_ratio: float = 0.0,  # 探索比例 (0-0.5)
         skip_ugoira: bool = False,  # 跳过动图
-        content_type: str = "all"  # 内容类型过滤: "all", "illust", "manga"
+        content_type: str = "all",  # 内容类型过滤: "all", "illust", "manga"
+        tag_classifier = None,
+        display_tags_max_ip_count: int = 2,
     ):
         self.blacklist_tags = set(t.lower() for t in (blacklist_tags or []))
         self.daily_limit = daily_limit
@@ -130,6 +133,8 @@ class ContentFilter:
         self.r18_mode = r18_mode
         self.skip_ugoira = skip_ugoira
         self.content_type = content_type.lower()  # 统一小写
+        self.tag_classifier = tag_classifier
+        self.display_tags_max_ip_count = self._normalize_max_ip_count(display_tags_max_ip_count)
         
         # 画师多样性衰减 (借鉴 X 算法 AuthorDiversityScorer)
         # 公式: multiplier(position) = (1.0 - floor) × decay^position + floor
@@ -433,31 +438,9 @@ class ContentFilter:
         score_map = {item[0].id: item[1] for item in scored_result}
         sorted_illusts = [item[0] for item in scored_result]
         
-        # 优化标签展示顺序：按 XP 画像得分降序排列，并过滤无意义标签 (防止破坏原始 tags 列表)
+        # 优化标签展示顺序：feature-first，IP 数量受限，AI 判定的 IP 靠后
         if xp_profile:
-            from utils import normalize_tag
-            for illust in sorted_illusts:
-                tag_scores = {}
-                valid_tags = []
-                
-                for t in illust.tags:
-                    norm_t = normalize_tag(t)
-                    t_lower = t.lower()
-                    
-                    # 过滤掉黑名单/停用词
-                    if norm_t in self.blacklist_tags or t_lower in self.blacklist_tags:
-                        continue
-                        
-                    # 计算权重
-                    score = xp_profile.get(norm_t, xp_profile.get(t_lower, 0.0))
-                    tag_scores[t] = score
-                    valid_tags.append(t)
-                
-                # 按照权重降序排列
-                valid_tags.sort(key=lambda x: tag_scores[x], reverse=True)
-                
-                # 挂载为动态属性，不污染原始标签集合
-                illust.display_tags = valid_tags
+            await self._apply_display_tags(sorted_illusts, xp_profile)
         
         # 6.1 AI 精排 (可选) - 使用 LLM 对候选作品进行二次评分
         if self.ai_scorer and self.ai_scorer.enabled and xp_profile:
@@ -564,6 +547,60 @@ class ContentFilter:
         
         logger.info(f"过滤后剩余 {len(final_result)} 个作品 (涉及 {len(artist_count)} 个画师)")
         return final_result
+
+    async def _apply_display_tags(self, illusts: list[Illust], xp_profile: dict[str, float]) -> None:
+        """构建用于消息展示的标签顺序。"""
+        normalized_tags: list[str] = []
+        per_illust_tags: dict[int, list[tuple[str, str, float]]] = {}
+
+        for illust in illusts:
+            tag_rows: list[tuple[str, str, float]] = []
+            for tag in illust.tags:
+                normalized_tag = normalize_tag(tag)
+                tag_lower = tag.lower()
+                if normalized_tag in self.blacklist_tags or tag_lower in self.blacklist_tags:
+                    continue
+
+                score = xp_profile.get(normalized_tag, xp_profile.get(tag_lower, 0.0))
+                tag_rows.append((tag, normalized_tag, score))
+                normalized_tags.append(normalized_tag)
+
+            per_illust_tags[illust.id] = tag_rows
+
+        classifications = {}
+        if self.tag_classifier and normalized_tags:
+            try:
+                classifications = await self.tag_classifier.classify_tags(normalized_tags)
+            except Exception as e:
+                logger.warning(f"标签分类失败，回退为 XP 权重排序: {e}")
+
+        for illust in illusts:
+            feature_tags: list[tuple[str, float]] = []
+            ip_tags: list[tuple[str, float, int]] = []
+            for tag, normalized_tag, score in per_illust_tags.get(illust.id, []):
+                classification = classifications.get(normalized_tag)
+                if classification and classification.classification == "ip":
+                    source_rank = 1 if classification.source == "ai" else 0
+                    ip_tags.append((tag, score, source_rank))
+                else:
+                    feature_tags.append((tag, score))
+
+            feature_tags.sort(key=lambda item: item[1], reverse=True)
+            ip_tags.sort(key=lambda item: (item[2], -item[1]))
+
+            illust.display_tags = [
+                *(tag for tag, _ in feature_tags),
+                *(tag for tag, _, _ in ip_tags[:self.display_tags_max_ip_count]),
+            ]
+
+    @staticmethod
+    def _normalize_max_ip_count(value) -> int:
+        try:
+            if isinstance(value, bool):
+                raise ValueError
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 2
     
     def check_illust(self, illust: Illust) -> bool:
         """检查单个作品是否满足基本过滤条件 (Blacklist, AI, R18, Time)"""
