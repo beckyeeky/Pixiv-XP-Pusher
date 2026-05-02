@@ -87,7 +87,7 @@ ai:
 tag_classifier:
   enabled: false
   api_key: "" # DeepSeek / OpenAI 兼容 API Key
-  base_url: "https://api.deepseek.com"
+  base_url: "https://api.deepseek.com/v1"
   model: "deepseek-v4-flash"
   ttl_days: 30
   batch_size: 50

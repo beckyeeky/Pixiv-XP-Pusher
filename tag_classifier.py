@@ -39,7 +39,7 @@ class TagClassifier:
         self.batch_size = self._positive_int(cfg.get("batch_size", 50), 50)
         self.concurrency = self._positive_int(cfg.get("concurrency", 5), 5)
         self.model = cfg.get("model") or "deepseek-v4-flash"
-        self.base_url = cfg.get("base_url") or "https://api.deepseek.com"
+        self.base_url = cfg.get("base_url") or "https://api.deepseek.com/v1"
         self.api_key = cfg.get("api_key", "")
         self.manual_ip_tags = self._load_manual_ip_tags(ip_tags)
 
