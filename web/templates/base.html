@@ -61,16 +61,26 @@
             color: var(--accent);
         }
 
+        nav .nav-links {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+        }
+
         nav .nav-links a {
             color: var(--text-secondary);
             text-decoration: none;
-            margin-left: 2rem;
-            transition: color 0.2s;
+            transition: color 0.2s, background-color 0.2s;
+            padding: 0.35rem 0.65rem;
+            border-radius: 6px;
         }
 
         nav .nav-links a:hover,
         nav .nav-links a.active {
             color: var(--text-primary);
+            background: rgba(225, 29, 72, 0.14);
         }
 
         /* 主内容区 */
@@ -430,8 +440,13 @@
                 gap: 1rem;
             }
 
+            nav .nav-links {
+                justify-content: center;
+                width: 100%;
+            }
+
             nav .nav-links a {
-                margin: 0 1rem;
+                margin: 0;
             }
 
             .container {
