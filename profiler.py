@@ -959,7 +959,7 @@ class XPProfiler:
         sorted_tags = sorted(profile.items(), key=lambda x: x[1], reverse=True)
         return sorted_tags[:n]
     
-    async def apply_feedback(self, illust: Illust, action: str, config: dict):
+    async def apply_feedback(self, illust: Illust, action: str, config: dict) -> dict:
         """
         应用用户反馈调整权重
         
@@ -976,7 +976,8 @@ class XPProfiler:
         profile = await db.get_xp_profile()
         max_weight = max(profile.values()) if profile else 1
         
-        suggested_block_tag = None  # 记录建议屏蔽的 Tag
+        auto_blocked_tags: list[str] = []
+        disliked_tags: list[str] = []
         
         for tag in illust.tags:
             normalized = self._normalize_tag(tag)
@@ -993,6 +994,7 @@ class XPProfiler:
                 weight_ratio = current_weight / max_weight if max_weight > 0 else 0
                 # 高权重 Tag 最多减半惩罚
                 adjusted_penalty = dislike_penalty * (1 - weight_ratio * 0.5)
+                disliked_tags.append(normalized)
                 
                 await db.adjust_tag_weight(normalized, -adjusted_penalty)
                 
@@ -1001,14 +1003,17 @@ class XPProfiler:
                 
                 count = await db.increment_tag_dislike(normalized)
                 
-                # 用户要求：仅确认一次，没确认就算了
                 if count == dislike_threshold:
-                    logger.info(f"Tag '{normalized}' 累计否认 {count} 次，建议加入黑名单")
-                    # 只记录第一个达到阈值的 Tag
-                    if suggested_block_tag is None:
-                        suggested_block_tag = normalized
+                    await db.block_tag(normalized)
+                    auto_blocked_tags.append(normalized)
+                    logger.info(f"Tag '{normalized}' 累计否认 {count} 次，已自动加入黑名单")
                 elif count > dislike_threshold:
-                    logger.debug(f"Tag '{normalized}' 累计否认 {count} 次 (已提示过)")
+                    if await db.is_tag_blocked(normalized):
+                        logger.debug(f"Tag '{normalized}' 累计否认 {count} 次 (已自动屏蔽)")
+                    else:
+                        await db.block_tag(normalized)
+                        auto_blocked_tags.append(normalized)
+                        logger.info(f"Tag '{normalized}' 累计否认 {count} 次，补偿写入屏蔽列表")
                 else:
                     logger.debug(f"Tag '{normalized}' 权重 -{adjusted_penalty:.2f} (分级惩罚)")
         
@@ -1024,4 +1029,9 @@ class XPProfiler:
         # 记录反馈 - 只执行一次
         await db.record_feedback(illust.id, action)
         
-        return suggested_block_tag
+        return {
+            "action": action,
+            "illust_id": illust.id,
+            "disliked_tags": list(dict.fromkeys(disliked_tags)),
+            "auto_blocked_tags": list(dict.fromkeys(auto_blocked_tags)),
+        }

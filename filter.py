@@ -128,7 +128,10 @@ class ContentFilter:
         display_tags_max_ip_count: int = 2,
         ip_diversity: Optional[dict] = None,
     ):
-        self.blacklist_tags = set(t.lower() for t in (blacklist_tags or []))
+        self._config_blacklist_tags = {normalize_tag(t) for t in (blacklist_tags or []) if t}
+        self._db_blacklist_tags: set[str] = set()
+        self.blacklist_tags = set(self._config_blacklist_tags)
+        self.blocked_artist_ids: set[int] = set()
         self.daily_limit = daily_limit
         self.exclude_ai = exclude_ai
         self.min_match_score = min_match_score
@@ -175,6 +178,24 @@ class ContentFilter:
         
         # 硬性过滤Tag
         self.blacklist_tags.update({"r-18g", "guro", "gore"})
+
+    async def load_db_blocklist(self) -> None:
+        """加载数据库中的屏蔽标签和屏蔽画师。"""
+        blocked_tags = await db.get_blocked_tags()
+        blocked_artists = await db.get_blocked_artists()
+
+        self._db_blacklist_tags = {
+            normalize_tag(tag)
+            for tag in blocked_tags
+            if tag
+        }
+        self.blocked_artist_ids = {
+            artist_id
+            for artist_id, _ in blocked_artists
+        }
+        self.blacklist_tags = set(self._config_blacklist_tags)
+        self.blacklist_tags.update(self._db_blacklist_tags)
+        self.blacklist_tags.update({"r-18g", "guro", "gore"})
     
     async def filter(
         self,
@@ -198,6 +219,11 @@ class ContentFilter:
         
         if not illusts:
             return []
+
+        try:
+            await self.load_db_blocklist()
+        except Exception as e:
+            logger.warning(f"加载数据库屏蔽列表失败: {e}")
         
         # 计算时间阈值
         time_threshold = None
@@ -223,6 +249,7 @@ class ContentFilter:
         reason_stats = {
             "pushed": 0,
             "time": 0,
+            "artist": 0,
             "blacklist": 0,
             "muted": 0,
             "ai": 0,
@@ -240,6 +267,10 @@ class ContentFilter:
             if time_threshold and illust.create_date < time_threshold:
                 filtered_by_time += 1
                 reason_stats["time"] += 1
+                continue
+
+            if illust.user_id and illust.user_id in self.blocked_artist_ids:
+                reason_stats["artist"] += 1
                 continue
             
             # 3. R-18G 排除
@@ -569,6 +600,7 @@ class ContentFilter:
                 "过滤原因统计: "
                 f"pushed={reason_stats['pushed']} | "
                 f"time={reason_stats['time']} | "
+                f"artist={reason_stats['artist']} | "
                 f"blacklist={reason_stats['blacklist']} | "
                 f"muted={reason_stats['muted']} | "
                 f"ai={reason_stats['ai']} | "
@@ -757,7 +789,7 @@ class ContentFilter:
     def _has_blacklisted_tag(self, illust: Illust) -> bool:
         """检查是否包含黑名单Tag"""
         for tag in illust.tags:
-            if tag.lower() in self.blacklist_tags:
+            if normalize_tag(tag) in self.blacklist_tags:
                 return True
         return False
     
