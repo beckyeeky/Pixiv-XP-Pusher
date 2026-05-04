@@ -47,6 +47,102 @@ def normalize_config(config: dict) -> dict:
             field_name="filter.daily_limit",
         )
 
+    display_tags_cfg = filter_cfg.get("display_tags")
+    if display_tags_cfg is None:
+        display_tags_cfg = {}
+        filter_cfg["display_tags"] = display_tags_cfg
+    elif not isinstance(display_tags_cfg, dict):
+        logger.warning("配置项 filter.display_tags 必须是对象，已回退为默认值")
+        display_tags_cfg = {}
+        filter_cfg["display_tags"] = display_tags_cfg
+
+    max_ip_count = _coerce_int(
+        display_tags_cfg.get("max_ip_count", 2),
+        default=2,
+        field_name="filter.display_tags.max_ip_count",
+    )
+    display_tags_cfg["max_ip_count"] = max(0, max_ip_count)
+
+    def _normalize_diversity_block(name: str, default_decay: float) -> dict:
+        raw_cfg = filter_cfg.get(name)
+        if raw_cfg is None:
+            raw_cfg = {}
+            filter_cfg[name] = raw_cfg
+        elif not isinstance(raw_cfg, dict):
+            logger.warning("配置项 filter.%s 必须是对象，已回退为默认值", name)
+            raw_cfg = {}
+            filter_cfg[name] = raw_cfg
+
+        raw_cfg["enabled"] = bool(raw_cfg.get("enabled", False))
+        decay_value = raw_cfg.get("decay_factor", default_decay)
+        floor_value = raw_cfg.get("floor", 0.1)
+
+        try:
+            if isinstance(decay_value, bool):
+                raise ValueError
+            raw_cfg["decay_factor"] = min(1.0, max(0.0, float(decay_value)))
+        except (TypeError, ValueError):
+            logger.warning("配置项 filter.%s.decay_factor 非法，已回退为默认值 %s", name, default_decay)
+            raw_cfg["decay_factor"] = default_decay
+
+        try:
+            if isinstance(floor_value, bool):
+                raise ValueError
+            raw_cfg["floor"] = min(1.0, max(0.0, float(floor_value)))
+        except (TypeError, ValueError):
+            logger.warning("配置项 filter.%s.floor 非法，已回退为默认值 0.1", name)
+            raw_cfg["floor"] = 0.1
+
+        return raw_cfg
+
+    _normalize_diversity_block("author_diversity", 0.5)
+    _normalize_diversity_block("ip_diversity", 0.6)
+
+    tag_classifier_cfg = normalized.get("tag_classifier")
+    if tag_classifier_cfg is None:
+        tag_classifier_cfg = {}
+        normalized["tag_classifier"] = tag_classifier_cfg
+    elif not isinstance(tag_classifier_cfg, dict):
+        logger.warning("配置项 tag_classifier 必须是对象，已回退为默认值")
+        tag_classifier_cfg = {}
+        normalized["tag_classifier"] = tag_classifier_cfg
+
+    tag_classifier_cfg.setdefault("enabled", False)
+    tag_classifier_cfg.setdefault("api_key", "")
+    tag_classifier_cfg.setdefault("base_url", "https://api.deepseek.com/v1")
+    tag_classifier_cfg.setdefault("model", "deepseek-v4-flash")
+    tag_classifier_cfg["ttl_days"] = max(1, _coerce_int(
+        tag_classifier_cfg.get("ttl_days", 30),
+        default=30,
+        field_name="tag_classifier.ttl_days",
+    ))
+    tag_classifier_cfg["batch_size"] = max(1, _coerce_int(
+        tag_classifier_cfg.get("batch_size", 50),
+        default=50,
+        field_name="tag_classifier.batch_size",
+    ))
+    tag_classifier_cfg["concurrency"] = max(1, _coerce_int(
+        tag_classifier_cfg.get("concurrency", 5),
+        default=5,
+        field_name="tag_classifier.concurrency",
+    ))
+
+    # === 全局 API Key 继承：profiler.ai → scorer / tag_classifier ===
+    shared_key = (
+        normalized.get("profiler", {}).get("ai", {}).get("api_key", "").strip()
+    )
+    if shared_key:
+        # scorer
+        scorer_cfg = normalized.get("ai", {}).get("scorer")
+        if isinstance(scorer_cfg, dict) and not scorer_cfg.get("api_key", "").strip():
+            scorer_cfg["api_key"] = shared_key
+            logger.debug("ai.scorer.api_key 已从 profiler.ai 继承")
+
+        # tag_classifier
+        if not tag_classifier_cfg.get("api_key", "").strip():
+            tag_classifier_cfg["api_key"] = shared_key
+            logger.debug("tag_classifier.api_key 已从 profiler.ai 继承")
+
     return normalized
 
 

@@ -4,6 +4,7 @@ SQLite 数据层
 import json
 import aiosqlite
 import logging
+import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
@@ -11,34 +12,38 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 async def init_db():
     """初始化数据库表结构"""
+    _init_db_sync()
+
+
+def _init_db_sync():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    
-    async with aiosqlite.connect(DB_PATH) as db:
+
+    with sqlite3.connect(DB_PATH) as db:
         # ============ 简易迁移逻辑 ============
         # 检查 xp_bookmarks 表是否包含 user_id 列 (旧版没有)
         try:
-             await db.execute("SELECT user_id FROM xp_bookmarks LIMIT 0")
+             db.execute("SELECT user_id FROM xp_bookmarks LIMIT 0")
         except Exception:
-             await db.execute("DROP TABLE IF EXISTS xp_bookmarks")
-             await db.commit()
-             await db.execute("DROP TABLE IF EXISTS xp_profile")
-             await db.execute("DROP TABLE IF EXISTS xp_tag_pairs")
-             await db.commit()
+             db.execute("DROP TABLE IF EXISTS xp_bookmarks")
+             db.commit()
+             db.execute("DROP TABLE IF EXISTS xp_profile")
+             db.execute("DROP TABLE IF EXISTS xp_tag_pairs")
+             db.commit()
         
         # 检查 illust_cache 表是否包含 user_id 列 (v2 新增)
         try:
-             await db.execute("SELECT user_id FROM illust_cache LIMIT 0")
+             db.execute("SELECT user_id FROM illust_cache LIMIT 0")
         except Exception:
              # 旧表只有 tags，删除重建
-             await db.execute("DROP TABLE IF EXISTS illust_cache")
-             await db.commit()
+             db.execute("DROP TABLE IF EXISTS illust_cache")
+             db.commit()
         
-        await db.executescript("""
+        db.executescript("""
             -- 推送历史
             CREATE TABLE IF NOT EXISTS push_history (
                 illust_id INTEGER PRIMARY KEY,
@@ -127,6 +132,14 @@ async def init_db():
                 cleaned_tag TEXT,  -- NULL 表示被过滤(meaningless)
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            -- Tag 分类缓存 (feature/ip)
+            CREATE TABLE IF NOT EXISTS tag_classification_cache (
+                normalized_tag TEXT PRIMARY KEY,
+                classification TEXT NOT NULL,
+                source TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             
             -- MAB 策略统计表
             CREATE TABLE IF NOT EXISTS strategy_stats (
@@ -204,31 +217,31 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        await db.commit()
+        db.commit()
         
         # === 迁移：为 illust_cache 添加 source 和 chain 列 ===
         try:
-            await db.execute("ALTER TABLE illust_cache ADD COLUMN source TEXT DEFAULT 'xp_search'")
-            await db.commit()
+            db.execute("ALTER TABLE illust_cache ADD COLUMN source TEXT DEFAULT 'xp_search'")
+            db.commit()
             logger.info("迁移：illust_cache 添加 source 列")
         except:
             pass  # 列已存在
         
         try:
-            await db.execute("ALTER TABLE illust_cache ADD COLUMN chain_depth INTEGER DEFAULT 0")
-            await db.execute("ALTER TABLE illust_cache ADD COLUMN chain_parent_id INTEGER")
-            await db.execute("ALTER TABLE illust_cache ADD COLUMN chain_msg_id INTEGER")
-            await db.commit()
+            db.execute("ALTER TABLE illust_cache ADD COLUMN chain_depth INTEGER DEFAULT 0")
+            db.execute("ALTER TABLE illust_cache ADD COLUMN chain_parent_id INTEGER")
+            db.execute("ALTER TABLE illust_cache ADD COLUMN chain_msg_id INTEGER")
+            db.commit()
             logger.info("迁移：illust_cache 添加 chain 列")
         except:
             pass  # 列已存在
         
         # === 初始化 schema 版本元数据（兼容旧实例，不做破坏性升级） ===
-        await db.execute(
+        db.execute(
             "INSERT OR IGNORE INTO system_state (key, value, updated_at) VALUES (?, ?, ?)",
             ("schema_version", str(SCHEMA_VERSION), datetime.now())
         )
-        await db.execute(
+        db.execute(
             "UPDATE system_state SET value = ?, updated_at = ? WHERE key = ?",
             (str(SCHEMA_VERSION), datetime.now(), "schema_version")
         )
@@ -236,11 +249,11 @@ async def init_db():
         # === 初始化 MAB 策略统计 (确保所有策略都有记录) ===
         default_strategies = ['xp_search', 'subscription', 'ranking', 'related', 'related_chain']
         for strategy in default_strategies:
-            await db.execute(
+            db.execute(
                 "INSERT OR IGNORE INTO strategy_stats (strategy, success_count, total_count) VALUES (?, 0, 0)",
                 (strategy,)
             )
-        await db.commit()
+        db.commit()
 
 
 async def cleanup_old_records(days: int = 180):
@@ -302,6 +315,55 @@ async def update_ai_cache(cache_data: dict[str, str | None]):
         await db.executemany(
             "INSERT OR REPLACE INTO ai_tag_cache (original_tag, cleaned_tag) VALUES (?, ?)",
             [(k, v) for k, v in cache_data.items()]
+        )
+        await db.commit()
+
+
+async def get_tag_classifications(
+    normalized_tags: list[str],
+    ttl_days: int = 30,
+) -> dict[str, dict[str, str]]:
+    """批量获取未过期的 Tag 分类缓存。"""
+    if not normalized_tags:
+        return {}
+
+    unique_tags = list(dict.fromkeys(normalized_tags))
+    cutoff = (datetime.now() - timedelta(days=ttl_days)).strftime("%Y-%m-%d %H:%M:%S")
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        placeholders = ",".join("?" * len(unique_tags))
+        cursor = await db.execute(
+            f"""
+            SELECT normalized_tag, classification, source
+            FROM tag_classification_cache
+            WHERE normalized_tag IN ({placeholders}) AND updated_at >= ?
+            """,
+            [*unique_tags, cutoff],
+        )
+        rows = await cursor.fetchall()
+        return {
+            row[0]: {"classification": row[1], "source": row[2]}
+            for row in rows
+        }
+
+
+async def save_tag_classifications(items: list[tuple[str, str, str]]):
+    """批量写入 Tag 分类缓存。"""
+    if not items:
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            """
+            INSERT INTO tag_classification_cache (
+                normalized_tag, classification, source, updated_at
+            ) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(normalized_tag) DO UPDATE SET
+                classification = excluded.classification,
+                source = excluded.source,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            items,
         )
         await db.commit()
 
@@ -386,6 +448,23 @@ async def mark_pushed(illust_id: int, source: str):
             (illust_id, source)
         )
         await db.commit()
+
+
+async def get_last_push_at() -> Optional[datetime]:
+    """获取最近一次成功推送时间。"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT MAX(pushed_at) FROM push_history")
+        row = await cursor.fetchone()
+
+    value = row[0] if row else None
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        logger.warning("无法解析最近推送时间: %s", value)
+        return None
 
 async def get_push_source(illust_id: int) -> Optional[str]:
     """获取推送来源"""
@@ -1067,7 +1146,7 @@ async def unblock_tag(tag: str) -> bool:
         
         # 2. 重置厌恶计数 (针对自动屏蔽)
         cursor = await db.execute(
-            "UPDATE tag_feedback_stats SET dislike_count = 0 WHERE tag = ?",
+            "UPDATE tag_blacklist SET dislike_count = 0 WHERE tag = ?",
             (tag,)
         )
         stats_updated = cursor.rowcount > 0
@@ -1101,7 +1180,7 @@ async def get_all_blocked_tags(dislike_threshold: int = 3) -> list[str]:
         
         # 自动
         cursor = await db.execute(
-            "SELECT tag FROM tag_feedback_stats WHERE dislike_count >= ?",
+            "SELECT tag FROM tag_blacklist WHERE dislike_count >= ?",
             (dislike_threshold,)
         )
         auto = {row[0] for row in (await cursor.fetchall())}

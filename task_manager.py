@@ -3,7 +3,7 @@ import contextvars
 import database as db_module
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from config import load_config, CONFIG_PATH
@@ -12,10 +12,117 @@ from pixiv_client import PixivClient
 from profiler import XPProfiler
 from fetcher import ContentFetcher
 from filter import ContentFilter
+from tag_classifier import TagClassifier
 from notifier.telegram import TelegramNotifier
 from notifier.onebot import OneBotNotifier
 from push_stats import PushStats, create_stats, set_current_stats
 logger = logging.getLogger(__name__)
+
+
+def _get_display_tags_max_ip_count(filter_cfg: dict) -> int:
+    display_tags_cfg = filter_cfg.get("display_tags", {}) if isinstance(filter_cfg, dict) else {}
+    if not isinstance(display_tags_cfg, dict):
+        return 2
+    return display_tags_cfg.get("max_ip_count", 2)
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    """解析数据库/状态里记录的时间字符串。"""
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        logger.warning("无法解析时间值: %s", value)
+        return None
+
+
+def _split_schedule_crons(schedule_str: str) -> list[str]:
+    """兼容单 cron 与旧格式的多 cron 字符串。"""
+    candidate = schedule_str.strip()
+    if not candidate:
+        return []
+
+    try:
+        CronTrigger.from_crontab(candidate)
+        logger.info(f"识别为单一定时任务: {candidate}")
+        return [candidate]
+    except ValueError:
+        potential_crons = [c.strip() for c in candidate.split(",") if c.strip()]
+        valid_crons = []
+        for cron_expr in potential_crons:
+            try:
+                CronTrigger.from_crontab(cron_expr)
+                valid_crons.append(cron_expr)
+            except ValueError:
+                logger.warning(f"忽略无效的 Cron 表达式片段: {cron_expr}")
+
+        if valid_crons:
+            logger.info(f"识别为 {len(valid_crons)} 个独立定时任务")
+            return valid_crons
+
+        return [candidate]
+
+
+def _get_min_schedule_interval(cron_list: list[str]) -> timedelta:
+    """估算多个 Cron 中最短的触发间隔，失败时回退到 4 小时。"""
+    fallback = timedelta(hours=4)
+    if not cron_list:
+        return fallback
+
+    all_fire_times = []
+    now = datetime.now()
+
+    for cron_expr in cron_list:
+        try:
+            trigger = CronTrigger.from_crontab(cron_expr)
+        except ValueError:
+            logger.warning("无法为最近运行保护解析 Cron，使用回退间隔: %s", cron_expr)
+            return fallback
+
+        previous_fire_time = None
+        current_time = now
+        for _ in range(8):
+            next_fire_time = trigger.get_next_fire_time(previous_fire_time, current_time)
+            if next_fire_time is None:
+                break
+            fire_time = next_fire_time.replace(tzinfo=None) if next_fire_time.tzinfo else next_fire_time
+            all_fire_times.append(fire_time)
+            previous_fire_time = next_fire_time
+            current_time = next_fire_time
+
+    unique_fire_times = sorted(set(all_fire_times))
+    deltas = [
+        later - earlier
+        for earlier, later in zip(unique_fire_times, unique_fire_times[1:])
+        if later > earlier
+    ]
+
+    return min(deltas) if deltas else fallback
+
+
+async def _get_last_successful_push_at() -> datetime | None:
+    """优先读取运行态状态，缺失时回退到推送历史。"""
+    state_value = await db_module.get_state("runtime.last_successful_push_at")
+    parsed_state = _parse_datetime(state_value)
+    if parsed_state is not None:
+        return parsed_state
+    return await db_module.get_last_push_at()
+
+
+def _should_skip_immediate_run(
+    last_push_at: datetime | None,
+    min_interval: timedelta,
+    now: datetime | None = None,
+) -> bool:
+    """最近成功推送过时，跳过 daemon 模式的 `--now`。"""
+    if last_push_at is None:
+        return False
+
+    current_time = now or datetime.now()
+    return current_time - last_push_at < min_interval
+
 
 async def retry_async(coro_func, *args, max_retries: int = 3, delay: float = 5.0, backoff: float = 2.0, **kwargs):
     """
@@ -109,13 +216,25 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                 from filter import ContentFilter
                 # 临时构造 filter 配置
                 filter_cfg = config.get("filter", {})
+                profiler_cfg = config.get("profiler", {})
+                tag_classifier = None
+                try:
+                    tag_classifier = TagClassifier(
+                        config.get("tag_classifier", {}),
+                        ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),
+                    )
+                except Exception as e:
+                    logger.warning(f"TagClassifier 初始化失败，连锁推送将仅使用 XP 排序: {e}")
+
                 c_filter = ContentFilter(
                     blacklist_tags=list(profiler.stop_words), # 使用实时黑名单
                     exclude_ai=filter_cfg.get("exclude_ai", True),
                     r18_mode=filter_cfg.get("r18_mode", False),
                     min_create_days=filter_cfg.get("min_create_days", 0),
                     skip_ugoira=filter_cfg.get("skip_ugoira", False),
-                    content_type=filter_cfg.get("content_type", "all")
+                    content_type=filter_cfg.get("content_type", "all"),
+                    tag_classifier=tag_classifier,
+                    display_tags_max_ip_count=_get_display_tags_max_ip_count(filter_cfg),
                 )
             
                 # 使用简单的过滤逻辑 (不去重 SENT_HISTORY，因为这是用户主动要求的)
@@ -193,6 +312,8 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                 top_results = [x[0] for x in filtered[:push_limit]]
                 
                 if top_results:
+                    await c_filter._apply_display_tags(top_results, xp_profile)
+
                     # 构建消息前缀（包含源作品信息）
                     source_title = getattr(seed_illust, 'title', f'#{seed_illust.id}')
                     message_prefix = f"🔗 连锁推荐 (源自: {source_title})"
@@ -282,18 +403,11 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
             return
 
         # 3. 执行核心反馈逻辑
-        suggested_block_tag = await profiler.apply_feedback(
+        feedback_result = await profiler.apply_feedback(
             illust=illust,
             action=action,
             config=config.get("feedback", {})
         )
-        
-        # 如果 profiler 建议屏蔽
-        if suggested_block_tag:
-             msg = f"🚫 Tag `{suggested_block_tag}` 累计不喜欢已达阈值。\n是否屏蔽？\n发送 `/block {suggested_block_tag}` 确认屏蔽。"
-             for n in notifiers_list:
-                 if hasattr(n, 'send_text'):
-                     await n.send_text(msg)
         
         # 如果是"喜欢"，同步添加到 Pixiv 收藏
         if action in ("like", "1"):
@@ -343,6 +457,7 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                  logger.error(f"同步收藏/连锁处理失败: {e}")
         
         logger.info(f"反馈处理完成: illust_id={illust_id}, action={action}")
+        return feedback_result
     
     # ... (rest of setup_notifiers) ...
 
@@ -790,7 +905,16 @@ async def main_task(
                         logger.info(f"已启用 AI 精排评分 (model={ai_scorer.model})")
                 except Exception as e:
                     logger.warning(f"AIScorer 初始化失败: {e}")
-        
+
+            tag_classifier = None
+            try:
+                tag_classifier = TagClassifier(
+                    config.get("tag_classifier", {}),
+                    ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),
+                )
+            except Exception as e:
+                logger.warning(f"TagClassifier 初始化失败，将仅使用 XP 排序: {e}")
+
             content_filter = ContentFilter(
                 blacklist_tags=filter_cfg.get("blacklist_tags"),
                 daily_limit=filter_cfg.get("daily_limit", 20),
@@ -806,12 +930,15 @@ async def main_task(
                 content_type=filter_cfg.get("content_type", "all"),
                 # 新增：借鉴 X 算法的增强选项
                 author_diversity=filter_cfg.get("author_diversity"),
+                ip_diversity=filter_cfg.get("ip_diversity"),
                 source_boost=filter_cfg.get("source_boost"),
                 embedder=embedder,  # 可选的语义匹配
                 ai_scorer=ai_scorer,  # 可选的 LLM 精排
                 # 多样性增强
                 shuffle_factor=filter_cfg.get("shuffle_factor", 0.0),
-                exploration_ratio=filter_cfg.get("exploration_ratio", 0.0)
+                exploration_ratio=filter_cfg.get("exploration_ratio", 0.0),
+                tag_classifier=tag_classifier,
+                display_tags_max_ip_count=_get_display_tags_max_ip_count(filter_cfg),
             )
         
             pixiv_uid = config.get("pixiv", {}).get("user_id", 0)
@@ -871,6 +998,7 @@ async def main_task(
                                 # 更新 MAB 策略统计 (Total Count)
                                 if source in ['xp_search', 'subscription', 'ranking', 'related', 'engagement_artists']:
                                     await db_module.update_strategy_stats(source, is_success=False)
+                        await db_module.set_state("runtime.last_successful_push_at", datetime.now().isoformat())
                     
                     # 注意：仅在真实发送成功后标记（避免误标记导致错过推送）
                     
@@ -1099,6 +1227,19 @@ async def daily_report_task(config: dict, notifiers: list, profiler=None):
 async def run_scheduler(config: dict, run_immediately: bool = False):
     """启动调度器 (Daemon Mode)"""
     main_client, sync_client, profiler, notifiers = await setup_services(config)
+    scheduler_cfg = config.get("scheduler", {})
+    db_cron = await db_module.get_state("schedule_cron")
+    config_cron = scheduler_cfg.get("cron", "0 20 * * *")
+    schedule_str = db_cron if db_cron else config_cron
+    cron_list = _split_schedule_crons(schedule_str)
+    min_interval = _get_min_schedule_interval(cron_list)
+
+    if db_cron and db_cron != config_cron:
+        logger.warning(
+            "检测到数据库中的 schedule_cron (%s) 与 config.yaml 中的 scheduler.cron (%s) 不一致；当前仍使用数据库值，请按需在 Telegram 菜单或配置文件中统一。",
+            db_cron,
+            config_cron,
+        )
     
     # Start Listeners (Background)
     if notifiers:
@@ -1111,56 +1252,23 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
                  asyncio.create_task(n.start_listening())
     
     if run_immediately:
-        logger.info("🚀 正在立即执行首次任务...")
-        # Run main_task as a background task so it doesn't block scheduler start?
-        # Or await it? Since it's "Now", usually await is fine, or create task to allow listener to process concurrently?
-        # If we await, listener logic (OneBot) runs in background task ok.
-        # BUT if main_task crashes, we still want scheduler.
-        asyncio.create_task(main_task(config, main_client, profiler, notifiers, sync_client))
+        last_push_at = await _get_last_successful_push_at()
+        if _should_skip_immediate_run(last_push_at, min_interval):
+            logger.info(
+                "⏭️ 跳过 `--now` 立即推送：最近一次成功推送时间为 %s，距离当前不足最短调度间隔 %s",
+                last_push_at.isoformat(timespec="seconds") if last_push_at else "unknown",
+                min_interval,
+            )
+        else:
+            logger.info("🚀 正在立即执行首次任务...")
+            # Run main_task as a background task so it doesn't block scheduler start.
+            asyncio.create_task(main_task(config, main_client, profiler, notifiers, sync_client))
 
     scheduler = AsyncIOScheduler()
-    scheduler_cfg = config.get("scheduler", {})
     coalesce = scheduler_cfg.get("coalesce", True)
-    
-    # 获取调度配置 (优先读取数据库)
-    from database import get_state
-    db_cron = await get_state("schedule_cron")
-    config_cron = config.get("scheduler", {}).get("cron", "0 20 * * *")
-    
-    schedule_str = db_cron if db_cron else config_cron
     
     # 将 scheduler 注入到 config 中以便 callback 访问
     config['scheduler'] = scheduler
-    
-    # 支持多个时间点
-    # 逻辑优化：
-    # 1. 先尝试将整个字符串作为一个 Cron，如果成功则认为是一个任务 (解决 "0 12,21 * * *" 被误拆的问题)
-    # 2. 如果失败，再尝试用逗号分割 (兼容旧的多任务写法 "0 12 * * *, 0 21 * * *")
-    
-    cron_list = []
-    
-    # 尝试解析整体
-    try:
-        CronTrigger.from_crontab(schedule_str.strip())
-        cron_list = [schedule_str.strip()]
-        logger.info(f"识别为单一定时任务: {schedule_str}")
-    except ValueError:
-        # 整体解析失败，尝试分割
-        potential_crons = [c.strip() for c in schedule_str.split(",") if c.strip()]
-        valid_crons = []
-        for c in potential_crons:
-            try:
-                CronTrigger.from_crontab(c)
-                valid_crons.append(c)
-            except ValueError:
-                logger.warning(f"忽略无效的 Cron 表达式片段: {c}")
-        
-        if valid_crons:
-            cron_list = valid_crons
-            logger.info(f"识别为 {len(cron_list)} 个独立定时任务")
-        else:
-            # 如果分割也全错，那可能就是整体写错了，保留整体让后面报错
-            cron_list = [schedule_str]
     
     for i, cron_expr in enumerate(cron_list):
         try:

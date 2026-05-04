@@ -980,9 +980,11 @@ class TelegramNotifier(BaseNotifier):
                     index
                 )
                 if illust_id:
-                    await self.handle_feedback(illust_id, action, chat_id=query.message.chat_id)
-                    emoji = "❤️" if action == "like" else "👎"
-                    await query.message.reply_text(f"{emoji} 已记录 #{index} 的反馈")
+                    feedback_result = await self.handle_feedback(illust_id, action, chat_id=query.message.chat_id)
+                    await query.message.reply_text(
+                        self._format_feedback_reply(action, feedback_result, index=index),
+                        parse_mode="Markdown",
+                    )
 
                 # 恢复原始按钮
                 keyboard = InlineKeyboardMarkup([
@@ -1003,11 +1005,21 @@ class TelegramNotifier(BaseNotifier):
                     query.message.message_id,
                     str(query.message.chat_id)
                 )
+                auto_blocked_artists = []
                 for illust_id in illust_ids:
-                    await self.handle_feedback(illust_id, action, chat_id=query.message.chat_id)
+                    feedback_result = await self.handle_feedback(illust_id, action, chat_id=query.message.chat_id)
+                    auto_blocked_artists.extend(feedback_result.get("auto_blocked_artists", []))
 
-                emoji = "❤️" if action == "like" else "👎"
-                await query.message.reply_text(f"{emoji} 已对全部 {len(illust_ids)} 个作品记录反馈")
+                if action == "dislike" and auto_blocked_artists:
+                    names = "、".join(
+                        f"[{a['artist_name']}](https://pixiv.net/users/{a['artist_id']}) (`{a['artist_id']}`)"
+                        for a in dict((a["artist_id"], a) for a in auto_blocked_artists).values()
+                    )
+                    text = f"🚫 已对全部 {len(illust_ids)} 个作品记录不喜欢，并自动屏蔽画师: {names}"
+                else:
+                    emoji = "❤️" if action == "like" else "👎"
+                    text = f"{emoji} 已对全部 {len(illust_ids)} 个作品记录反馈"
+                await query.message.reply_text(text, parse_mode="Markdown")
                 await query.edit_message_reply_markup(reply_markup=None)
                 return
 
@@ -1041,7 +1053,7 @@ class TelegramNotifier(BaseNotifier):
                                         elif action == "follow" and "关注" in btn.text:
                                             new_text = "✅ 已关注"
                                         elif action == "dislike" and "不喜欢" in btn.text:
-                                            new_text = "✅ 已屏蔽"
+                                            new_text = "👎 已标记"
 
                                         # 保持原有的 callback_data 或 url
                                         if btn.callback_data:
@@ -1065,7 +1077,19 @@ class TelegramNotifier(BaseNotifier):
                         # 2. 异步队列：后台执行耗时的 API 操作
                         async def _background_task():
                             try:
-                                await self.handle_feedback(int(illust_id), action, chat_id=query.message.chat_id)
+                                feedback_result = await self.handle_feedback(int(illust_id), action, chat_id=query.message.chat_id)
+                                auto_blocked_artists = feedback_result.get("auto_blocked_artists", [])
+                                if action == "dislike" and auto_blocked_artists:
+                                    names = "、".join(
+                                        f"[{a['artist_name']}](https://pixiv.net/users/{a['artist_id']}) (`{a['artist_id']}`)"
+                                        for a in auto_blocked_artists
+                                    )
+                                    await self.bot.send_message(
+                                        chat_id=query.message.chat_id,
+                                        text=f"🚫 已自动屏蔽画师: {names}",
+                                        reply_to_message_id=query.message.message_id,
+                                        parse_mode="Markdown",
+                                    )
                             except Exception as e:
                                 logger.error(f"后台处理反馈失败 ({action} {illust_id}): {e}")
                                 # 如果失败了，发个消息通知用户（因为按钮已经变成绿色了，得告诉他其实没成功）
@@ -1360,8 +1384,11 @@ class TelegramNotifier(BaseNotifier):
                 await self.handle_feedback(illust_id, "like", chat_id=message.chat_id)
                 await message.reply_text("❤️ 已记录喜欢")
             elif text == "2":
-                await self.handle_feedback(illust_id, "dislike", chat_id=message.chat_id)
-                await message.reply_text("👎 已记录不喜欢")
+                feedback_result = await self.handle_feedback(illust_id, "dislike", chat_id=message.chat_id)
+                await message.reply_text(
+                    self._format_feedback_reply("dislike", feedback_result),
+                    parse_mode="Markdown",
+                )
 
         # /restart 指令 - 重启服务
         async def cmd_restart(update, context):
@@ -4080,15 +4107,33 @@ class TelegramNotifier(BaseNotifier):
             ]
         ])
 
-    async def handle_feedback(self, illust_id: int, action: str, chat_id: int | None = None) -> bool:
+    @staticmethod
+    def _format_feedback_reply(action: str, feedback_result: dict | None = None, index: int | None = None) -> str:
+        prefix = f"#{index} " if index is not None else ""
+        if action == "like":
+            return f"❤️ 已记录{prefix}喜欢".strip()
+
+        auto_blocked_artists = (feedback_result or {}).get("auto_blocked_artists", [])
+        if auto_blocked_artists:
+            names = "、".join(
+                f"[{a['artist_name']}](https://pixiv.net/users/{a['artist_id']}) (`{a['artist_id']}`)"
+                for a in auto_blocked_artists
+            )
+            return f"🚫 已记录{prefix}不喜欢，并自动屏蔽画师: {names}".strip()
+        return f"👎 已记录{prefix}不喜欢".strip()
+
+    async def handle_feedback(self, illust_id: int, action: str, chat_id: int | None = None) -> dict:
         """处理反馈回调 (Vivi增强版: 同步Pixiv操作)"""
         typing_task = None
+        feedback_result = {"ok": True, "action": action, "illust_id": illust_id, "auto_blocked_artists": []}
         if action == "follow" and chat_id:
             typing_task = asyncio.create_task(self._keep_typing(chat_id))
         try:
             # 1. 调用原有的XP更新逻辑
             if self.on_feedback:
-                await self.on_feedback(illust_id, action)
+                callback_result = await self.on_feedback(illust_id, action)
+                if isinstance(callback_result, dict):
+                    feedback_result.update(callback_result)
 
             # 2. 同步到Pixiv API
             if self.client:
@@ -4125,7 +4170,7 @@ class TelegramNotifier(BaseNotifier):
                 except Exception as e:
                     logger.error(f"[Pixiv] 操作失败: {e}")
 
-            return True
+            return feedback_result
         finally:
             if typing_task:
                 typing_task.cancel()

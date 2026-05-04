@@ -19,6 +19,9 @@ Pixiv-XP-Pusher 是一个“抓取 + 过滤 + 推送”流水线：
 ## 核心特性
 
 - **多策略推荐**：`xp_search` / `related` / `ranking` / `subscription`
+- **更懂“XP”**：`tag_classifier` 可区分视觉特征与 IP 标签，匹配分更偏向黑丝、白发、兽耳这类 feature
+- **更少重复感**：支持 `display_tags` feature-first 展示、`ip_diversity` / `author_diversity` 多样性衰减
+- **AI 精排**：可选 LLM 二次评分，更关注画面特征与视觉质量而不是只看作品出自哪个 IP
 - **多通知器**：Telegram、OneBot、AstrBot
 - **可视化管理**：Web 配置页、标签页、历史画廊、导入导出
 - **可运维**：内置数据库维护与推荐效果评估脚本
@@ -40,6 +43,11 @@ cp config.example.yaml config.yaml
 - `pixiv.refresh_token`
 - `notifier.types`
 - 对应通知器的必填字段（如 Telegram 的 `bot_token`、`chat_ids`）
+
+推荐同时检查这些推荐质量相关配置：
+- `tag_classifier.enabled`：启用 feature / IP 分类
+- `filter.display_tags.max_ip_count`：限制推送消息里展示的 IP 标签数量
+- `filter.ip_diversity` / `filter.author_diversity`：减少同 IP、同画师连续刷屏
 
 首次建议先单次验证：
 
