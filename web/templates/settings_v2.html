@@ -254,17 +254,17 @@ textarea.form-control {
 <div class="settings-container">
     <!-- 左侧导航 -->
     <nav class="settings-nav">
-        <button class="settings-nav-item active" onclick="showSection('pixiv')">🔑 Pixiv 认证</button>
-        <button class="settings-nav-item" onclick="showSection('strategies')">🎯 推送策略</button>
-        <button class="settings-nav-item" onclick="showSection('notifier')">📢 推送通道</button>
-        <button class="settings-nav-item" onclick="showSection('profiler')">👤 画像分析</button>
-        <button class="settings-nav-item" onclick="showSection('ai')">🤖 AI 增强</button>
-        <button class="settings-nav-item" onclick="showSection('filter')">🛡️ 内容过滤</button>
-        <button class="settings-nav-item" onclick="showSection('fetcher')">📥 内容获取</button>
-        <button class="settings-nav-item" onclick="showSection('scheduler')">⏰ 定时任务</button>
-        <button class="settings-nav-item" onclick="showSection('network')">🌐 网络配置</button>
-        <button class="settings-nav-item" onclick="showSection('feedback')">💬 反馈机制</button>
-        <button class="settings-nav-item" onclick="showSection('web')">🖥️ Web UI</button>
+        <button class="settings-nav-item active" onclick="showSection('pixiv', event)">🔑 Pixiv 认证</button>
+        <button class="settings-nav-item" onclick="showSection('strategies', event)">🎯 推送策略</button>
+        <button class="settings-nav-item" onclick="showSection('notifier', event)">📢 推送通道</button>
+        <button class="settings-nav-item" onclick="showSection('profiler', event)">👤 画像分析</button>
+        <button class="settings-nav-item" onclick="showSection('ai', event)">🤖 AI 增强</button>
+        <button class="settings-nav-item" onclick="showSection('filter', event)">🛡️ 内容过滤</button>
+        <button class="settings-nav-item" onclick="showSection('fetcher', event)">📥 内容获取</button>
+        <button class="settings-nav-item" onclick="showSection('scheduler', event)">⏰ 定时任务</button>
+        <button class="settings-nav-item" onclick="showSection('network', event)">🌐 网络配置</button>
+        <button class="settings-nav-item" onclick="showSection('feedback', event)">💬 反馈机制</button>
+        <button class="settings-nav-item" onclick="showSection('web', event)">🖥️ Web UI</button>
         <hr style="border-color: var(--border); margin: 1rem 0;">
         <a href="/import-export" class="settings-nav-item">📥📤 导入/导出</a>
     </nav>
@@ -719,12 +719,15 @@ textarea.form-control {
 {% block extra_scripts %}
 <script>
 // 切换设置页面
-function showSection(sectionId) {
+function showSection(sectionId, evt) {
     document.querySelectorAll('.settings-section').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.settings-nav-item').forEach(el => el.classList.remove('active'));
     
     document.getElementById('section-' + sectionId).classList.add('active');
-    event.target.classList.add('active');
+    const trigger = evt && evt.currentTarget ? evt.currentTarget : null;
+    if (trigger) {
+        trigger.classList.add('active');
+    }
 }
 
 // 添加数组项
