@@ -334,13 +334,13 @@ async def gallery(
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
-    """设置页面 - 纯配置"""
+    """设置页面（V2 分区布局）"""
     # 检查登录状态，未登录重定向到登录页
     if not verify_session(request):
         return RedirectResponse("/", status_code=302)
-    
-    config = load_config()
-    return templates.TemplateResponse("settings.html", {
+
+    config = build_settings_view_config(load_config())
+    return templates.TemplateResponse("settings_v2.html", {
         "request": request,
         "active_page": "settings",
         "config": config
@@ -395,6 +395,166 @@ class SettingsRequest(BaseModel):
     max_image_size: Optional[int] = 2000
     max_concurrency: Optional[int] = 5
     requests_per_minute: Optional[int] = 60
+
+
+def merge_config_replace_lists(base: Any, override: Any) -> Any:
+    """深度合并配置：字典递归合并，列表与标量以 override 为准。"""
+    if isinstance(base, dict) and isinstance(override, dict):
+        result = deepcopy(base)
+        for key, value in override.items():
+            if key in result:
+                result[key] = merge_config_replace_lists(result[key], value)
+            else:
+                result[key] = deepcopy(value)
+        return result
+    return deepcopy(override)
+
+
+def build_settings_view_config(raw_config: Any) -> dict:
+    """为设置页补齐最小默认结构，避免模板因缺键渲染失败。"""
+    defaults = {
+        "pixiv": {
+            "refresh_token": "",
+            "sync_token": "",
+            "user_id": 0,
+        },
+        "strategies": ["xp_search", "related", "ranking", "subscription"],
+        "scheduler": {
+            "cron": "0 12 * * *",
+            "coalesce": True,
+            "daily_report_cron": "0 0 * * *",
+        },
+        "network": {
+            "max_concurrency": 5,
+            "random_delay": [1.0, 3.0],
+            "requests_per_minute": 60,
+        },
+        "feedback": {
+            "like_boost": 0.5,
+            "dislike_penalty": 0.3,
+            "dislike_threshold": 3,
+            "max_chain_depth": 3,
+            "related_push_limit": 1,
+        },
+        "notifier": {
+            "types": ["telegram"],
+            "max_pages": 10,
+            "multi_page_mode": "cover_link",
+            "telegram": {
+                "bot_token": "",
+                "chat_ids": [],
+                "allowed_users": [],
+                "thread_id": None,
+                "proxy_url": None,
+                "image_quality": 85,
+                "max_image_size": 2000,
+                "batch_mode": "single",
+                "topic_rules": {},
+                "topic_tag_mapping": {},
+            },
+        },
+        "profiler": {
+            "scan_limit": 1000,
+            "discovery_rate": 0.1,
+            "time_decay_days": 180,
+            "saturation_threshold": 0.5,
+            "top_n": 20,
+            "include_private": True,
+            "ip_weight_discount": 1.0,
+            "ai": {
+                "enabled": True,
+                "provider": "openai",
+                "api_key": "",
+                "base_url": "",
+                "model": "gpt-4o-mini",
+                "concurrency": 10,
+                "batch_size": 200,
+                "filter_meaningless": True,
+                "merge_synonyms": True,
+            },
+        },
+        "ai": {
+            "embedding": {
+                "enabled": False,
+                "provider": "openai",
+                "api_key": "",
+                "base_url": "",
+                "model": "text-embedding-3-small",
+                "dimensions": 256,
+                "semantic_weight": 0.3,
+                "cache_ttl_days": 30,
+            },
+            "scorer": {
+                "enabled": False,
+                "provider": "openai",
+                "api_key": "",
+                "base_url": "",
+                "model": "gpt-4o-mini",
+                "max_candidates": 50,
+                "score_weight": 0.3,
+            },
+        },
+        "filter": {
+            "daily_limit": 20,
+            "exclude_ai": False,
+            "skip_ugoira": True,
+            "content_type": "illust",
+            "r18_mode": "mixed",
+            "max_per_artist": 3,
+            "min_create_days": 30,
+            "shuffle_factor": 0.15,
+            "exploration_ratio": 0.2,
+            "author_diversity": {
+                "enabled": True,
+                "decay_factor": 0.7,
+                "floor": 0.1,
+            },
+            "source_boost": {
+                "xp_search": 1.0,
+                "subscription": 1.1,
+                "ranking": 0.9,
+                "related": 1.15,
+                "engagement_artists": 1.2,
+            },
+            "blacklist_tags": [],
+        },
+        "fetcher": {
+            "bookmark_threshold": {
+                "search": 1000,
+                "subscription": 0,
+                "related": 0,
+            },
+            "date_range_days": 7,
+            "dynamic_threshold": {
+                "min": 100,
+                "rate": 0.05,
+            },
+            "search_limit": 50,
+            "ranking": {
+                "enabled": True,
+                "modes": ["day", "week", "month"],
+                "limit": 100,
+            },
+            "mab_limits": {
+                "min_quota": 0.2,
+                "max_quota": 0.6,
+            },
+            "subscribed_artists": [],
+        },
+        "web": {
+            "enabled": True,
+            "require_login_password": True,
+            "password": "",
+            "port": 8000,
+        },
+    }
+
+    merged = merge_config_replace_lists(defaults, raw_config if isinstance(raw_config, dict) else {})
+    network_cfg = merged.setdefault("network", {})
+    random_delay = network_cfg.get("random_delay", [1.0, 3.0])
+    if not isinstance(random_delay, list) or len(random_delay) < 2:
+        network_cfg["random_delay"] = [1.0, 3.0]
+    return merged
 
 @app.post("/api/settings")
 async def save_settings(req: SettingsRequest, _=Depends(require_auth)):
@@ -480,6 +640,54 @@ async def save_settings(req: SettingsRequest, _=Depends(require_auth)):
         return {"success": True}
     except Exception as e:
         logger.error(f"保存配置失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/config/full")
+async def save_full_config(payload: Dict[str, Any] = Body(...), _=Depends(require_auth)):
+    """
+    全量配置保存接口（V2 设置页使用）：
+    - 仅更新前端提交的字段，未提交字段保留原值
+    - 兼容 Web 密码更新逻辑，避免误清空
+    """
+    try:
+        if not isinstance(payload, dict):
+            return {"success": False, "error": "配置内容必须是对象"}
+
+        current = load_config()
+        merged = merge_config_replace_lists(current, payload)
+
+        web_cfg = merged.setdefault("web", {})
+        web_cfg["require_login_password"] = bool(web_cfg.get("require_login_password", True))
+
+        web_password = (payload.get("web_password") or "").strip()
+        web_password_confirm = (payload.get("web_password_confirm") or "").strip()
+
+        if web_cfg["require_login_password"]:
+            existing_password = current.get("web", {}).get("password", "")
+            if web_password or web_password_confirm:
+                if web_password != web_password_confirm:
+                    return {"success": False, "error": "Web 登录密码两次输入不一致"}
+                if len(web_password) < 6:
+                    return {"success": False, "error": "Web 登录密码至少 6 位"}
+                web_cfg["password"] = hash_password(web_password)
+            elif not web_cfg.get("password"):
+                # 页面未填写新密码时，回退保留当前哈希密码
+                if existing_password:
+                    web_cfg["password"] = existing_password
+                else:
+                    return {"success": False, "error": "请设置 Web 登录密码（至少 6 位）"}
+        else:
+            web_cfg["password"] = ""
+
+        # 清理临时字段（如前端附带）
+        merged.pop("web_password", None)
+        merged.pop("web_password_confirm", None)
+
+        save_config(merged)
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"全量保存配置失败: {e}")
         return {"success": False, "error": str(e)}
 
 @app.get("/api/sync-status")
@@ -906,6 +1114,12 @@ async def export_config(_=Depends(require_auth)):
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/export")
+async def export_config_legacy(_=Depends(require_auth)):
+    """兼容旧前端导出入口。"""
+    return await export_config(_)
+
+
 class ImportConfigRequest(BaseModel):
     yaml_content: str
     merge: bool = False  # True = 合并, False = 覆盖
@@ -919,6 +1133,8 @@ async def import_config(req: ImportConfigRequest, _=Depends(require_auth)):
         imported = yaml.safe_load(req.yaml_content)
         if imported is None:
             return {"success": False, "error": "YAML 内容为空或格式无效"}
+        if not isinstance(imported, dict):
+            return {"success": False, "error": "YAML 根节点必须是对象 (key-value)"}
         
         if req.merge:
             # 合并模式：保留现有配置，导入的覆盖
@@ -948,44 +1164,58 @@ def generate_commented_yaml(config: dict) -> str:
         "scheduler": {
             "_desc": "调度器配置",
             "cron": "Cron 表达式，例如 '0 */6 * * *' 每6小时执行一次",
-            "timezone": "时区，例如 'Asia/Shanghai'"
+            "coalesce": "是否合并错过任务",
+            "daily_report_cron": "每日维护任务 Cron（日报+清理）"
         },
         "notifier": {
             "_desc": "通知渠道配置",
+            "types": "启用的推送通道，例如 [telegram]",
+            "max_pages": "多图作品最大打包页数",
+            "multi_page_mode": "多图发送模式: cover_link / media_group",
             "telegram": {
                 "_desc": "Telegram 通知",
                 "bot_token": "Bot Token",
-                "chat_id": "频道/群组 ID",
-                "proxy_url": "代理地址（可选）"
+                "chat_ids": "频道/群组 ID 列表",
+                "allowed_users": "允许互动的用户 ID 列表",
+                "thread_id": "默认 Topic ID（可选）",
+                "proxy_url": "代理地址（可选）",
+                "batch_mode": "批量推送模式: single / telegraph"
             }
         },
         "filter": {
             "_desc": "内容过滤配置",
-            "r18_mode": "R18 过滤模式: strict(严格), allow(允许), only(仅R18)",
+            "r18_mode": "R18 过滤模式: mixed / r18_only / safe",
             "blacklist_tags": "黑名单标签列表",
-            "min_bookmarks": "最小收藏数阈值"
+            "content_type": "内容类型: all / illust / manga",
+            "min_create_days": "过滤 N 天前作品",
+            "author_diversity": "画师多样性衰减配置",
+            "source_boost": "来源加成权重"
         },
         "profiler": {
             "_desc": "XP 画像配置",
             "ip_weight_discount": "IP 标签权重折扣 (0-1)",
             "boost_tags": "加权标签字典 {tag: multiplier}",
-            "min_tag_weight": "最小标签权重阈值"
+            "scan_limit": "扫描收藏数量上限",
+            "discovery_rate": "探索新 Tag 概率"
+        },
+        "ai": {
+            "_desc": "AI 增强配置",
+            "embedding": "Embedding 语义匹配配置",
+            "scorer": "LLM 二次评分配置"
         },
         "strategies": {
             "_desc": "推送策略列表",
             "_items": [
-                "bookmarks: 基于收藏",
-                "following: 基于关注", 
-                "ranking: 基于排行榜",
-                "recommend: 智能推荐"
+                "xp_search: XP 画像搜索",
+                "related: 关联连锁",
+                "ranking: 排行榜",
+                "subscription: 关注更新"
             ]
-        },
-        "database": {
-            "_desc": "数据库配置",
-            "path": "SQLite 数据库路径"
         },
         "web": {
             "_desc": "Web UI 配置",
+            "enabled": "是否启用 Web UI",
+            "port": "Web 服务端口",
             "require_login_password": "是否启用 Web 登录密码验证",
             "password": "登录密码（SHA256 哈希）"
         }
@@ -1029,17 +1259,9 @@ def generate_commented_yaml(config: dict) -> str:
 
 
 def deep_merge(base: dict, override: dict) -> dict:
-    """深度合并两个字典"""
-    result = base.copy()
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = deep_merge(result[key], value)
-        elif key in result and isinstance(result[key], list) and isinstance(value, list):
-            # 列表合并：去重
-            result[key] = list(dict.fromkeys(result[key] + value))
-        else:
-            result[key] = value
-    return result
+    """深度合并两个字典（列表以 override 为准，避免策略/ID 被意外拼接）。"""
+    merged = merge_config_replace_lists(base, override)
+    return merged if isinstance(merged, dict) else {}
 
 
 @app.get("/api/proxy/image/{illust_id}")
