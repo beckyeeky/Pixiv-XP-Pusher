@@ -171,7 +171,69 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("filter.db.get_pushed_ids_batch", new=AsyncMock(return_value=set())), \
              patch("filter.db.get_muted_tags", new=AsyncMock(return_value=[])), \
-             patch("filter.db.get_negative_profile", new=AsyncMock(return_value={})):
+             patch("filter.db.get_negative_profile", new=AsyncMock(return_value={})), \
+             patch("filter.db.get_blocked_tags", new=AsyncMock(return_value=[])), \
+             patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[])):
             ranked = await content_filter.filter(illusts, xp_profile=xp_profile)
 
         self.assertEqual([illust.id for illust in ranked[:3]], [1, 3, 2])
+
+    async def test_filter_loads_db_blocked_tags_and_artists(self):
+        blocked_tag_illust = Illust(
+            id=10,
+            title="blocked-tag",
+            user_id=10,
+            user_name="artist-10",
+            tags=["Blue Archive", "pantyhose"],
+            bookmark_count=100,
+            view_count=1000,
+            page_count=1,
+            image_urls=["https://example.com/10.jpg"],
+            is_r18=False,
+            ai_type=0,
+            create_date=datetime.now(),
+        )
+        blocked_artist_illust = Illust(
+            id=11,
+            title="blocked-artist",
+            user_id=99,
+            user_name="artist-99",
+            tags=["white_hair"],
+            bookmark_count=100,
+            view_count=1000,
+            page_count=1,
+            image_urls=["https://example.com/11.jpg"],
+            is_r18=False,
+            ai_type=0,
+            create_date=datetime.now(),
+        )
+        allowed_illust = Illust(
+            id=12,
+            title="allowed",
+            user_id=12,
+            user_name="artist-12",
+            tags=["white_hair"],
+            bookmark_count=100,
+            view_count=1000,
+            page_count=1,
+            image_urls=["https://example.com/12.jpg"],
+            is_r18=False,
+            ai_type=0,
+            create_date=datetime.now(),
+        )
+
+        content_filter = ContentFilter(daily_limit=10, exclude_ai=False)
+
+        with patch("filter.db.get_pushed_ids_batch", new=AsyncMock(return_value=set())), \
+             patch("filter.db.get_muted_tags", new=AsyncMock(return_value=[])), \
+             patch("filter.db.get_negative_profile", new=AsyncMock(return_value={})), \
+             patch("filter.db.get_blocked_tags", new=AsyncMock(return_value=["blue_archive"])), \
+             patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[(99, "artist-99")])):
+            ranked = await content_filter.filter(
+                [blocked_tag_illust, blocked_artist_illust, allowed_illust],
+                xp_profile={"white_hair": 1.0},
+            )
+
+        self.assertEqual([illust.id for illust in ranked], [12])
+        self.assertIn("blue_archive", content_filter.blacklist_tags)
+        self.assertIn(99, content_filter.blocked_artist_ids)

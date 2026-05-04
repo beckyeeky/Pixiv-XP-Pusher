@@ -1129,7 +1129,7 @@ async def unblock_tag(tag: str) -> bool:
         
         # 2. 重置厌恶计数 (针对自动屏蔽)
         cursor = await db.execute(
-            "UPDATE tag_feedback_stats SET dislike_count = 0 WHERE tag = ?",
+            "UPDATE tag_blacklist SET dislike_count = 0 WHERE tag = ?",
             (tag,)
         )
         stats_updated = cursor.rowcount > 0
@@ -1163,7 +1163,7 @@ async def get_all_blocked_tags(dislike_threshold: int = 3) -> list[str]:
         
         # 自动
         cursor = await db.execute(
-            "SELECT tag FROM tag_feedback_stats WHERE dislike_count >= ?",
+            "SELECT tag FROM tag_blacklist WHERE dislike_count >= ?",
             (dislike_threshold,)
         )
         auto = {row[0] for row in (await cursor.fetchall())}

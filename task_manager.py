@@ -305,18 +305,11 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
             return
 
         # 3. 执行核心反馈逻辑
-        suggested_block_tag = await profiler.apply_feedback(
+        feedback_result = await profiler.apply_feedback(
             illust=illust,
             action=action,
             config=config.get("feedback", {})
         )
-        
-        # 如果 profiler 建议屏蔽
-        if suggested_block_tag:
-             msg = f"🚫 Tag `{suggested_block_tag}` 累计不喜欢已达阈值。\n是否屏蔽？\n发送 `/block {suggested_block_tag}` 确认屏蔽。"
-             for n in notifiers_list:
-                 if hasattr(n, 'send_text'):
-                     await n.send_text(msg)
         
         # 如果是"喜欢"，同步添加到 Pixiv 收藏
         if action in ("like", "1"):
@@ -366,6 +359,7 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                  logger.error(f"同步收藏/连锁处理失败: {e}")
         
         logger.info(f"反馈处理完成: illust_id={illust_id}, action={action}")
+        return feedback_result
     
     # ... (rest of setup_notifiers) ...
 
