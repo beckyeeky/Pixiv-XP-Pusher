@@ -449,6 +449,23 @@ async def mark_pushed(illust_id: int, source: str):
         )
         await db.commit()
 
+
+async def get_last_push_at() -> Optional[datetime]:
+    """获取最近一次成功推送时间。"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT MAX(pushed_at) FROM push_history")
+        row = await cursor.fetchone()
+
+    value = row[0] if row else None
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        logger.warning("无法解析最近推送时间: %s", value)
+        return None
+
 async def get_push_source(illust_id: int) -> Optional[str]:
     """获取推送来源"""
     async with aiosqlite.connect(DB_PATH) as db:
