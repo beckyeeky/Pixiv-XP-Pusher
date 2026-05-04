@@ -1005,14 +1005,17 @@ class TelegramNotifier(BaseNotifier):
                     query.message.message_id,
                     str(query.message.chat_id)
                 )
-                auto_blocked_tags = []
+                auto_blocked_artists = []
                 for illust_id in illust_ids:
                     feedback_result = await self.handle_feedback(illust_id, action, chat_id=query.message.chat_id)
-                    auto_blocked_tags.extend(feedback_result.get("auto_blocked_tags", []))
+                    auto_blocked_artists.extend(feedback_result.get("auto_blocked_artists", []))
 
-                if action == "dislike" and auto_blocked_tags:
-                    blocked = "、".join(f"`{tag}`" for tag in dict.fromkeys(auto_blocked_tags))
-                    text = f"🚫 已对全部 {len(illust_ids)} 个作品记录不喜欢，并自动屏蔽标签: {blocked}"
+                if action == "dislike" and auto_blocked_artists:
+                    names = "、".join(
+                        f"[{a['artist_name']}](https://pixiv.net/users/{a['artist_id']}) (`{a['artist_id']}`)"
+                        for a in dict((a["artist_id"], a) for a in auto_blocked_artists).values()
+                    )
+                    text = f"🚫 已对全部 {len(illust_ids)} 个作品记录不喜欢，并自动屏蔽画师: {names}"
                 else:
                     emoji = "❤️" if action == "like" else "👎"
                     text = f"{emoji} 已对全部 {len(illust_ids)} 个作品记录反馈"
@@ -1075,12 +1078,15 @@ class TelegramNotifier(BaseNotifier):
                         async def _background_task():
                             try:
                                 feedback_result = await self.handle_feedback(int(illust_id), action, chat_id=query.message.chat_id)
-                                auto_blocked_tags = feedback_result.get("auto_blocked_tags", [])
-                                if action == "dislike" and auto_blocked_tags:
-                                    blocked = "、".join(f"`{tag}`" for tag in auto_blocked_tags)
+                                auto_blocked_artists = feedback_result.get("auto_blocked_artists", [])
+                                if action == "dislike" and auto_blocked_artists:
+                                    names = "、".join(
+                                        f"[{a['artist_name']}](https://pixiv.net/users/{a['artist_id']}) (`{a['artist_id']}`)"
+                                        for a in auto_blocked_artists
+                                    )
                                     await self.bot.send_message(
                                         chat_id=query.message.chat_id,
-                                        text=f"🚫 已自动屏蔽标签: {blocked}",
+                                        text=f"🚫 已自动屏蔽画师: {names}",
                                         reply_to_message_id=query.message.message_id,
                                         parse_mode="Markdown",
                                     )
@@ -4107,16 +4113,19 @@ class TelegramNotifier(BaseNotifier):
         if action == "like":
             return f"❤️ 已记录{prefix}喜欢".strip()
 
-        auto_blocked_tags = (feedback_result or {}).get("auto_blocked_tags", [])
-        if auto_blocked_tags:
-            blocked = "、".join(f"`{tag}`" for tag in auto_blocked_tags)
-            return f"🚫 已记录{prefix}不喜欢，并自动屏蔽标签: {blocked}".strip()
+        auto_blocked_artists = (feedback_result or {}).get("auto_blocked_artists", [])
+        if auto_blocked_artists:
+            names = "、".join(
+                f"[{a['artist_name']}](https://pixiv.net/users/{a['artist_id']}) (`{a['artist_id']}`)"
+                for a in auto_blocked_artists
+            )
+            return f"🚫 已记录{prefix}不喜欢，并自动屏蔽画师: {names}".strip()
         return f"👎 已记录{prefix}不喜欢".strip()
 
     async def handle_feedback(self, illust_id: int, action: str, chat_id: int | None = None) -> dict:
         """处理反馈回调 (Vivi增强版: 同步Pixiv操作)"""
         typing_task = None
-        feedback_result = {"ok": True, "action": action, "illust_id": illust_id, "auto_blocked_tags": []}
+        feedback_result = {"ok": True, "action": action, "illust_id": illust_id, "auto_blocked_artists": []}
         if action == "follow" and chat_id:
             typing_task = asyncio.create_task(self._keep_typing(chat_id))
         try:

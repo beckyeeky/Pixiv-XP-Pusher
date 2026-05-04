@@ -976,8 +976,8 @@ class XPProfiler:
         profile = await db.get_xp_profile()
         max_weight = max(profile.values()) if profile else 1
         
-        auto_blocked_tags: list[str] = []
         disliked_tags: list[str] = []
+        auto_blocked_artists: list[dict] = []
         
         for tag in illust.tags:
             normalized = self._normalize_tag(tag)
@@ -1001,28 +1001,26 @@ class XPProfiler:
                 # 同时更新负向画像（用于主动排斥相似作品）
                 await db.adjust_negative_weight(normalized, adjusted_penalty)
                 
-                count = await db.increment_tag_dislike(normalized)
-                
-                if count == dislike_threshold:
-                    await db.block_tag(normalized)
-                    auto_blocked_tags.append(normalized)
-                    logger.info(f"Tag '{normalized}' 累计否认 {count} 次，已自动加入黑名单")
-                elif count > dislike_threshold:
-                    if await db.is_tag_blocked(normalized):
-                        logger.debug(f"Tag '{normalized}' 累计否认 {count} 次 (已自动屏蔽)")
-                    else:
-                        await db.block_tag(normalized)
-                        auto_blocked_tags.append(normalized)
-                        logger.info(f"Tag '{normalized}' 累计否认 {count} 次，补偿写入屏蔽列表")
-                else:
-                    logger.debug(f"Tag '{normalized}' 权重 -{adjusted_penalty:.2f} (分级惩罚)")
+                await db.increment_tag_dislike(normalized)
+                logger.debug(f"Tag '{normalized}' 权重 -{adjusted_penalty:.2f} (分级惩罚)")
         
-        # 画师权重关联 (Artist Weight) - 只执行一次
+        # 画师权重关联 + 自动屏蔽（连续 3 次 dislike 同画师）
         if illust.user_id:
             try:
                 artist_delta = 1.0 if action == "like" else -1.0
                 await db.update_artist_score(illust.user_id, artist_delta)
                 logger.debug(f"画师 {illust.user_id} ({illust.user_name}) 权重 {artist_delta:+.1f}")
+
+                # dislike 时检查：累计 dislike 评分 <= -3 且未屏蔽 → 自动屏蔽画师
+                if action == "dislike":
+                    artist_score = await db.get_artist_score(illust.user_id)
+                    if artist_score <= -3 and not await db.is_artist_blocked(illust.user_id):
+                        await db.block_artist(illust.user_id, illust.user_name)
+                        auto_blocked_artists.append({
+                            "artist_id": illust.user_id,
+                            "artist_name": illust.user_name,
+                        })
+                        logger.info(f"画师 {illust.user_id} ({illust.user_name}) 累计评分 {artist_score}，已自动屏蔽")
             except Exception as e:
                 logger.error(f"更新画师权重失败: {e}")
 
@@ -1033,5 +1031,5 @@ class XPProfiler:
             "action": action,
             "illust_id": illust.id,
             "disliked_tags": list(dict.fromkeys(disliked_tags)),
-            "auto_blocked_tags": list(dict.fromkeys(auto_blocked_tags)),
+            "auto_blocked_artists": auto_blocked_artists,
         }
