@@ -8,13 +8,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import random
+import sys
 from pathlib import Path
 from typing import Any
 
-import aiohttp
 
-from config import load_config
-from pixiv_client import PixivClient
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from telegram_rich import build_input_rich_message, normalize_rich_message_config, pixiv_cat_image_url
 
 
@@ -69,6 +71,8 @@ async def _pick_liked_illust_id() -> int:
 
 
 async def _post_telegram(token: str, method: str, payload: dict[str, Any], proxy_url: str | None) -> dict[str, Any]:
+    import aiohttp
+
     url = f"https://api.telegram.org/bot{token}/{method}"
     timeout = aiohttp.ClientTimeout(total=90)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -121,6 +125,9 @@ async def main() -> int:
     parser.add_argument("--mode", choices=RICH_IMAGE_MODES, help="Override rich_message.image_mode")
     parser.add_argument("--send", action="store_true", help="Actually send the message. Without this, only prints a dry-run summary.")
     args = parser.parse_args()
+
+    from config import load_config
+    from pixiv_client import PixivClient
 
     cfg = load_config(Path(args.config))
     tg_cfg = cfg.get("notifier", {}).get("telegram", {})
