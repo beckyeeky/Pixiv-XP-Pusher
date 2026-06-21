@@ -42,6 +42,7 @@
 - `telegram` / `onebot` / `astrbot` 各自独立配置
 - `telegram.rich_message.enabled`：实验性 Telegram Bot API 10.1 Rich Message 推送，默认关闭
 - `telegram.rich_message.fallback_to_photo`：Rich Message 失败时回退普通图片消息，默认开启
+- `telegram.rich_message.image_mode`：图片展示模式，`photo` 保持可点击放大，`rich_card` 使用 Rich Message 卡片，`hybrid` 同时发送 Photo 和 Rich 卡片，默认 `photo`
 
 ## web
 - `enabled`

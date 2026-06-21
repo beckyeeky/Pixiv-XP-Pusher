@@ -231,6 +231,7 @@ notifier:
     rich_message:
       enabled: false
       fallback_to_photo: true # Rich Message 发送失败时回退到普通图片消息
+      image_mode: photo # photo=可点击放大; rich_card=Rich 卡片; hybrid=Photo + Rich
     # Topic 智能分流 (可选，用于 Supergroup 话题自动分类)
     # topic_rules:
     #   default: null           # 默认 topic_id (null = 不使用 topic)

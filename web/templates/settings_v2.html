@@ -404,6 +404,11 @@ textarea.form-control {
                                 <span>失败回退普通图片</span>
                             </label>
                         </div>
+                        <select class="form-control" id="tg_rich_message_image_mode" style="margin-top: 0.75rem;">
+                            <option value="photo" {% if config.notifier.telegram.rich_message.image_mode | default('photo') == 'photo' %}selected{% endif %}>photo - 可点击放大</option>
+                            <option value="rich_card" {% if config.notifier.telegram.rich_message.image_mode == 'rich_card' %}selected{% endif %}>rich_card - Rich 卡片</option>
+                            <option value="hybrid" {% if config.notifier.telegram.rich_message.image_mode == 'hybrid' %}selected{% endif %}>hybrid - Photo + Rich</option>
+                        </select>
                     </div>
                     <div class="form-group">
                         <label class="form-label">图片质量</label>
@@ -1177,6 +1182,7 @@ function collectConfig() {
     tg.batch_mode = document.getElementById('tg_batch_mode').value || tg.batch_mode || 'single';
     richMessage.enabled = document.getElementById('tg_rich_message_enabled').checked;
     richMessage.fallback_to_photo = document.getElementById('tg_rich_message_fallback').checked;
+    richMessage.image_mode = document.getElementById('tg_rich_message_image_mode').value || 'photo';
     tg.topic_rules = parseJsonField('tg_topic_rules', tg.topic_rules || {});
     tg.topic_tag_mapping = parseJsonField('tg_topic_tag_mapping', tg.topic_tag_mapping || {});
 

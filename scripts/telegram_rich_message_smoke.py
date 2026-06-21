@@ -1,4 +1,4 @@
-"""Smoke-test Telegram Bot API Rich Message with a real liked Pixiv image.
+"""Smoke-test Telegram Rich Message and clickable photo modes with a liked Pixiv image.
 
 By default this is a dry run. Pass --send to actually send to Telegram.
 """
@@ -15,7 +15,10 @@ import aiohttp
 
 from config import load_config
 from pixiv_client import PixivClient
-from telegram_rich import build_input_rich_message
+from telegram_rich import build_input_rich_message, normalize_rich_message_config, pixiv_cat_image_url
+
+
+RICH_IMAGE_MODES = ("photo", "rich_card", "hybrid")
 
 
 def _redact_token(token: str) -> str:
@@ -37,6 +40,25 @@ def _first_chat_id(chat_ids: Any) -> str | None:
     return None
 
 
+def _build_photo_caption(illust: Any) -> str:
+    tags = " ".join(f"#{tag}" for tag in (getattr(illust, "display_tags", None) or getattr(illust, "tags", []) or [])[:5])
+    return (
+        f"🎨 <b>{illust.title}</b>\n"
+        f"👤 {illust.user_name} (ID: {illust.user_id})\n"
+        f"❤️ {illust.bookmark_count} | 👀 {illust.view_count}\n"
+        f"🏷️ {tags}\n"
+        f"🔗 <a href=\"https://pixiv.net/i/{illust.id}\">原图链接</a>"
+    )
+
+
+def _build_keyboard(illust: Any) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [[
+            {"text": "Pixiv", "url": f"https://www.pixiv.net/artworks/{illust.id}"},
+        ]]
+    }
+
+
 async def _pick_liked_illust_id() -> int:
     import database as db
 
@@ -46,8 +68,8 @@ async def _pick_liked_illust_id() -> int:
     return int(random.choice(list(liked_ids)))
 
 
-async def _send_rich_message(token: str, chat_id: str, payload: dict[str, Any], proxy_url: str | None) -> dict[str, Any]:
-    url = f"https://api.telegram.org/bot{token}/sendRichMessage"
+async def _post_telegram(token: str, method: str, payload: dict[str, Any], proxy_url: str | None) -> dict[str, Any]:
+    url = f"https://api.telegram.org/bot{token}/{method}"
     timeout = aiohttp.ClientTimeout(total=90)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(url, json=payload, proxy=proxy_url) as resp:
@@ -57,11 +79,46 @@ async def _send_rich_message(token: str, chat_id: str, payload: dict[str, Any], 
     return data.get("result") or {}
 
 
+async def _send_rich_message(token: str, payload: dict[str, Any], proxy_url: str | None) -> dict[str, Any]:
+    return await _post_telegram(token, "sendRichMessage", payload, proxy_url)
+
+
+async def _send_photo_message(token: str, payload: dict[str, Any], proxy_url: str | None) -> dict[str, Any]:
+    return await _post_telegram(token, "sendPhoto", payload, proxy_url)
+
+
+def _rich_payload(chat_id: str, illust: Any, thread_id: int | None, reply_to_message_id: int | None = None) -> dict[str, Any]:
+    payload = {
+        "chat_id": chat_id,
+        "rich_message": build_input_rich_message(illust, extra_note="Rich Message smoke test"),
+        "reply_markup": _build_keyboard(illust),
+    }
+    if thread_id is not None:
+        payload["message_thread_id"] = thread_id
+    if reply_to_message_id is not None:
+        payload["reply_parameters"] = {"message_id": reply_to_message_id}
+    return payload
+
+
+def _photo_payload(chat_id: str, illust: Any, thread_id: int | None) -> dict[str, Any]:
+    payload = {
+        "chat_id": chat_id,
+        "photo": pixiv_cat_image_url(int(illust.id)),
+        "caption": _build_photo_caption(illust),
+        "parse_mode": "HTML",
+        "reply_markup": _build_keyboard(illust),
+    }
+    if thread_id is not None:
+        payload["message_thread_id"] = thread_id
+    return payload
+
+
 async def main() -> int:
-    parser = argparse.ArgumentParser(description="Send or preview a Telegram Rich Message with a liked Pixiv image.")
+    parser = argparse.ArgumentParser(description="Send or preview a Telegram Rich/photo message with a liked Pixiv image.")
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     parser.add_argument("--illust-id", type=int, help="Pixiv illustration ID; defaults to a random locally liked item")
     parser.add_argument("--chat-id", help="Override notifier.telegram.chat_ids[0]")
+    parser.add_argument("--mode", choices=RICH_IMAGE_MODES, help="Override rich_message.image_mode")
     parser.add_argument("--send", action="store_true", help="Actually send the message. Without this, only prints a dry-run summary.")
     args = parser.parse_args()
 
@@ -69,6 +126,8 @@ async def main() -> int:
     tg_cfg = cfg.get("notifier", {}).get("telegram", {})
     pixiv_cfg = cfg.get("pixiv", {})
     network_cfg = cfg.get("network", {})
+    rich_cfg = normalize_rich_message_config(tg_cfg.get("rich_message"))
+    mode = args.mode or rich_cfg["image_mode"]
 
     token = tg_cfg.get("bot_token") or ""
     chat_id = args.chat_id or _first_chat_id(tg_cfg.get("chat_ids") or tg_cfg.get("chat_id"))
@@ -88,31 +147,36 @@ async def main() -> int:
     if not illust:
         raise RuntimeError(f"无法获取 Pixiv 作品详情: {illust_id}")
 
-    rich_message = build_input_rich_message(illust, extra_note="Rich Message smoke test")
-    payload = {
-        "chat_id": chat_id,
-        "rich_message": rich_message,
-        "reply_markup": {
-            "inline_keyboard": [[
-                {"text": "Pixiv", "url": f"https://www.pixiv.net/artworks/{illust.id}"},
-            ]]
-        },
-    }
     thread_id = tg_cfg.get("thread_id")
-    if thread_id is not None:
-        payload["message_thread_id"] = thread_id
-
+    payload_type = "sendPhoto" if mode == "photo" else "sendRichMessage" if mode == "rich_card" else "sendPhoto + sendRichMessage"
     print("Telegram Rich Message smoke test")
     print(f"  token: {_redact_token(token)}")
     print(f"  chat_id: {chat_id}")
+    print(f"  mode: {mode}")
+    print(f"  payload_type: {payload_type}")
+    print(f"  top_level_photo: {mode in {'photo', 'hybrid'}}")
+    print(f"  rich_block: {mode in {'rich_card', 'hybrid'}}")
     print(f"  illust: {illust.id} - {illust.title} / {illust.user_name}")
-    print(f"  html_length: {len(rich_message['html'])}")
+    print(f"  html_length: {len(build_input_rich_message(illust)['html'])}")
     if not args.send:
         print("  mode: dry-run (pass --send to send)")
         return 0
 
-    result = await _send_rich_message(token, chat_id, payload, proxy_url)
-    print(f"  sent message_id: {result.get('message_id')}")
+    if mode == "photo":
+        result = await _send_photo_message(token, _photo_payload(chat_id, illust, thread_id), proxy_url)
+        print(f"  sent photo message_id: {result.get('message_id')}")
+        return 0
+
+    if mode == "rich_card":
+        result = await _send_rich_message(token, _rich_payload(chat_id, illust, thread_id), proxy_url)
+        print(f"  sent rich message_id: {result.get('message_id')}")
+        return 0
+
+    photo_result = await _send_photo_message(token, _photo_payload(chat_id, illust, thread_id), proxy_url)
+    photo_message_id = photo_result.get("message_id")
+    rich_result = await _send_rich_message(token, _rich_payload(chat_id, illust, thread_id, photo_message_id), proxy_url)
+    print(f"  sent photo message_id: {photo_message_id}")
+    print(f"  sent rich reply message_id: {rich_result.get('message_id')}")
     return 0
 
 

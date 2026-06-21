@@ -395,6 +395,7 @@ class SettingsRequest(BaseModel):
     max_image_size: Optional[int] = 2000
     rich_message_enabled: Optional[bool] = False
     rich_message_fallback_to_photo: Optional[bool] = True
+    rich_message_image_mode: Optional[str] = "photo"
     max_concurrency: Optional[int] = 5
     requests_per_minute: Optional[int] = 60
 
@@ -451,7 +452,7 @@ def build_settings_view_config(raw_config: Any) -> dict:
                 "image_quality": 85,
                 "max_image_size": 2000,
                 "batch_mode": "single",
-                "rich_message": {"enabled": False, "fallback_to_photo": True},
+                "rich_message": {"enabled": False, "fallback_to_photo": True, "image_mode": "photo"},
                 "topic_rules": {},
                 "topic_tag_mapping": {},
             },
@@ -614,6 +615,8 @@ async def save_settings(req: SettingsRequest, _=Depends(require_auth)):
             config["notifier"]["telegram"]["rich_message"] = {}
         config["notifier"]["telegram"]["rich_message"]["enabled"] = bool(req.rich_message_enabled)
         config["notifier"]["telegram"]["rich_message"]["fallback_to_photo"] = bool(req.rich_message_fallback_to_photo)
+        image_mode = req.rich_message_image_mode if req.rich_message_image_mode in {"photo", "rich_card", "hybrid"} else "photo"
+        config["notifier"]["telegram"]["rich_message"]["image_mode"] = image_mode
         
         # 处理代理 URL：如果是空字符串或 "None"，则设为 None
         if req.proxy_url and req.proxy_url.strip() and req.proxy_url.strip().lower() != "none":

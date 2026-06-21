@@ -3957,6 +3957,28 @@ class TelegramNotifier(BaseNotifier):
                 if not chat_id:
                     continue
 
+                if self.rich_message_enabled and self.rich_message_image_mode == "rich_card":
+                    try:
+                        rich_message = build_input_rich_message(illust, extra_note=message_prefix or None)
+                        sent_message = await self._send_rich_api_message(
+                            chat_id,
+                            rich_message,
+                            keyboard,
+                            topic_id,
+                            reply_to_message_id=reply_to_message_id,
+                        )
+                        message_id = sent_message.get("message_id") if isinstance(sent_message, dict) else None
+                        if message_id:
+                            self._message_illust_map[message_id] = illust.id
+                            result_map[illust.id] = message_id
+                            logger.info(f"🔗 Rich 连锁推送成功: {illust.id} -> msg_id={message_id}")
+                        await asyncio.sleep(1)
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Rich 连锁推送到 {chat_id} 失败: {e}")
+                        if not self.rich_message_fallback_to_photo:
+                            await asyncio.sleep(1)
+                            continue
                 sent_message = None
                 try:
                     if image_data:
@@ -3990,7 +4012,18 @@ class TelegramNotifier(BaseNotifier):
                         self._message_illust_map[sent_message.message_id] = illust.id
                         result_map[illust.id] = sent_message.message_id
                         logger.info(f"🔗 连锁推送成功: {illust.id} -> msg_id={sent_message.message_id}")
-
+                        if self.rich_message_enabled and self.rich_message_image_mode == "hybrid":
+                            try:
+                                rich_message = build_input_rich_message(illust, extra_note=message_prefix or None)
+                                await self._send_rich_api_message(
+                                    chat_id,
+                                    rich_message,
+                                    None,
+                                    topic_id,
+                                    reply_to_message_id=sent_message.message_id,
+                                )
+                            except Exception as e:
+                                logger.warning(f"Hybrid Rich 连锁卡片发送到 {chat_id} 失败: {e}")
                 except Exception as e:
                     logger.error(f"连锁推送到 {chat_id} 失败: {e}")
 
@@ -4203,6 +4236,7 @@ class TelegramNotifier(BaseNotifier):
                         reply_markup=keyboard,
                         parse_mode="HTML",
                         message_thread_id=topic_id,
+                        reply_to_message_id=reply_to_message_id,
                         read_timeout=60,
                         write_timeout=60,
                         has_spoiler=is_r18
@@ -4216,7 +4250,8 @@ class TelegramNotifier(BaseNotifier):
                         caption=caption,
                         reply_markup=keyboard,
                         parse_mode="HTML",
-                        message_thread_id=self.thread_id,
+                        message_thread_id=topic_id,
+                        reply_to_message_id=reply_to_message_id,
                         read_timeout=60,
                         write_timeout=60,
                         has_spoiler=is_r18
@@ -4224,6 +4259,7 @@ class TelegramNotifier(BaseNotifier):
 
                 if sent_message:
                     self._message_illust_map[sent_message.message_id] = illust.id
+                    result_map[str(chat_id)] = sent_message.message_id
                     any_success = True
             except Exception as e:
                 logger.error(f"发送到 {chat_id} 失败: {e}")
@@ -4234,7 +4270,7 @@ class TelegramNotifier(BaseNotifier):
             for k in oldest_keys:
                 del self._message_illust_map[k]
 
-        return any_success
+        return result_map if return_message_map else any_success
 
     async def _send_video(self, illust: Illust, caption: str, keyboard: InlineKeyboardMarkup, topic_id: int | None = None) -> bool:
         """发送动图视频 (优先PixivCat，失败则尝试本地转码)"""
