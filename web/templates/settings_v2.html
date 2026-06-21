@@ -115,6 +115,20 @@ textarea.form-control {
     height: 1.1rem;
     cursor: pointer;
 }
+.option-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.option-grid .toggle-switch {
+    min-height: 44px;
+    margin-bottom: 0;
+}
+
+.option-grid .toggle-switch span {
+    line-height: 1.35;
+}
 
 .range-wrap {
     display: flex;
@@ -246,6 +260,9 @@ textarea.form-control {
     .settings-nav-item {
         white-space: nowrap;
     }
+    .option-grid {
+        grid-template-columns: 1fr;
+    }
 }
 </style>
 {% endblock %}
@@ -374,18 +391,19 @@ textarea.form-control {
                         </select>
                     </div>
                     <div class="form-group">
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="tg_rich_message_enabled"
-                                   {% if config.notifier.telegram.rich_message.enabled | default(false) %}checked{% endif %}>
-                            <span>Rich Message 推送（实验性）</span>
-                        </label>
-                    </div>
-                    <div class="form-group">
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="tg_rich_message_fallback"
-                                   {% if config.notifier.telegram.rich_message.fallback_to_photo | default(true) %}checked{% endif %}>
-                            <span>Rich Message 失败时回退普通图片</span>
-                        </label>
+                        <label class="form-label">Rich Message</label>
+                        <div class="option-grid">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="tg_rich_message_enabled"
+                                       {% if config.notifier.telegram.rich_message.enabled | default(false) %}checked{% endif %}>
+                                <span>启用</span>
+                            </label>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="tg_rich_message_fallback"
+                                       {% if config.notifier.telegram.rich_message.fallback_to_photo | default(true) %}checked{% endif %}>
+                                <span>失败回退普通图片</span>
+                            </label>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">图片质量</label>
@@ -1304,8 +1322,4 @@ async function exportConfig() {
 }
 </script>
 {% endblock %}
-
-
-
-
 

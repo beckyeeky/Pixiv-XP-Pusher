@@ -28,7 +28,7 @@ profiler:
     # AI 提供商: openai / gemini / claude (目前主要支持 openai 格式)
     provider: "openai"
     # API 密钥
-    api_key: "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    api_key: "YOUR_OPENAI_API_KEY_HERE"
     # API 基础地址 (如果使用中转服务)
     base_url: "https://api.openai.com/v1"
     # 模型名称

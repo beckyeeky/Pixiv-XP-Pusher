@@ -6,19 +6,26 @@ from html import escape
 from typing import Any
 
 
+RICH_MESSAGE_IMAGE_MODES = {"photo", "rich_card", "hybrid"}
+
 RICH_MESSAGE_DEFAULTS = {
     "enabled": False,
     "fallback_to_photo": True,
+    "image_mode": "photo",
 }
 
 
-def normalize_rich_message_config(value: Any) -> dict[str, bool]:
+def normalize_rich_message_config(value: Any) -> dict[str, Any]:
     """Return a stable rich_message config block."""
     if not isinstance(value, dict):
         value = {}
+    image_mode = str(value.get("image_mode") or RICH_MESSAGE_DEFAULTS["image_mode"]).strip()
+    if image_mode not in RICH_MESSAGE_IMAGE_MODES:
+        image_mode = RICH_MESSAGE_DEFAULTS["image_mode"]
     return {
         "enabled": bool(value.get("enabled", RICH_MESSAGE_DEFAULTS["enabled"])),
         "fallback_to_photo": bool(value.get("fallback_to_photo", RICH_MESSAGE_DEFAULTS["fallback_to_photo"])),
+        "image_mode": image_mode,
     }
 
 

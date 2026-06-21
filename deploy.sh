@@ -34,12 +34,12 @@ case "$ACTION" in
     
   once)
     echo "▶️ 手动执行一次任务..."
-    docker-compose run --rm pixiv-xp python main.py --once
+    docker-compose run --rm pusher python main.py --once
     ;;
     
   reset-xp)
     echo "🗑️ 重置 XP 数据..."
-    docker-compose run --rm pixiv-xp python main.py --reset-xp
+    docker-compose run --rm pusher python main.py --reset-xp
     ;;
     
   *)

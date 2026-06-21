@@ -26,6 +26,7 @@ htmlcov/
 
 # Environment
 .env
+.env.*
 .venv/
 venv/
 ENV/
@@ -42,8 +43,15 @@ config.yaml
 data/
 logs/
 pixiv_tokens.json
+*.db
+*.sqlite
+*.sqlite3
 geckodriver.log
 *.log
+*.pem
+*.key
+*.crt
+secrets.*
 
 # Runtime artifacts
 bot.pid
@@ -59,5 +67,7 @@ x-algorithm-main/
 
 # Ops runtime state
 ops/state/
+.agents/
+.codex
 .codex/
 .hermes/
