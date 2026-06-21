@@ -393,6 +393,8 @@ class SettingsRequest(BaseModel):
     batch_mode: Optional[str] = "album"
     image_quality: Optional[int] = 85
     max_image_size: Optional[int] = 2000
+    rich_message_enabled: Optional[bool] = False
+    rich_message_fallback_to_photo: Optional[bool] = True
     max_concurrency: Optional[int] = 5
     requests_per_minute: Optional[int] = 60
 
@@ -449,6 +451,7 @@ def build_settings_view_config(raw_config: Any) -> dict:
                 "image_quality": 85,
                 "max_image_size": 2000,
                 "batch_mode": "single",
+                "rich_message": {"enabled": False, "fallback_to_photo": True},
                 "topic_rules": {},
                 "topic_tag_mapping": {},
             },
@@ -607,6 +610,10 @@ async def save_settings(req: SettingsRequest, _=Depends(require_auth)):
         config["notifier"]["telegram"]["batch_mode"] = req.batch_mode
         config["notifier"]["telegram"]["image_quality"] = req.image_quality
         config["notifier"]["telegram"]["max_image_size"] = req.max_image_size
+        if "rich_message" not in config["notifier"]["telegram"] or not isinstance(config["notifier"]["telegram"].get("rich_message"), dict):
+            config["notifier"]["telegram"]["rich_message"] = {}
+        config["notifier"]["telegram"]["rich_message"]["enabled"] = bool(req.rich_message_enabled)
+        config["notifier"]["telegram"]["rich_message"]["fallback_to_photo"] = bool(req.rich_message_fallback_to_photo)
         
         # 处理代理 URL：如果是空字符串或 "None"，则设为 None
         if req.proxy_url and req.proxy_url.strip() and req.proxy_url.strip().lower() != "none":
@@ -1250,7 +1257,7 @@ def generate_commented_yaml(config: dict) -> str:
                     if isinstance(value, str):
                         # 转义特殊字符
                         escaped = value.replace('"', '\\"').replace("'", "''")
-                        lines.append(f"{prefix}{key}: \"{escaped}\"")
+                        lines.append(f'{prefix}{key}: "{escaped}"')
                     else:
                         lines.append(f"{prefix}{key}: {value}")
         
@@ -1299,3 +1306,8 @@ async def proxy_image(illust_id: int):
                 
     # 失败时返回占位图
     return RedirectResponse("https://via.placeholder.com/300?text=Load+Failed")
+
+
+
+
+

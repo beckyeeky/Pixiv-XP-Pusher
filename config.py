@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from telegram_rich import normalize_rich_message_config
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,27 @@ def normalize_config(config: dict) -> dict:
         field_name="tag_classifier.concurrency",
     ))
 
+    notifier_cfg = normalized.get("notifier")
+    if notifier_cfg is None:
+        notifier_cfg = {}
+        normalized["notifier"] = notifier_cfg
+    elif not isinstance(notifier_cfg, dict):
+        logger.warning("配置项 notifier 必须是对象，已回退为默认值")
+        notifier_cfg = {}
+        normalized["notifier"] = notifier_cfg
+
+    telegram_cfg = notifier_cfg.get("telegram")
+    if telegram_cfg is None:
+        telegram_cfg = {}
+        notifier_cfg["telegram"] = telegram_cfg
+    elif not isinstance(telegram_cfg, dict):
+        logger.warning("配置项 notifier.telegram 必须是对象，已回退为默认值")
+        telegram_cfg = {}
+        notifier_cfg["telegram"] = telegram_cfg
+
+    telegram_cfg["rich_message"] = normalize_rich_message_config(
+        telegram_cfg.get("rich_message")
+    )
     # === 全局 API Key 继承：profiler.ai → scorer / tag_classifier ===
     shared_key = (
         normalized.get("profiler", {}).get("ai", {}).get("api_key", "").strip()
@@ -163,3 +185,4 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     except Exception as e:
         logger.error(f"加载配置文件失败: {e}")
         return {}
+

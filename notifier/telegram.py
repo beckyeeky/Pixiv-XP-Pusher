@@ -14,6 +14,7 @@ from telegram.ext import Application, CallbackQueryHandler
 from .base import BaseNotifier
 from pixiv_client import Illust, PixivClient
 from utils import format_xp_profile_lines, get_pixiv_cat_url
+from telegram_rich import build_input_rich_message, normalize_rich_message_config
 
 try:
     from PIL import Image
@@ -154,6 +155,7 @@ class TelegramNotifier(BaseNotifier):
         "reply_thread": True,
         "topic_routing": True,
         "batch_mode": True,
+        "rich_message": True,
     }
 
 
@@ -178,6 +180,7 @@ class TelegramNotifier(BaseNotifier):
         batch_show_title: bool = True,
         batch_show_artist: bool = True,
         batch_show_tags: bool = True,
+        rich_message: dict | None = None,
     ):
         # Auto-detect proxy if not provided
         if not proxy_url:
@@ -222,6 +225,9 @@ class TelegramNotifier(BaseNotifier):
         self.batch_show_title = batch_show_title
         self.batch_show_artist = batch_show_artist
         self.batch_show_tags = batch_show_tags
+        rich_cfg = normalize_rich_message_config(rich_message)
+        self.rich_message_enabled = rich_cfg["enabled"]
+        self.rich_message_fallback_to_photo = rich_cfg["fallback_to_photo"]
         self._telegraph = None  # Telegraph 客户端（延迟初始化）
         self._pending_input = None  # 等待用户输入的状态
 
@@ -233,7 +239,8 @@ class TelegramNotifier(BaseNotifier):
             logger.info(f"Topic 分流规则: {list(self.topic_rules.keys())}")
         if self.batch_mode == "telegraph":
             logger.info("批量模式: Telegraph")
-
+        if self.rich_message_enabled:
+            logger.info("Rich Message: enabled")
         # 推送队列
         self.send_queue = asyncio.Queue()
         self.worker_task = asyncio.create_task(self._process_queue())
@@ -352,6 +359,9 @@ class TelegramNotifier(BaseNotifier):
 
     def _build_settings_menu(self, config: dict) -> InlineKeyboardMarkup:
         """构建设置菜单"""
+        tg_cfg = config.get("notifier", {}).get("telegram", {}) if isinstance(config, dict) else {}
+        rich_cfg = normalize_rich_message_config(tg_cfg.get("rich_message"))
+        rich_icon = "✅" if rich_cfg["enabled"] else "❌"
         return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🤖 AI过滤", callback_data="menu:set:ai"),
@@ -361,6 +371,7 @@ class TelegramNotifier(BaseNotifier):
                 InlineKeyboardButton("📊 每日上限", callback_data="menu:set:limit"),
                 InlineKeyboardButton("📅 推送时间", callback_data="menu:set:schedule"),
             ],
+            [InlineKeyboardButton(f"Rich Message {rich_icon}", callback_data="menu:set:rich")],
             [InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")],
         ])
 
@@ -404,7 +415,7 @@ class TelegramNotifier(BaseNotifier):
             # Navigate to leaf
             current = config
             for key in keys[:-1]:
-                if key not in current: current[key] = {}
+                if key not in current or not isinstance(current[key], dict): current[key] = {}
                 current = current[key]
             current[keys[-1]] = value
 
@@ -420,6 +431,11 @@ class TelegramNotifier(BaseNotifier):
         self._save_config_value("notifier", "telegram", "batch_show_title", self.batch_show_title)
         self._save_config_value("notifier", "telegram", "batch_show_artist", self.batch_show_artist)
         self._save_config_value("notifier", "telegram", "batch_show_tags", self.batch_show_tags)
+
+    def _save_rich_message_config(self):
+        """保存 Rich Message 配置。"""
+        self._save_config_value("notifier", "telegram", "rich_message", "enabled", self.rich_message_enabled)
+        self._save_config_value("notifier", "telegram", "rich_message", "fallback_to_photo", self.rich_message_fallback_to_photo)
 
     async def _handle_menu_callback(self, query, data: str):
         """处理菜单回调"""
@@ -673,6 +689,18 @@ class TelegramNotifier(BaseNotifier):
                     f"✅ R18 模式已切换为: `{next_mode}`",
                     reply_markup=self._build_settings_menu(config),
                     parse_mode="Markdown"
+                )
+            elif sub_action == "rich":
+                rich_cfg = normalize_rich_message_config(
+                    config.get("notifier", {}).get("telegram", {}).get("rich_message")
+                )
+                self.rich_message_enabled = not rich_cfg["enabled"]
+                self.rich_message_fallback_to_photo = rich_cfg["fallback_to_photo"]
+                self._save_rich_message_config()
+                config = self._read_config()
+                await query.edit_message_text(
+                    f"✅ Rich Message 已 {'开启' if self.rich_message_enabled else '关闭'}",
+                    reply_markup=self._build_settings_menu(config)
                 )
             elif sub_action == "limit":
                 msg = await query.edit_message_text(
@@ -2940,6 +2968,7 @@ class TelegramNotifier(BaseNotifier):
                 "`/block_artist <id>` - 🚫 屏蔽画师\n"
                 "`/unblock_artist <id>` - ✅ 取消屏蔽画师\n"
                 "`/batch` - 📦 批量模式设置\n"
+                "`/rich` - ✨ Rich Message 设置\n"
                 "`/help` - ℹ️ 显示此帮助\n\n"
                 "*💡 推荐使用 /menu 菜单操作*"
             )
@@ -2965,6 +2994,71 @@ class TelegramNotifier(BaseNotifier):
                 reply_markup=self._build_main_menu(),
                 parse_mode="Markdown"
             )
+
+        # /rich 指令 - Rich Message 模式设置
+        async def cmd_rich(update, context):
+            user_id = update.message.from_user.id
+            if self.allowed_users and user_id not in self.allowed_users:
+                await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
+                return
+
+            chat_id = update.message.chat_id
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as e:
+                logger.debug(f"删除 /rich 命令失败: {e}")
+
+            args = [arg.lower() for arg in context.args]
+            if not args:
+                status = (
+                    "*✨ Rich Message 设置*\n\n"
+                    f"当前状态: `{'开启' if self.rich_message_enabled else '关闭'}`\n"
+                    f"失败回退普通图片: `{'开启' if self.rich_message_fallback_to_photo else '关闭'}`\n\n"
+                    "*用法:*\n"
+                    "`/rich on` - 开启 Rich Message\n"
+                    "`/rich off` - 关闭 Rich Message\n"
+                    "`/rich fallback on|off` - 开关失败回退\n"
+                    "`/rich test` - 发送 Rich Message 测试消息"
+                )
+                await update.message.reply_text(status, parse_mode="Markdown")
+                return
+
+            cmd = args[0]
+            if cmd == "on":
+                self.rich_message_enabled = True
+                self._save_rich_message_config()
+                await update.message.reply_text("✅ Rich Message 已开启")
+                return
+            if cmd == "off":
+                self.rich_message_enabled = False
+                self._save_rich_message_config()
+                await update.message.reply_text("✅ Rich Message 已关闭")
+                return
+            if cmd == "fallback":
+                if len(args) < 2 or args[1] not in {"on", "off"}:
+                    await update.message.reply_text("❌ 用法: `/rich fallback on|off`", parse_mode="Markdown")
+                    return
+                self.rich_message_fallback_to_photo = args[1] == "on"
+                self._save_rich_message_config()
+                await update.message.reply_text(
+                    f"✅ Rich Message 失败回退已{'开启' if self.rich_message_fallback_to_photo else '关闭'}"
+                )
+                return
+            if cmd == "test":
+                topic_id = getattr(update.message, "message_thread_id", None) or self.thread_id
+                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ 设置", callback_data="menu:settings")]])
+                try:
+                    await self._send_rich_api_message(
+                        str(chat_id),
+                        {"html": "<h3>Rich Message 测试</h3><p>如果你能看到这条消息和下面的按钮，说明 Bot API 10.1 通路可用。</p>"},
+                        keyboard,
+                        topic_id,
+                    )
+                except Exception as e:
+                    await update.message.reply_text(f"❌ Rich Message 测试失败: {e}")
+                return
+
+            await update.message.reply_text("❌ 未知参数，使用 `/rich` 查看帮助", parse_mode="Markdown")
 
         # /batch 指令 - 批量模式设置
         async def cmd_batch(update, context):
@@ -3276,6 +3370,7 @@ class TelegramNotifier(BaseNotifier):
         self._app.add_handler(CommandHandler("block_artist", cmd_block_artist))
         self._app.add_handler(CommandHandler("unblock_artist", cmd_unblock_artist))
         self._app.add_handler(CommandHandler("batch", cmd_batch))
+        self._app.add_handler(CommandHandler("rich", cmd_rich))
         self._app.add_handler(CommandHandler("search", cmd_search))
         self._app.add_handler(CommandHandler("menu", cmd_menu))
         self._app.add_handler(CommandHandler("start", cmd_menu))  # /start 也打开菜单
@@ -3311,6 +3406,7 @@ class TelegramNotifier(BaseNotifier):
                 BotCommand("unmute", "🔔 取消静音"),
                 BotCommand("block_artist", "🎨 屏蔽画师"),
                 BotCommand("batch", "📦 批量模式"),
+                BotCommand("rich", "✨ Rich Message"),
                 BotCommand("restart", "🔄 重启服务"),
                 BotCommand("help", "ℹ️ 帮助信息"),
             ]
@@ -3802,6 +3898,85 @@ class TelegramNotifier(BaseNotifier):
 
         return result_map
 
+    @staticmethod
+    def _reply_markup_to_dict(reply_markup):
+        if reply_markup is None:
+            return None
+        if hasattr(reply_markup, "to_dict"):
+            return reply_markup.to_dict()
+        if isinstance(reply_markup, dict):
+            return reply_markup
+        return None
+
+    async def _post_telegram_api(self, method: str, payload: dict) -> dict:
+        """调用 python-telegram-bot 尚未封装的新 Bot API 方法。"""
+        import aiohttp
+
+        url = f"https://api.telegram.org/bot{self.bot.token}/{method}"
+        timeout = aiohttp.ClientTimeout(total=90)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json=payload, proxy=self.proxy_url) as resp:
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    body = await resp.text()
+                    raise RuntimeError(f"Telegram API {method} returned non-JSON response: {resp.status} {body[:200]}")
+
+        if not data.get("ok"):
+            description = data.get("description") or data
+            raise RuntimeError(f"Telegram API {method} failed: {description}")
+        return data.get("result") or {}
+
+    async def _send_rich_api_message(
+        self,
+        chat_id: str,
+        rich_message: dict,
+        keyboard: InlineKeyboardMarkup | None = None,
+        topic_id: int | None = None,
+    ) -> dict:
+        payload = {
+            "chat_id": chat_id,
+            "rich_message": rich_message,
+        }
+        if topic_id is not None:
+            payload["message_thread_id"] = topic_id
+        reply_markup = self._reply_markup_to_dict(keyboard)
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        return await _retry_on_flood(lambda: self._post_telegram_api("sendRichMessage", payload))
+
+    async def _send_rich_photo(
+        self,
+        illust: Illust,
+        keyboard: InlineKeyboardMarkup,
+        topic_id: int | None = None,
+        extra_note: str | None = None,
+        fallback_caption: str | None = None,
+    ) -> bool:
+        """使用 Bot API 10.1 Rich Message 发送单图/封面。"""
+        any_success = False
+        rich_message = build_input_rich_message(illust, extra_note=extra_note)
+
+        for chat_id in self.chat_ids:
+            try:
+                sent_message = await self._send_rich_api_message(chat_id, rich_message, keyboard, topic_id)
+                message_id = sent_message.get("message_id") if isinstance(sent_message, dict) else None
+                if message_id:
+                    self._message_illust_map[message_id] = illust.id
+                any_success = True
+            except Exception as e:
+                logger.warning(f"Rich Message 发送到 {chat_id} 失败: {e}")
+                if self.rich_message_fallback_to_photo and not any_success:
+                    caption = fallback_caption or self.format_message(illust)
+                    return await self._send_photo(illust, caption, keyboard, topic_id)
+
+        if len(self._message_illust_map) > 200:
+            oldest_keys = list(self._message_illust_map.keys())[:100]
+            for k in oldest_keys:
+                del self._message_illust_map[k]
+
+        return any_success
+
     async def _send_single(self, illust: Illust) -> bool:
         """发送单个作品"""
         caption = self.format_message(illust)
@@ -3816,13 +3991,23 @@ class TelegramNotifier(BaseNotifier):
         # 多页逻辑
         if illust.page_count > self.max_pages:
             # 超过阈值：强制降级为封面模式
-            # 在 caption 之后追加"长篇内容"提示
+            long_note = f"本作品共 {illust.page_count} 页，仅展示封面"
             long_caption = caption.replace("🎨", "📚 [长篇精选] 🎨")
-            long_caption += f"\n\n<i>(本作品共 {illust.page_count} 页，仅展示封面)</i>"
+            long_caption += f"\n\n<i>({long_note})</i>"
+            if self.rich_message_enabled:
+                return await self._send_rich_photo(
+                    illust,
+                    keyboard,
+                    topic_id,
+                    extra_note=long_note,
+                    fallback_caption=long_caption,
+                )
             return await self._send_photo(illust, long_caption, keyboard, topic_id)
 
         if illust.page_count == 1 or self.multi_page_mode == "cover_link":
             # 单图或强制封面模式
+            if self.rich_message_enabled:
+                return await self._send_rich_photo(illust, keyboard, topic_id, fallback_caption=caption)
             return await self._send_photo(illust, caption, keyboard, topic_id)
         else:
             # 多图打包模式 (2 到 max_pages 页)
@@ -4091,7 +4276,7 @@ class TelegramNotifier(BaseNotifier):
             f"❤️ {illust.bookmark_count} | 👀 {illust.view_count}\n"
             f"{match_line}"
             f"🏷️ {tags}\n"
-            f"🔗 <a href=\"https://pixiv.net/i/{illust.id}\">原图链接</a>"
+            f'🔗 <a href="https://pixiv.net/i/{illust.id}">原图链接</a>'
         )
 
     def _build_keyboard(self, illust: Illust) -> InlineKeyboardMarkup:
@@ -4174,3 +4359,5 @@ class TelegramNotifier(BaseNotifier):
         finally:
             if typing_task:
                 typing_task.cancel()
+
+

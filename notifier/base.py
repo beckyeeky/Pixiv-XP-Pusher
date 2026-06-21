@@ -18,6 +18,7 @@ class BaseNotifier(ABC):
         "reply_thread": False,
         "topic_routing": False,
         "batch_mode": False,
+        "rich_message": False,
     }
     
     @abstractmethod
@@ -81,3 +82,5 @@ class BaseNotifier(ABC):
         """
         # 默认实现不发送或仅打印
         return True
+
+

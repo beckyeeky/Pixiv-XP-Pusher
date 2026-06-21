@@ -13,6 +13,7 @@
 - `/mute`, `/unmute`：标签静音
 - `/block_artist`, `/unblock_artist`：画师屏蔽
 - `/batch`：批量模式设置
+- `/rich`：Rich Message 模式设置（`on` / `off` / `fallback on|off` / `test`）
 - `/help`：帮助
 - `/restart`：重启服务（需部署环境支持）
 

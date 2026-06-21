@@ -227,6 +227,10 @@ notifier:
     image_quality: 85 # JPEG 压缩质量 (50-100)
     max_image_size: 2000 # 图片最大边长 (px)
 
+    # Telegram Bot API 10.1 Rich Message（实验性，默认关闭）
+    rich_message:
+      enabled: false
+      fallback_to_photo: true # Rich Message 发送失败时回退到普通图片消息
     # Topic 智能分流 (可选，用于 Supergroup 话题自动分类)
     # topic_rules:
     #   default: null           # 默认 topic_id (null = 不使用 topic)
@@ -275,3 +279,4 @@ web:
   require_login_password: true  # 设为 false 可关闭 Web 登录密码验证（仅建议内网/本机使用）
   password: "YOUR_PASSWORD_HERE"
   port: 8000
+

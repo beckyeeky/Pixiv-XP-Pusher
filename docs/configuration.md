@@ -40,9 +40,14 @@
 ## notifier
 - `types`：可启用多个通知器
 - `telegram` / `onebot` / `astrbot` 各自独立配置
+- `telegram.rich_message.enabled`：实验性 Telegram Bot API 10.1 Rich Message 推送，默认关闭
+- `telegram.rich_message.fallback_to_photo`：Rich Message 失败时回退普通图片消息，默认开启
 
 ## web
 - `enabled`
 - `require_login_password`
 - `password`
 - `port`
+
+
+

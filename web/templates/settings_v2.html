@@ -374,6 +374,20 @@ textarea.form-control {
                         </select>
                     </div>
                     <div class="form-group">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="tg_rich_message_enabled"
+                                   {% if config.notifier.telegram.rich_message.enabled | default(false) %}checked{% endif %}>
+                            <span>Rich Message 推送（实验性）</span>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="tg_rich_message_fallback"
+                                   {% if config.notifier.telegram.rich_message.fallback_to_photo | default(true) %}checked{% endif %}>
+                            <span>Rich Message 失败时回退普通图片</span>
+                        </label>
+                    </div>
+                    <div class="form-group">
                         <label class="form-label">图片质量</label>
                         <div class="range-wrap">
                             <input type="range" id="tg_image_quality" min="50" max="100" 
@@ -1081,6 +1095,7 @@ function collectConfig() {
     const feedback = ensureObject(cfg, 'feedback');
     const notifier = ensureObject(cfg, 'notifier');
     const tg = ensureObject(notifier, 'telegram');
+    const richMessage = ensureObject(tg, 'rich_message');
     const profiler = ensureObject(cfg, 'profiler');
     const profilerAi = ensureObject(profiler, 'ai');
     const ai = ensureObject(cfg, 'ai');
@@ -1142,6 +1157,8 @@ function collectConfig() {
     tg.image_quality = asInt(document.getElementById('tg_image_quality').value, tg.image_quality || 85);
     tg.max_image_size = asInt(document.getElementById('tg_max_image_size').value, tg.max_image_size || 2000);
     tg.batch_mode = document.getElementById('tg_batch_mode').value || tg.batch_mode || 'single';
+    richMessage.enabled = document.getElementById('tg_rich_message_enabled').checked;
+    richMessage.fallback_to_photo = document.getElementById('tg_rich_message_fallback').checked;
     tg.topic_rules = parseJsonField('tg_topic_rules', tg.topic_rules || {});
     tg.topic_tag_mapping = parseJsonField('tg_topic_tag_mapping', tg.topic_tag_mapping || {});
 
@@ -1287,3 +1304,8 @@ async function exportConfig() {
 }
 </script>
 {% endblock %}
+
+
+
+
+
