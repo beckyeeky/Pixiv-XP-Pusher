@@ -25,11 +25,11 @@ docker-compose up -d --force-recreate
 
 如使用 systemd 管理，可拆分为两个服务（推送主任务 + Web）：
 
-`/etc/systemd/system/pixiv-xp-pusher.service`
+`/etc/systemd/system/pixiv-pusher.service`
 
 ```ini
 [Unit]
-Description=Pixiv XP Pusher Service
+Description=Pixiv XP Pusher Daemon
 After=network.target
 
 [Service]
@@ -44,11 +44,11 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-`/etc/systemd/system/pixiv-xp-web.service`
+`/etc/systemd/system/pixiv-web.service`
 
 ```ini
 [Unit]
-Description=Pixiv XP Pusher Web Console
+Description=Pixiv XP Pusher Web UI
 After=network.target
 
 [Service]
@@ -67,9 +67,9 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now pixiv-xp-pusher pixiv-xp-web
-sudo systemctl restart pixiv-xp-pusher pixiv-xp-web
-sudo systemctl status pixiv-xp-pusher pixiv-xp-web
+sudo systemctl enable --now pixiv-pusher.service pixiv-web.service
+sudo systemctl restart pixiv-pusher.service pixiv-web.service
+sudo systemctl status pixiv-pusher.service pixiv-web.service
 ```
 
 ## 数据库维护
