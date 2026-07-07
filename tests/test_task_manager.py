@@ -148,7 +148,7 @@ class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
             if key == "schedule_cron":
                 return None
             if key == "runtime.last_successful_push_at":
-                return "2026-05-04T18:30:00"
+                return (datetime.now() - timedelta(hours=1)).isoformat()
             return None
 
         with patch.object(task_manager, "setup_services", new=AsyncMock(return_value=(AsyncMock(), AsyncMock(), AsyncMock(), []))), \

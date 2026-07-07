@@ -490,7 +490,7 @@ class ContentFilter:
         
         # 优化标签展示顺序：feature-first，IP 数量受限，AI 判定的 IP 靠后
         if xp_profile:
-            await self._apply_display_tags(sorted_illusts, xp_profile, tag_classifications=tag_classifications)
+            await self.apply_display_tags(sorted_illusts, xp_profile, tag_classifications=tag_classifications)
         
         # 6.1 AI 精排 (可选) - 使用 LLM 对候选作品进行二次评分
         if self.ai_scorer and self.ai_scorer.enabled and xp_profile:
@@ -634,6 +634,15 @@ class ContentFilter:
         except Exception as e:
             logger.warning(f"标签分类失败，回退为 XP 权重排序: {e}")
             return {}
+
+    async def apply_display_tags(
+        self,
+        illusts: list[Illust],
+        xp_profile: dict[str, float],
+        tag_classifications: Optional[dict] = None,
+    ) -> None:
+        """构建用于消息展示的标签顺序。"""
+        await self._apply_display_tags(illusts, xp_profile, tag_classifications=tag_classifications)
 
     async def _apply_display_tags(
         self,

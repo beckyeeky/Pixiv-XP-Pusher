@@ -88,7 +88,7 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
             display_tags_max_ip_count=1,
         )
 
-        await content_filter._apply_display_tags(
+        await content_filter.apply_display_tags(
             [illust],
             {
                 "pantyhose": 0.9,

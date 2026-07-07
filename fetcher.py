@@ -10,6 +10,7 @@ from typing import Optional
 
 from pixiv_client import Illust, PixivClient
 import database as db
+from related_recommender import RelatedRecommender
 from utils import expand_search_query
 
 logger = logging.getLogger(__name__)
@@ -471,84 +472,14 @@ class ContentFetcher:
         return final_quotas
 
     async def discover_related(self, xp_tags: list[tuple[str, float]], limit: int = 50) -> list[Illust]:
-        """
-        策略D：基于关联作品 (Related Works) 的发现
-        
-        1. 从高权重 XP Tag 中随机选一个 "Seed Tag"
-        2. 从数据库中找出包含该 Tag 的高分收藏作为 "Seed Illust"
-        3. 调用 API 获取 Related Works
-        4. 结合 XP Tag 和 Artist Profile 进行二次筛选
-        """
-        if not xp_tags:
-            return []
-            
-        # 1. 选取 Seed (加权随机)
-        # 取 Top 20 Tags
-        top_tags = xp_tags[:20]
-        if not top_tags:
-            return []
-            
-        tags, weights = zip(*top_tags)
-        seed_tag = random.choices(tags, weights=weights, k=1)[0]
-        
-        # 2. 找 Seed Illust
-        # 这里需要一个 DB 方法：get_top_illusts_by_tag(tag, limit=10)
-        # 暂时用 get_xp_bookmarks 替代，然后在内存筛选
-        # 优化：为了性能，我们可以随机选一个 Recently Liked Illust
-        try:
-            liked_ids = await db.get_liked_illusts()
-            if not liked_ids:
-                return []
-            
-            seed_illust_id = random.choice(list(liked_ids))
-            logger.info(f"关联策略: 选中种子作品 {seed_illust_id} (Tag: {seed_tag})")
-        except Exception as e:
-            logger.warning(f"关联策略选种失败: {e}")
-            return []
-            
-        # 3. Fetch Related
-        try:
-            raw_related = await self.client.get_related_illusts(seed_illust_id, limit=limit * 2) # 多抓点备选
-        except Exception as e:
-            logger.error(f"获取关联作品失败: {e}")
-            return []
-            
-        # 4. Filter & Score
-        scored_candidates = []
-        xp_dict = dict(xp_tags)
-        
-        # 读取 bookmark_threshold 配置
-        bookmark_threshold_related = self.bookmark_threshold.get("related", 0)
-        
-        for illust in raw_related:
-            # 收藏数阈值过滤
-            if bookmark_threshold_related > 0 and illust.bookmark_count < bookmark_threshold_related:
-                logger.debug(f"关联策略: 作品 {illust.id} 收藏数 {illust.bookmark_count} < 阈值 {bookmark_threshold_related}，跳过")
-                continue
-            
-            # 基础分
-            score = 0.0
-            
-            # Tag 分
-            for tag in illust.tags:
-                norm = tag.lower().replace(" ", "_") # 简单归一化
-                if norm in xp_dict:
-                    score += xp_dict[norm]
-            
-            # 画师分 (Artist Boost)
-            artist_score = await db.get_artist_score(illust.user_id)
-            score += artist_score
-            
-            scored_candidates.append((illust, score))
-            
-        # 按分数排序
-        scored_candidates.sort(key=lambda x: x[1], reverse=True)
-        
-        # 返回 Top N
-        details = [f"{ill.id}({sc:.1f})" for ill, sc in scored_candidates[:5]]
-        logger.info(f"关联推荐结果: {details}...")
-        
-        return [x[0] for x in scored_candidates[:limit]]
+        """策略D：基于关联作品 (Related Works) 的发现。"""
+        recommender = RelatedRecommender(
+            client=self.client,
+            sync_client=self.sync_client,
+            config=self.config,
+            bookmark_threshold=self.bookmark_threshold,
+        )
+        return await recommender.discover_for_strategy(xp_tags, limit=limit)
 
     async def discover_from_engaged_artists(
         self, 

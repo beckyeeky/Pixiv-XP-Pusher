@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import sqlite3
 import tempfile
 import unittest
@@ -18,15 +19,22 @@ class DatabaseInitTests(unittest.TestCase):
             self.assertTrue(db_path.exists())
 
             conn = sqlite3.connect(db_path)
+            cursor = None
             try:
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
                 tables = {
                     row[0]
-                    for row in conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
-                    )
+                    for row in cursor
                 }
             finally:
+                if cursor is not None:
+                    cursor.close()
                 conn.close()
+                del cursor
+                del conn
+                gc.collect()
 
             self.assertIn("push_history", tables)
             self.assertIn("xp_profile", tables)
