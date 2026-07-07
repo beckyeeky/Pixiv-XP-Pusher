@@ -25,6 +25,7 @@ class PushStats:
     # 3. 推送阶段
     push_success_count: int = 0
     push_failed_count: int = 0
+    push_queued_count: int = 0
     push_by_source: dict[str, int] = field(default_factory=dict)
     
     # 4. AI 处理统计
@@ -57,6 +58,10 @@ class PushStats:
     def record_push_failed(self):
         """记录推送失败"""
         self.push_failed_count += 1
+
+    def record_push_queued(self):
+        """记录已进入异步推送队列但尚未确认送达"""
+        self.push_queued_count += 1
     
     def record_ai_enabled(self, semantic_match: bool = False, scorer: bool = False):
         """记录 AI 功能启用状态"""
@@ -149,6 +154,8 @@ class PushStats:
                 lines.append(f"   {symbol} {name}: {count}")
         
         # 如果有失败，明确显示
+        if self.push_queued_count > 0:
+            lines.append(f"   ⏳ 排队中: {self.push_queued_count} 个")
         if self.push_failed_count > 0:
             lines.append(f"   ⚠️ 推送失败: {self.push_failed_count} 个")
         

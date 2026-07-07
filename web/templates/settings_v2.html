@@ -6,16 +6,23 @@
 <style>
 .settings-container {
     display: grid;
-    grid-template-columns: 250px 1fr;
+    grid-template-columns: minmax(220px, 250px) minmax(0, 1fr);
     gap: 1.5rem;
     max-width: 1400px;
     margin: 0 auto;
+    align-items: start;
+    padding-bottom: 5.5rem;
 }
 
 .settings-nav {
     position: sticky;
     top: 1rem;
     height: fit-content;
+    min-width: 0;
+    padding: 0.5rem;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border);
+    border-radius: 8px;
 }
 
 .settings-nav-item {
@@ -32,6 +39,8 @@
     width: 100%;
     text-align: left;
     font-size: 0.95rem;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
 }
 
 .settings-nav-item:hover {
@@ -46,6 +55,7 @@
 
 .settings-content {
     min-height: 500px;
+    min-width: 0;
 }
 
 .settings-section {
@@ -58,8 +68,9 @@
 
 .form-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 1.5rem;
+    min-width: 0;
 }
 
 .form-group {
@@ -75,6 +86,7 @@
 
 .form-control {
     width: 100%;
+    min-width: 0;
     padding: 0.7rem;
     background: var(--bg-primary);
     border: 1px solid var(--border);
@@ -92,6 +104,8 @@ textarea.form-control {
     min-height: 100px;
     resize: vertical;
     font-family: monospace;
+    overflow-x: auto;
+    white-space: pre;
 }
 
 .toggle-switch {
@@ -104,6 +118,7 @@ textarea.form-control {
     border: 1px solid var(--border);
     cursor: pointer;
     margin-bottom: 0.5rem;
+    min-width: 0;
 }
 
 .toggle-switch:hover {
@@ -111,9 +126,15 @@ textarea.form-control {
 }
 
 .toggle-switch input {
+    flex: 0 0 auto;
     width: 1.1rem;
     height: 1.1rem;
     cursor: pointer;
+}
+
+.toggle-switch span {
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 .option-grid {
     display: grid;
@@ -167,6 +188,14 @@ textarea.form-control {
     align-items: center;
     gap: 1rem;
     z-index: 100;
+    flex-wrap: wrap;
+}
+
+.save-status {
+    min-width: 8rem;
+    min-height: 1.5rem;
+    color: var(--text-secondary);
+    text-align: right;
 }
 
 .btn-primary {
@@ -217,6 +246,7 @@ textarea.form-control {
     border: 1px solid var(--border);
     border-radius: 6px;
     min-height: 42px;
+    min-width: 0;
 }
 
 .array-item {
@@ -227,6 +257,8 @@ textarea.form-control {
     background: var(--accent-soft);
     border-radius: 16px;
     font-size: 0.85rem;
+    max-width: 100%;
+    overflow-wrap: anywhere;
 }
 
 .array-item .remove {
@@ -241,6 +273,7 @@ textarea.form-control {
 .array-input input {
     flex: 1;
     min-width: 100px;
+    max-width: 100%;
     border: none;
     background: transparent;
     color: var(--text-primary);
@@ -248,20 +281,38 @@ textarea.form-control {
 }
 
 @media (max-width: 768px) {
+    body {
+        padding-bottom: 8rem;
+    }
     .settings-container {
         grid-template-columns: 1fr;
+        gap: 1rem;
     }
     .settings-nav {
         position: relative;
         display: flex;
         overflow-x: auto;
         gap: 0.5rem;
+        top: auto;
     }
     .settings-nav-item {
         white-space: nowrap;
+        flex: 0 0 auto;
+        width: auto;
     }
     .option-grid {
         grid-template-columns: 1fr;
+    }
+    .save-bar {
+        justify-content: stretch;
+        padding: 0.8rem 1rem;
+    }
+    .save-bar button {
+        flex: 1 1 11rem;
+    }
+    .save-status {
+        flex: 1 0 100%;
+        text-align: left;
     }
 }
 </style>
@@ -271,17 +322,17 @@ textarea.form-control {
 <div class="settings-container">
     <!-- 左侧导航 -->
     <nav class="settings-nav">
-        <button class="settings-nav-item active" onclick="showSection('pixiv', event)">🔑 Pixiv 认证</button>
-        <button class="settings-nav-item" onclick="showSection('strategies', event)">🎯 推送策略</button>
-        <button class="settings-nav-item" onclick="showSection('notifier', event)">📢 推送通道</button>
-        <button class="settings-nav-item" onclick="showSection('profiler', event)">👤 画像分析</button>
-        <button class="settings-nav-item" onclick="showSection('ai', event)">🤖 AI 增强</button>
-        <button class="settings-nav-item" onclick="showSection('filter', event)">🛡️ 内容过滤</button>
-        <button class="settings-nav-item" onclick="showSection('fetcher', event)">📥 内容获取</button>
-        <button class="settings-nav-item" onclick="showSection('scheduler', event)">⏰ 定时任务</button>
-        <button class="settings-nav-item" onclick="showSection('network', event)">🌐 网络配置</button>
-        <button class="settings-nav-item" onclick="showSection('feedback', event)">💬 反馈机制</button>
-        <button class="settings-nav-item" onclick="showSection('web', event)">🖥️ Web UI</button>
+        <button class="settings-nav-item active" data-section="pixiv" aria-controls="section-pixiv" aria-selected="true" onclick="showSection('pixiv', event)">🔑 Pixiv 认证</button>
+        <button class="settings-nav-item" data-section="strategies" aria-controls="section-strategies" aria-selected="false" onclick="showSection('strategies', event)">🎯 推送策略</button>
+        <button class="settings-nav-item" data-section="notifier" aria-controls="section-notifier" aria-selected="false" onclick="showSection('notifier', event)">📢 推送通道</button>
+        <button class="settings-nav-item" data-section="profiler" aria-controls="section-profiler" aria-selected="false" onclick="showSection('profiler', event)">👤 画像分析</button>
+        <button class="settings-nav-item" data-section="ai" aria-controls="section-ai" aria-selected="false" onclick="showSection('ai', event)">🤖 AI 增强</button>
+        <button class="settings-nav-item" data-section="filter" aria-controls="section-filter" aria-selected="false" onclick="showSection('filter', event)">🛡️ 内容过滤</button>
+        <button class="settings-nav-item" data-section="fetcher" aria-controls="section-fetcher" aria-selected="false" onclick="showSection('fetcher', event)">📥 内容获取</button>
+        <button class="settings-nav-item" data-section="scheduler" aria-controls="section-scheduler" aria-selected="false" onclick="showSection('scheduler', event)">⏰ 定时任务</button>
+        <button class="settings-nav-item" data-section="network" aria-controls="section-network" aria-selected="false" onclick="showSection('network', event)">🌐 网络配置</button>
+        <button class="settings-nav-item" data-section="feedback" aria-controls="section-feedback" aria-selected="false" onclick="showSection('feedback', event)">💬 反馈机制</button>
+        <button class="settings-nav-item" data-section="web" aria-controls="section-web" aria-selected="false" onclick="showSection('web', event)">🖥️ Web UI</button>
         <hr style="border-color: var(--border); margin: 1rem 0;">
         <a href="/import-export" class="settings-nav-item">📥📤 导入/导出</a>
     </nav>
@@ -999,7 +1050,7 @@ textarea.form-control {
 
 <!-- 固定底部保存栏 -->
 <div class="save-bar">
-    <span id="saveStatus" style="color: var(--text-secondary);"></span>
+    <span id="saveStatus" class="save-status" aria-live="polite"></span>
     <button type="button" class="btn-secondary" onclick="exportConfig()">📤 导出配置</button>
     <button type="button" class="btn-primary" onclick="saveAllSettings()">
         💾 保存所有设置
@@ -1011,14 +1062,19 @@ textarea.form-control {
 <script>
 // 切换设置页面
 function showSection(sectionId, evt) {
-    document.querySelectorAll('.settings-section').forEach(el => el.classList.remove('active'));
-    document.querySelectorAll('.settings-nav-item').forEach(el => {
-        el.classList.toggle('active', el.dataset.section === sectionId);
+    document.querySelectorAll('.settings-section').forEach(el => {
+        el.classList.toggle('active', el.id === 'section-' + sectionId);
     });
-    document.getElementById('section-' + sectionId).classList.add('active');
-    const trigger = evt && evt.currentTarget ? evt.currentTarget : null;
-    if (trigger) {
-        trigger.classList.add('active');
+    document.querySelectorAll('.settings-nav-item').forEach(el => {
+        const isActive = el.dataset.section === sectionId;
+        el.classList.toggle('active', isActive);
+        if (el.tagName === 'BUTTON') {
+            el.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        }
+    });
+    const target = document.getElementById('section-' + sectionId);
+    if (target && evt) {
+        target.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
 }
 
@@ -1105,6 +1161,17 @@ function parseJsonField(id, fallback) {
     } catch (err) {
         throw new Error(`${id} JSON 格式错误: ${err.message}`);
     }
+}
+
+function setSaveStatus(message, kind = 'neutral') {
+    const status = document.getElementById('saveStatus');
+    const colors = {
+        success: '#4caf50',
+        error: '#ef4444',
+        neutral: 'var(--text-secondary)'
+    };
+    status.textContent = message || '';
+    status.style.color = colors[kind] || colors.neutral;
 }
 
 // 收集所有配置（以当前配置为基底，避免未编辑字段被覆盖）
@@ -1259,20 +1326,19 @@ function collectConfig() {
 // 保存所有设置
 function saveAllSettings() {
     const btn = document.querySelector('.save-bar .btn-primary');
-    const status = document.getElementById('saveStatus');
     
     let config = null;
     try {
         config = collectConfig();
     } catch (err) {
-        status.innerText = '❌ 配置格式错误';
-        status.style.color = '#ef4444';
+        setSaveStatus('❌ 配置格式错误', 'error');
         alert(err.message);
         return;
     }
     
     btn.disabled = true;
-    btn.innerText = '保存中...';
+    btn.textContent = '保存中...';
+    setSaveStatus('正在保存', 'neutral');
     
     fetch('/api/config/full', {
         method: 'POST',
@@ -1282,24 +1348,21 @@ function saveAllSettings() {
     .then(r => r.json())
     .then(res => {
         if (res.success) {
-            status.innerText = '✅ 保存成功';
-            status.style.color = '#4caf50';
+            setSaveStatus('✅ 保存成功', 'success');
         } else {
-            status.innerText = '❌ 保存失败';
-            status.style.color = '#ef4444';
+            setSaveStatus('❌ 保存失败', 'error');
             alert('保存失败: ' + (res.error || '未知错误'));
         }
     })
     .catch(err => {
-        status.innerText = '❌ 网络错误';
-        status.style.color = '#ef4444';
+        setSaveStatus('❌ 网络错误', 'error');
         alert('网络错误: ' + err.message);
     })
     .finally(() => {
         btn.disabled = false;
-        btn.innerText = '💾 保存所有设置';
+        btn.textContent = '💾 保存所有设置';
         setTimeout(() => {
-            status.innerText = '';
+            setSaveStatus('');
         }, 3000);
     });
 }
@@ -1328,4 +1391,3 @@ async function exportConfig() {
 }
 </script>
 {% endblock %}
-

@@ -242,17 +242,29 @@ class PushRun:
                 for illust in filtered:
                     await cache_illust(illust.id, illust.tags, illust.user_id, illust.user_name, source=illust.source)
 
-                all_sent_ids = set()
+                delivered_ids = set()
+                queued_ids = set()
                 for notifier in self.notifiers:
                     try:
-                        sent_ids = await notifier.send(filtered)
-                        all_sent_ids.update(sent_ids)
+                        if getattr(type(notifier), "send_with_result", None):
+                            result = await notifier.send_with_result(filtered)
+                            delivered_ids.update(result.delivered_ids)
+                            queued_ids.update(result.queued_ids)
+                        else:
+                            sent_ids = await notifier.send(filtered)
+                            delivered_ids.update(sent_ids)
                     except Exception as e:
                         logger.error(f"推送器 {type(notifier).__name__} 发送失败: {e}")
 
-                if all_sent_ids:
+                if queued_ids:
+                    logger.info(f"有 {len(queued_ids)} 个作品已进入发送队列，等待后续投递确认")
+                    for pid in queued_ids - delivered_ids:
+                        if any(ill.id == pid for ill in filtered):
+                            self.stats.record_push_queued()
+
+                if delivered_ids:
                     filtered_map = {ill.id: ill for ill in filtered}
-                    for pid in all_sent_ids:
+                    for pid in delivered_ids:
                         if pid in filtered_map:
                             illust = filtered_map[pid]
                             source = getattr(illust, "source", "unknown")
@@ -260,9 +272,9 @@ class PushRun:
                         else:
                             logger.warning(f"收到未匹配的推送结果 ID: {pid}，跳过统计归因")
 
-                if all_sent_ids:
+                if delivered_ids:
                     filtered_map = {ill.id: ill for ill in filtered}
-                    for pid in all_sent_ids:
+                    for pid in delivered_ids:
                         if pid in filtered_map:
                             illust = filtered_map[pid]
                             source = getattr(illust, "source", "unknown")
@@ -275,15 +287,18 @@ class PushRun:
                     for notifier in self.notifiers:
                         if hasattr(notifier, "_message_illust_map"):
                             for msg_id, illust_id in notifier._message_illust_map.items():
-                                if illust_id in all_sent_ids:
+                                if illust_id in delivered_ids:
                                     await db_module.set_chain_meta(illust_id, chain_depth=0, chain_msg_id=msg_id)
 
-                    logger.info(f"推送完成: {len(all_sent_ids)}/{len(filtered)} 个作品成功")
+                    logger.info(f"推送完成: {len(delivered_ids)}/{len(filtered)} 个作品成功")
 
-                    failed_count = len(filtered) - len(all_sent_ids)
+                    unresolved_queued_count = len(queued_ids - delivered_ids)
+                    failed_count = len(filtered) - len(delivered_ids) - unresolved_queued_count
                     if failed_count > 0:
                         for _ in range(failed_count):
                             self.stats.record_push_failed()
+                elif queued_ids:
+                    logger.warning("作品已进入发送队列，但尚未确认任何作品送达")
                 else:
                     logger.error("没有任何作品被成功推送")
                     for _ in range(len(filtered)):
@@ -319,6 +334,7 @@ class PushRun:
             "fetch_count": getattr(self.stats, "fetch_total", 0),
             "filtered_count": getattr(self.stats, "filter_after_count", 0),
             "pushed": getattr(self.stats, "push_success_count", 0),
+            "queued": getattr(self.stats, "push_queued_count", 0),
             "failed": getattr(self.stats, "push_failed_count", 0),
         }
         await db_module.set_state("runtime.last_run_summary", json.dumps(summary, ensure_ascii=False))

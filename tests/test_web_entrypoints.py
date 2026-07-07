@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 import database as db_module
@@ -163,3 +164,16 @@ class WebSecurityOptionTests(unittest.TestCase):
         self.assertEqual(payload["notifier"]["telegram"]["bot_token"], "***REDACTED***")
         self.assertEqual(payload["profiler"]["danbooru_api_key"], "***REDACTED***")
         self.assertEqual(payload["profiler"]["boost_tags"]["cat"], 1.8)
+
+    def test_settings_page_renders_with_sparse_config(self):
+        self.config_path.write_text(
+            yaml.safe_dump({"web": {"require_login_password": False, "password": ""}}, allow_unicode=True),
+            encoding="utf-8",
+        )
+
+        client = TestClient(canonical_app)
+        response = client.get("/settings")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Pixiv 认证", response.text)
+        self.assertIn('data-section="pixiv"', response.text)

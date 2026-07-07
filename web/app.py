@@ -12,7 +12,6 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from copy import deepcopy
 
 from fastapi import FastAPI, Request, HTTPException, Depends, Form, Query, Response, Body
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -25,6 +24,11 @@ import yaml
 
 import database as db
 from config import load_config as shared_load_config
+from web.settings_editor import (
+    apply_settings_payload,
+    build_settings_snapshot,
+    redact_sensitive_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,37 +68,25 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 
+def render_template(request: Request, name: str, context: dict):
+    """Render templates across Starlette TemplateResponse signature versions."""
+    context = {"request": request, **context}
+    try:
+        return templates.TemplateResponse(request=request, name=name, context=context)
+    except TypeError as exc:
+        if "unexpected keyword" not in str(exc) and "positional" not in str(exc):
+            raise
+        return templates.TemplateResponse(name, context)
+
+
 def _get_web_security_config() -> dict:
     config = load_config()
     return config.get("web", {}) if isinstance(config, dict) else {}
 
 
-SENSITIVE_CONFIG_KEYS = {
-    "password",
-    "web_password",
-    "bot_token",
-    "api_key",
-    "token",
-    "refresh_token",
-    "access_token",
-    "secret",
-}
-
-
 def _redact_sensitive_config(data: Any) -> Any:
-    """递归脱敏配置数据，避免通过 API 意外暴露凭据。"""
-    if isinstance(data, dict):
-        redacted: Dict[str, Any] = {}
-        for key, value in data.items():
-            key_lower = key.lower()
-            if any(sensitive in key_lower for sensitive in SENSITIVE_CONFIG_KEYS):
-                redacted[key] = "***REDACTED***"
-            else:
-                redacted[key] = _redact_sensitive_config(value)
-        return redacted
-    if isinstance(data, list):
-        return [_redact_sensitive_config(item) for item in data]
-    return data
+    """兼容旧调用：脱敏逻辑由 settings_editor 统一维护。"""
+    return redact_sensitive_config(data)
 
 
 def _get_client_key(request: Request) -> str:
@@ -164,7 +156,7 @@ async def index(request: Request):
             return RedirectResponse("/dashboard")
         
         logger.info("渲染 login.html")
-        return templates.TemplateResponse("login.html", {"request": request, "active_page": ""})
+        return render_template(request, "login.html", {"active_page": ""})
     except Exception as e:
         logger.error(f"访问首页出错: {e}")
         raise HTTPException(500, f"服务器错误: {e}")
@@ -178,7 +170,7 @@ async def setup_page(request: Request):
         if not needs_initial_security_setup(config.get("web", {})):
             return RedirectResponse("/")
         
-        return templates.TemplateResponse("setup.html", {"request": request, "active_page": ""})
+        return render_template(request, "setup.html", {"active_page": ""})
     except Exception as e:
         logger.error(f"访问设置页出错: {e}")
         raise HTTPException(500, f"服务器错误: {e}")
@@ -229,8 +221,7 @@ async def login(request: Request, password: str = Form(...)):
     if hash_password(password) != stored_hash:
         login_attempts.setdefault(client_key, []).append(datetime.now())
         # 密码错误，返回登录页面并显示错误信息
-        return templates.TemplateResponse("login.html", {
-            "request": request,
+        return render_template(request, "login.html", {
             "active_page": "",
             "error": "密码错误，请重试"
         })
@@ -283,8 +274,7 @@ async def dashboard(request: Request):
     else:
         like_rate = "0%"
     
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
+    return render_template(request, "dashboard.html", {
         "active_page": "dashboard",
         "top_tags": top_tags,
         "stats": stats,
@@ -321,8 +311,7 @@ async def gallery(
         favorites_only=favorites_only
     )
     
-    return templates.TemplateResponse("gallery.html", {
-        "request": request,
+    return render_template(request, "gallery.html", {
         "active_page": "gallery",
         "items": items,
         "total": total,
@@ -340,8 +329,7 @@ async def settings_page(request: Request):
         return RedirectResponse("/", status_code=302)
 
     config = build_settings_view_config(load_config())
-    return templates.TemplateResponse("settings_v2.html", {
-        "request": request,
+    return render_template(request, "settings_v2.html", {
         "active_page": "settings",
         "config": config
     })
@@ -355,8 +343,7 @@ async def tags_page(request: Request):
         return RedirectResponse("/", status_code=302)
     
     config = load_config()
-    return templates.TemplateResponse("tags.html", {
-        "request": request,
+    return render_template(request, "tags.html", {
         "active_page": "tags",
         "config": config
     })
@@ -401,252 +388,75 @@ class SettingsRequest(BaseModel):
 
 
 def merge_config_replace_lists(base: Any, override: Any) -> Any:
-    """深度合并配置：字典递归合并，列表与标量以 override 为准。"""
-    if isinstance(base, dict) and isinstance(override, dict):
-        result = deepcopy(base)
-        for key, value in override.items():
-            if key in result:
-                result[key] = merge_config_replace_lists(result[key], value)
-            else:
-                result[key] = deepcopy(value)
-        return result
-    return deepcopy(override)
+    """兼容旧调用：合并逻辑由 settings_editor 统一维护。"""
+    from web.settings_editor import merge_config_replace_lists as merge_settings_config
+
+    return merge_settings_config(base, override)
 
 
 def build_settings_view_config(raw_config: Any) -> dict:
-    """为设置页补齐最小默认结构，避免模板因缺键渲染失败。"""
-    defaults = {
-        "pixiv": {
-            "refresh_token": "",
-            "sync_token": "",
-            "user_id": 0,
-        },
-        "strategies": ["xp_search", "related", "ranking", "subscription"],
-        "scheduler": {
-            "cron": "0 12 * * *",
-            "coalesce": True,
-            "daily_report_cron": "0 0 * * *",
-        },
-        "network": {
-            "max_concurrency": 5,
-            "random_delay": [1.0, 3.0],
-            "requests_per_minute": 60,
-        },
-        "feedback": {
-            "like_boost": 0.5,
-            "dislike_penalty": 0.3,
-            "dislike_threshold": 3,
-            "max_chain_depth": 3,
-            "related_push_limit": 1,
-        },
-        "notifier": {
-            "types": ["telegram"],
-            "max_pages": 10,
-            "multi_page_mode": "cover_link",
-            "telegram": {
-                "bot_token": "",
-                "chat_ids": [],
-                "allowed_users": [],
-                "thread_id": None,
-                "proxy_url": None,
-                "image_quality": 85,
-                "max_image_size": 2000,
-                "batch_mode": "single",
-                "rich_message": {"enabled": False, "fallback_to_photo": True, "image_mode": "photo"},
-                "topic_rules": {},
-                "topic_tag_mapping": {},
-            },
-        },
+    """兼容旧调用：设置页快照由 settings_editor 统一维护。"""
+    return build_settings_snapshot(raw_config)
+
+
+def _legacy_settings_payload(req: SettingsRequest) -> dict:
+    """Map the old narrow settings request onto the full settings payload."""
+    image_mode = req.rich_message_image_mode if req.rich_message_image_mode in {"photo", "rich_card", "hybrid"} else "photo"
+    proxy_url = req.proxy_url.strip() if req.proxy_url and req.proxy_url.strip().lower() != "none" else None
+    return {
+        "pixiv": {"user_id": req.user_id},
         "profiler": {
-            "scan_limit": 1000,
-            "discovery_rate": 0.1,
-            "time_decay_days": 180,
-            "saturation_threshold": 0.5,
-            "top_n": 20,
-            "include_private": True,
-            "ip_weight_discount": 1.0,
-            "ai": {
-                "enabled": True,
-                "provider": "openai",
-                "api_key": "",
-                "base_url": "",
-                "model": "gpt-4o-mini",
-                "concurrency": 10,
-                "batch_size": 200,
-                "filter_meaningless": True,
-                "merge_synonyms": True,
-            },
+            "ip_weight_discount": req.ip_weight_discount,
+            "danbooru_login": req.danbooru_login,
+            "danbooru_api_key": req.danbooru_api_key,
         },
-        "ai": {
-            "embedding": {
-                "enabled": False,
-                "provider": "openai",
-                "api_key": "",
-                "base_url": "",
-                "model": "text-embedding-3-small",
-                "dimensions": 256,
-                "semantic_weight": 0.3,
-                "cache_ttl_days": 30,
-            },
-            "scorer": {
-                "enabled": False,
-                "provider": "openai",
-                "api_key": "",
-                "base_url": "",
-                "model": "gpt-4o-mini",
-                "max_candidates": 50,
-                "score_weight": 0.3,
-            },
-        },
+        "strategies": req.strategies,
+        "scheduler": {"cron": req.cron},
         "filter": {
-            "daily_limit": 20,
-            "exclude_ai": False,
-            "skip_ugoira": True,
-            "content_type": "illust",
-            "r18_mode": "mixed",
-            "max_per_artist": 3,
-            "min_create_days": 30,
-            "shuffle_factor": 0.15,
-            "exploration_ratio": 0.2,
-            "author_diversity": {
-                "enabled": True,
-                "decay_factor": 0.7,
-                "floor": 0.1,
-            },
-            "source_boost": {
-                "xp_search": 1.0,
-                "subscription": 1.1,
-                "ranking": 0.9,
-                "related": 1.15,
-                "engagement_artists": 1.2,
-            },
-            "blacklist_tags": [],
+            "r18_mode": req.r18_mode,
+            "daily_limit": req.daily_limit,
+            "max_per_artist": req.max_per_artist,
+            "exclude_ai": req.exclude_ai,
+            "skip_ugoira": req.skip_ugoira,
         },
         "fetcher": {
+            "search_limit": req.search_limit,
+            "date_range_days": req.date_range_days,
             "bookmark_threshold": {
-                "search": 1000,
-                "subscription": 0,
-                "related": 0,
+                "search": req.bookmark_threshold_search,
+                "subscription": req.bookmark_threshold_subscription,
+                "related": req.bookmark_threshold_related,
             },
-            "date_range_days": 7,
-            "dynamic_threshold": {
-                "min": 100,
-                "rate": 0.05,
-            },
-            "search_limit": 50,
-            "ranking": {
-                "enabled": True,
-                "modes": ["day", "week", "month"],
-                "limit": 100,
-            },
-            "mab_limits": {
-                "min_quota": 0.2,
-                "max_quota": 0.6,
-            },
-            "subscribed_artists": [],
         },
-        "web": {
-            "enabled": True,
-            "require_login_password": True,
-            "password": "",
-            "port": 8000,
+        "notifier": {
+            "telegram": {
+                "batch_mode": req.batch_mode,
+                "image_quality": req.image_quality,
+                "max_image_size": req.max_image_size,
+                "proxy_url": proxy_url,
+                "rich_message": {
+                    "enabled": bool(req.rich_message_enabled),
+                    "fallback_to_photo": bool(req.rich_message_fallback_to_photo),
+                    "image_mode": image_mode,
+                },
+            },
+        },
+        "web": {"require_login_password": bool(req.require_login_password)},
+        "web_password": req.web_password or "",
+        "web_password_confirm": req.web_password_confirm or "",
+        "network": {
+            "max_concurrency": req.max_concurrency,
+            "requests_per_minute": req.requests_per_minute,
         },
     }
-
-    merged = merge_config_replace_lists(defaults, raw_config if isinstance(raw_config, dict) else {})
-    network_cfg = merged.setdefault("network", {})
-    random_delay = network_cfg.get("random_delay", [1.0, 3.0])
-    if not isinstance(random_delay, list) or len(random_delay) < 2:
-        network_cfg["random_delay"] = [1.0, 3.0]
-    return merged
 
 @app.post("/api/settings")
 async def save_settings(req: SettingsRequest, _=Depends(require_auth)):
     """保存配置"""
     try:
-        config = load_config()
-        
-        # 1. IP / Profiler
-        if "profiler" not in config: config["profiler"] = {}
-        config["profiler"]["ip_weight_discount"] = req.ip_weight_discount
-        # 保存 Danbooru 凭证到 config (虽然之前脚本只读 env，但为了回显我们要存)
-        config["profiler"]["danbooru_login"] = req.danbooru_login
-        config["profiler"]["danbooru_api_key"] = req.danbooru_api_key
-        
-        # 2. Strategies
-        config["strategies"] = req.strategies
-        
-        # 3. Pixiv User ID
-        if "pixiv" not in config: config["pixiv"] = {}
-        config["pixiv"]["user_id"] = req.user_id
-        
-        # 4. Scheduler
-        if "scheduler" not in config: config["scheduler"] = {}
-        config["scheduler"]["cron"] = req.cron
-        
-        # 5. Filter / R18
-        if "filter" not in config: config["filter"] = {}
-        config["filter"]["r18_mode"] = req.r18_mode
-        config["filter"]["daily_limit"] = req.daily_limit
-        config["filter"]["max_per_artist"] = req.max_per_artist
-        config["filter"]["exclude_ai"] = req.exclude_ai
-        config["filter"]["skip_ugoira"] = req.skip_ugoira
-        
-        # 6. Fetcher
-        if "fetcher" not in config: config["fetcher"] = {}
-        config["fetcher"]["search_limit"] = req.search_limit
-        config["fetcher"]["date_range_days"] = req.date_range_days
-        if "bookmark_threshold" not in config["fetcher"]:
-            config["fetcher"]["bookmark_threshold"] = {}
-        config["fetcher"]["bookmark_threshold"]["search"] = req.bookmark_threshold_search
-        config["fetcher"]["bookmark_threshold"]["subscription"] = req.bookmark_threshold_subscription
-        config["fetcher"]["bookmark_threshold"]["related"] = req.bookmark_threshold_related
-        
-        # 7. Notifier / Telegram
-        if "notifier" not in config:
-            config["notifier"] = {}
-        if "telegram" not in config["notifier"]:
-            config["notifier"]["telegram"] = {}
-        
-        config["notifier"]["telegram"]["batch_mode"] = req.batch_mode
-        config["notifier"]["telegram"]["image_quality"] = req.image_quality
-        config["notifier"]["telegram"]["max_image_size"] = req.max_image_size
-        if "rich_message" not in config["notifier"]["telegram"] or not isinstance(config["notifier"]["telegram"].get("rich_message"), dict):
-            config["notifier"]["telegram"]["rich_message"] = {}
-        config["notifier"]["telegram"]["rich_message"]["enabled"] = bool(req.rich_message_enabled)
-        config["notifier"]["telegram"]["rich_message"]["fallback_to_photo"] = bool(req.rich_message_fallback_to_photo)
-        image_mode = req.rich_message_image_mode if req.rich_message_image_mode in {"photo", "rich_card", "hybrid"} else "photo"
-        config["notifier"]["telegram"]["rich_message"]["image_mode"] = image_mode
-        
-        # 处理代理 URL：如果是空字符串或 "None"，则设为 None
-        if req.proxy_url and req.proxy_url.strip() and req.proxy_url.strip().lower() != "none":
-            config["notifier"]["telegram"]["proxy_url"] = req.proxy_url.strip()
-        else:
-            config["notifier"]["telegram"]["proxy_url"] = None
-        
-        # 8. Web 安全设置
-        if "web" not in config:
-            config["web"] = {}
-        config["web"]["require_login_password"] = bool(req.require_login_password)
-        if req.require_login_password:
-            new_password = (req.web_password or "").strip()
-            confirm_password = (req.web_password_confirm or "").strip()
-            existing_password = config["web"].get("password", "")
-            if new_password or confirm_password or not existing_password:
-                if new_password != confirm_password:
-                    return {"success": False, "error": "Web 登录密码两次输入不一致"}
-                if len(new_password) < 6:
-                    return {"success": False, "error": "Web 登录密码至少 6 位"}
-                config["web"]["password"] = hash_password(new_password)
-        else:
-            config["web"]["password"] = ""
-
-        # 9. Network
-        if "network" not in config: config["network"] = {}
-        config["network"]["max_concurrency"] = req.max_concurrency
-        config["network"]["requests_per_minute"] = req.requests_per_minute
-                
-        save_config(config)
+        current = load_config()
+        merged = apply_settings_payload(current, _legacy_settings_payload(req), hash_password)
+        save_config(merged)
         return {"success": True}
     except Exception as e:
         logger.error(f"保存配置失败: {e}")
@@ -661,39 +471,8 @@ async def save_full_config(payload: Dict[str, Any] = Body(...), _=Depends(requir
     - 兼容 Web 密码更新逻辑，避免误清空
     """
     try:
-        if not isinstance(payload, dict):
-            return {"success": False, "error": "配置内容必须是对象"}
-
         current = load_config()
-        merged = merge_config_replace_lists(current, payload)
-
-        web_cfg = merged.setdefault("web", {})
-        web_cfg["require_login_password"] = bool(web_cfg.get("require_login_password", True))
-
-        web_password = (payload.get("web_password") or "").strip()
-        web_password_confirm = (payload.get("web_password_confirm") or "").strip()
-
-        if web_cfg["require_login_password"]:
-            existing_password = current.get("web", {}).get("password", "")
-            if web_password or web_password_confirm:
-                if web_password != web_password_confirm:
-                    return {"success": False, "error": "Web 登录密码两次输入不一致"}
-                if len(web_password) < 6:
-                    return {"success": False, "error": "Web 登录密码至少 6 位"}
-                web_cfg["password"] = hash_password(web_password)
-            elif not web_cfg.get("password"):
-                # 页面未填写新密码时，回退保留当前哈希密码
-                if existing_password:
-                    web_cfg["password"] = existing_password
-                else:
-                    return {"success": False, "error": "请设置 Web 登录密码（至少 6 位）"}
-        else:
-            web_cfg["password"] = ""
-
-        # 清理临时字段（如前端附带）
-        merged.pop("web_password", None)
-        merged.pop("web_password_confirm", None)
-
+        merged = apply_settings_payload(current, payload, hash_password)
         save_config(merged)
         return {"success": True}
     except Exception as e:
@@ -749,7 +528,7 @@ async def sync_ip_list(req: SyncRequest, _=Depends(require_auth)):
 @app.get("/api/config")
 async def get_config_section(section: str = Query(None), _=Depends(require_auth)):
     """获取配置的特定部分"""
-    config = _redact_sensitive_config(deepcopy(load_config()))
+    config = _redact_sensitive_config(load_config())
     if section:
         return {section: config.get(section, {})}
     return config
@@ -1098,8 +877,7 @@ async def import_export_page(request: Request):
         return RedirectResponse("/", status_code=302)
     
     config = load_config()
-    return templates.TemplateResponse("import_export.html", {
-        "request": request,
+    return render_template(request, "import_export.html", {
         "active_page": "import_export",
         "config": config
     })
@@ -1309,8 +1087,3 @@ async def proxy_image(illust_id: int):
                 
     # 失败时返回占位图
     return RedirectResponse("https://via.placeholder.com/300?text=Load+Failed")
-
-
-
-
-

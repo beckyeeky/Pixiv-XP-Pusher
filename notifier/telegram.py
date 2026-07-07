@@ -11,7 +11,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMedia
 from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler
 
-from .base import BaseNotifier
+from .base import BaseNotifier, DeliveryBatchResult
 from pixiv_client import Illust, PixivClient
 from utils import format_xp_profile_lines, get_pixiv_cat_url
 from telegram_rich import build_input_rich_message, normalize_rich_message_config
@@ -252,13 +252,22 @@ class TelegramNotifier(BaseNotifier):
         while True:
             try:
                 task = await self.send_queue.get()
-                illusts, custom_title, batch_mode = task
+                result_future = None
+                if len(task) == 4:
+                    illusts, custom_title, batch_mode, result_future = task
+                else:
+                    illusts, custom_title, batch_mode = task
 
                 try:
                     # 调用原始发送逻辑，使用任务指定的 batch_mode
                     sent_ids = await self._send_direct(illusts, custom_title, batch_mode)
-                    # 标记已推送
-                    if sent_ids:
+                    if result_future and not result_future.done():
+                        requested_ids = [ill.id for ill in illusts]
+                        result_future.set_result(
+                            DeliveryBatchResult.from_delivered_ids(requested_ids, sent_ids)
+                        )
+                    # legacy send() 路径保留队列内落库兼容；新接口由调用方统一落库。
+                    elif sent_ids:
                         try:
                             import database as db
                             for ill in illusts:
@@ -269,6 +278,9 @@ class TelegramNotifier(BaseNotifier):
                             logger.warning(f"队列内标记推送状态失败: {e}")
                 except Exception as e:
                     logger.error(f"推送任务执行失败: {e}")
+                    if result_future and not result_future.done():
+                        requested_ids = [ill.id for ill in illusts]
+                        result_future.set_result(DeliveryBatchResult.failed(requested_ids, str(e)))
 
                 self.send_queue.task_done()
 
@@ -3628,6 +3640,17 @@ class TelegramNotifier(BaseNotifier):
         # 返回已入队的作品 ID（表示任务已被接受，实际发送由后台 worker 完成）
         return [ill.id for ill in illusts]
 
+    async def send_with_result(self, illusts: list[Illust]) -> DeliveryBatchResult:
+        """发送推送并等待队列 worker 返回真实投递结果。"""
+        if not illusts:
+            return DeliveryBatchResult([])
+
+        loop = asyncio.get_running_loop()
+        result_future = loop.create_future()
+        await self.send_queue.put((illusts, None, self.batch_mode, result_future))
+        logger.info(f"已将 {len(illusts)} 个作品加入推送队列并等待投递结果 (mode={self.batch_mode})")
+        return await result_future
+
     async def _send_direct(self, illusts: list[Illust], custom_title: str = None, batch_mode: str = None) -> list[int]:
         """直接发送推送 (内部方法)"""
         if not illusts:
@@ -4550,5 +4573,4 @@ class TelegramNotifier(BaseNotifier):
         finally:
             if typing_task:
                 typing_task.cancel()
-
 
