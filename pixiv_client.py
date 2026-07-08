@@ -3,6 +3,7 @@ Pixiv API 异步客户端
 基于 pixivpy-async
 """
 import asyncio
+import inspect
 import logging
 import random
 from datetime import datetime, timedelta
@@ -90,6 +91,7 @@ class PixivClient:
         self.proxy_url = proxy_url
         self._token_last_refresh: Optional[datetime] = None
         self._pending_tag_translations: list[tuple[str, str]] = []  # 待保存的标签翻译队列
+        self._unsupported_api_params_logged: set[tuple[str, str]] = set()
     
     async def login(self) -> bool:
         """
@@ -135,6 +137,45 @@ class PixivClient:
         finally:
             # 清空队列
             self._pending_tag_translations.clear()
+
+    def _prepare_api_kwargs(self, method_name: str, params: dict, optional_keys: set[str] | None = None) -> dict:
+        """
+        为不同版本的 pixivpy_async 做参数兼容。
+
+        某些部署环境里的 AppPixivAPI 还不支持 content_type 之类的新参数；
+        这里在调用前按签名裁剪掉不支持的可选参数，避免整条抓取链路失败。
+        """
+        optional_keys = optional_keys or set()
+        method = getattr(self.api, method_name)
+
+        try:
+            signature = inspect.signature(method)
+        except (TypeError, ValueError):
+            return params
+
+        supports_var_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+        if supports_var_kwargs:
+            return params
+
+        supported_keys = set(signature.parameters.keys())
+        prepared = dict(params)
+
+        for key in list(prepared.keys()):
+            if key in optional_keys and key not in supported_keys:
+                prepared.pop(key)
+                log_key = (method_name, key)
+                if log_key not in self._unsupported_api_params_logged:
+                    logger.warning(
+                        "当前 pixivpy_async 的 %s 不支持参数 %s，已自动回退兼容模式。",
+                        method_name,
+                        key,
+                    )
+                    self._unsupported_api_params_logged.add(log_key)
+
+        return prepared
     
     @retry_async(max_retries=3)
     async def get_bookmarks(
@@ -306,7 +347,12 @@ class PixivClient:
                     # 添加内容类型过滤
                     if content_type in ["illust", "manga"]:
                         search_params["content_type"] = content_type
-                    
+
+                    search_params = self._prepare_api_kwargs(
+                        "search_illust",
+                        search_params,
+                        {"content_type"},
+                    )
                     result = await self.api.search_illust(**search_params)
             
             if not result.get("illusts"):
@@ -485,6 +531,11 @@ class PixivClient:
                     # 添加内容类型过滤（如果 API 支持）
                     if content_type in ["illust", "manga"]:
                         params["content_type"] = content_type
+                    params = self._prepare_api_kwargs(
+                        "illust_ranking",
+                        params,
+                        {"content_type"},
+                    )
                     result = await self.api.illust_ranking(**params)
             
             if not result.get("illusts"):
