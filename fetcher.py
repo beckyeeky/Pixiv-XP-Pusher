@@ -78,6 +78,131 @@ class ContentFetcher:
             multiplier *= 0.5
         
         return max(100, int(base * multiplier))
+
+    def _weighted_sample_items(self, items: list, weights: list[float], k: int) -> list:
+        """按权重无放回采样，避免概率和未重算导致抽样偏斜。"""
+        if k <= 0 or not items:
+            return []
+        if len(items) <= k:
+            return list(items)
+
+        selected = []
+        available = list(range(len(items)))
+
+        for _ in range(min(k, len(items))):
+            available_weights = [max(0.0, float(weights[i])) for i in available]
+            total_weight = sum(available_weights)
+
+            if total_weight <= 0:
+                chosen_idx = random.choice(available)
+            else:
+                threshold = random.random() * total_weight
+                cumulative = 0.0
+                chosen_idx = available[-1]
+                for idx, weight in zip(available, available_weights):
+                    cumulative += weight
+                    if threshold <= cumulative:
+                        chosen_idx = idx
+                        break
+
+            selected.append(items[chosen_idx])
+            available.remove(chosen_idx)
+
+        return selected
+
+    def _select_search_pairs(
+        self,
+        top_pairs: list[tuple[str, str, float]],
+        max_combo_tasks: int
+    ) -> list[tuple[str, str, float]]:
+        """在热门组合中保留主干，并留出一部分名额做加权探索。"""
+        if max_combo_tasks <= 0:
+            return []
+
+        valid_pairs = []
+        seen_pairs = set()
+
+        for t1, t2, weight in top_pairs:
+            pair_key = tuple(sorted((t1, t2)))
+            if pair_key in seen_pairs:
+                continue
+
+            q1 = expand_search_query(t1)
+            q2 = expand_search_query(t2)
+            if q1 == q2 or t1 in q2 or t2 in q1:
+                continue
+
+            seen_pairs.add(pair_key)
+            valid_pairs.append((t1, t2, max(0.0, float(weight))))
+
+        if len(valid_pairs) <= max_combo_tasks:
+            return valid_pairs
+
+        discovery_slots = min(
+            max_combo_tasks,
+            max(0, int(round(max_combo_tasks * self.discovery_rate)))
+        )
+        stable_slots = max_combo_tasks - discovery_slots
+
+        selected = list(valid_pairs[:stable_slots])
+        remaining = valid_pairs[stable_slots:]
+
+        if discovery_slots > 0 and remaining:
+            selected.extend(
+                self._weighted_sample_items(
+                    remaining,
+                    [weight for _, _, weight in remaining],
+                    discovery_slots,
+                )
+            )
+
+        if len(selected) < max_combo_tasks:
+            selected_pair_keys = {tuple(sorted((t1, t2))) for t1, t2, _ in selected}
+            for pair in valid_pairs:
+                pair_key = tuple(sorted((pair[0], pair[1])))
+                if pair_key in selected_pair_keys:
+                    continue
+                selected.append(pair)
+                selected_pair_keys.add(pair_key)
+                if len(selected) >= max_combo_tasks:
+                    break
+
+        return selected[:max_combo_tasks]
+
+    def _build_exploration_pairs(
+        self,
+        xp_tags: list[tuple[str, float]],
+        used_pairs: set[tuple[str, str]],
+        count: int
+    ) -> list[tuple[str, str, float]]:
+        """从 XP 标签池里补一些随机组合，提升种子多样性。"""
+        if count <= 0 or len(xp_tags) < 2:
+            return []
+
+        extra_pairs = []
+        attempts = 0
+        max_attempts = max(10, count * 8)
+
+        while len(extra_pairs) < count and attempts < max_attempts:
+            attempts += 1
+            sampled_tags = self._weighted_sample(xp_tags, k=2)
+            if len(sampled_tags) < 2:
+                continue
+
+            t1, t2 = sampled_tags
+            pair_key = tuple(sorted((t1, t2)))
+            if pair_key in used_pairs:
+                continue
+
+            q1 = expand_search_query(t1)
+            q2 = expand_search_query(t2)
+            if q1 == q2 or t1 in q2 or t2 in q1:
+                continue
+
+            used_pairs.add(pair_key)
+            extra_pairs.append((t1, t2, 0.0))
+
+        return extra_pairs
     
     async def discover(
         self,
@@ -97,34 +222,25 @@ class ContentFetcher:
         top_pairs = await db.get_top_tag_pairs(limit=50)
         if not top_pairs:
             top_pairs = []
-        used_tags = set()
+        used_pairs = set()
         
         tasks = []
         
         # 1. 构建组合搜索任务
         max_combo_tasks = 20 # 限制并发数
-        combo_count = 0
-        
-        for t1, t2, _ in top_pairs:
-            if combo_count >= max_combo_tasks:
-                break
-            # 简化：如果不通过 limit 控制，而是全量并发，可能会太多
-            # 我们先收集任务，回头再看是否需要分批
-            
-            pair_key = tuple(sorted([t1, t2]))
-            if pair_key in used_tags:
-                continue
-            used_tags.add(pair_key)
-            
-            q1 = expand_search_query(t1)
-            q2 = expand_search_query(t2)
-            
-            if q1 == q2 or t1 in q2 or t2 in q1:
-                continue
-            
-            combo_count += 1
-            
-            # 使用闭包或独立方法来封装单个搜索逻辑以便并发
+        selected_pairs = self._select_search_pairs(top_pairs, max_combo_tasks)
+        used_pairs.update(tuple(sorted((t1, t2))) for t1, t2, _ in selected_pairs)
+
+        if len(selected_pairs) < max_combo_tasks and self.discovery_rate > 0:
+            selected_pairs.extend(
+                self._build_exploration_pairs(
+                    xp_tags,
+                    used_pairs,
+                    max_combo_tasks - len(selected_pairs),
+                )
+            )
+
+        for t1, t2, _ in selected_pairs:
             tasks.append(self._search_pair(t1, t2))
 
         # 执行组合搜索
@@ -155,13 +271,14 @@ class ContentFetcher:
         # 2. 如果不够，补充单 Tag 搜索
         if remaining > 0:
             fallback_tasks = []
+            used_seed_tags = {tag for pair in used_pairs for tag in pair}
             # 尝试多次采样补充
             for _ in range(3):
                 tags_to_search = self._weighted_sample(xp_tags, k=1)
                 if not tags_to_search: continue
                 
                 tag = tags_to_search[0]
-                if tag in [t for pair in used_tags for t in pair]:
+                if tag in used_seed_tags:
                     continue
                 
                 fallback_tasks.append(self._search_single(tag, max(10, remaining // 2)))
@@ -329,31 +446,10 @@ class ContentFetcher:
         """根据权重随机采样Tag"""
         if len(weighted_tags) <= k:
             return [t[0] for t in weighted_tags]
-        
+
         tags = [t[0] for t in weighted_tags]
         weights = [t[1] for t in weighted_tags]
-        
-        # 使用权重作为选择概率
-        total = sum(weights)
-        probs = [w / total for w in weights]
-        
-        selected = []
-        available = list(range(len(tags)))
-        
-        for _ in range(k):
-            if not available:
-                break
-            
-            r = random.random()
-            cumsum = 0
-            for i in available:
-                cumsum += probs[i]
-                if r <= cumsum:
-                    selected.append(tags[i])
-                    available.remove(i)
-                    break
-        
-        return selected
+        return self._weighted_sample_items(tags, weights, k)
     
     async def _get_dynamic_threshold(self, tag: str, base: int) -> int:
         """
@@ -643,4 +739,3 @@ class ContentFetcher:
             except Exception as e:
                 logger.error(f"获取 {mode} 排行榜失败: {e}")
         return all_illusts
-

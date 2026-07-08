@@ -234,6 +234,29 @@ textarea.form-control {
     color: var(--accent);
 }
 
+.status-badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+
+.sync-log {
+    background: #000;
+    color: #0f0;
+    font-family: monospace;
+    padding: 0.8rem;
+    border-radius: 6px;
+    height: 120px;
+    overflow-y: auto;
+    font-size: 0.75rem;
+    margin-top: 0.8rem;
+    display: none;
+}
+
 .section-title {
     font-size: 1.2rem;
     font-weight: 600;
@@ -598,6 +621,28 @@ textarea.form-control {
                             <span class="range-value">{{ config.profiler.ip_weight_discount | default(1.0) }}</span>
                         </div>
                         <div class="help-text">0.1=降权90%, 1.0=不降权</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">
+                            Danbooru 用户名
+                            <span id="ipStatus" class="status-badge" style="margin-left: 0.6rem;">检查中...</span>
+                        </label>
+                        <input type="text" class="form-control" id="profiler_danbooru_login"
+                               value="{{ config.profiler.danbooru_login | default('') }}"
+                               placeholder="选填">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Danbooru API Key</label>
+                        <input type="password" class="form-control" id="profiler_danbooru_api_key"
+                               value="{{ config.profiler.danbooru_api_key | default('') }}"
+                               placeholder="选填">
+                        <div class="help-text">
+                            <a href="https://danbooru.donmai.us/profile/api_key" target="_blank">获取 API Key →</a>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <button type="button" class="btn-secondary" onclick="syncIPTags(this)">🔄 同步 IP 标签列表</button>
+                        <div class="sync-log" id="syncLog"></div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">时间衰减半衰期(天)</label>
@@ -1272,6 +1317,8 @@ function collectConfig() {
     profiler.scan_limit = asInt(document.getElementById('profiler_scan_limit').value, profiler.scan_limit || 1000);
     profiler.discovery_rate = asFloat(document.getElementById('profiler_discovery_rate').value, profiler.discovery_rate || 0.1);
     profiler.ip_weight_discount = asFloat(document.getElementById('profiler_ip_discount').value, profiler.ip_weight_discount || 1.0);
+    profiler.danbooru_login = document.getElementById('profiler_danbooru_login').value;
+    profiler.danbooru_api_key = document.getElementById('profiler_danbooru_api_key').value;
     profiler.time_decay_days = asInt(document.getElementById('profiler_time_decay_days').value, profiler.time_decay_days || 180);
     profiler.saturation_threshold = asFloat(document.getElementById('profiler_saturation_threshold').value, profiler.saturation_threshold || 0.5);
     profiler.top_n = asInt(document.getElementById('profiler_top_n').value, profiler.top_n || 20);
@@ -1395,5 +1442,69 @@ async function exportConfig() {
         alert('导出失败: ' + err.message);
     }
 }
+
+async function refreshIPSyncStatus() {
+    const status = document.getElementById('ipStatus');
+    if (!status) return;
+
+    try {
+        const resp = await fetch('/api/sync-status');
+        const data = await resp.json();
+        if (data.exists) {
+            status.textContent = `已同步 (${data.count})`;
+            status.style.color = '#4caf50';
+            status.style.borderColor = '#4caf50';
+        } else {
+            status.textContent = '未同步';
+            status.style.color = '#ff9800';
+            status.style.borderColor = '#ff9800';
+        }
+    } catch (_err) {
+        status.textContent = '检查失败';
+        status.style.color = '#ef4444';
+        status.style.borderColor = '#ef4444';
+    }
+}
+
+async function syncIPTags(button) {
+    const btn = button || document.querySelector('button[onclick*="syncIPTags"]');
+    const log = document.getElementById('syncLog');
+    if (!btn || !log) return;
+
+    if (!confirm('开始同步 Danbooru IP 标签？这可能需要几分钟。')) return;
+
+    btn.disabled = true;
+    btn.textContent = '⏳ 同步中...';
+    log.style.display = 'block';
+    log.textContent = '正在启动...\n';
+
+    try {
+        const resp = await fetch('/api/sync-ip', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                danbooru_login: document.getElementById('profiler_danbooru_login').value,
+                danbooru_api_key: document.getElementById('profiler_danbooru_api_key').value
+            })
+        });
+        const data = await resp.json();
+        log.textContent += data.output || '';
+
+        if (data.success) {
+            await refreshIPSyncStatus();
+            alert('✅ 同步成功！');
+        } else {
+            alert('❌ 同步失败，请查看日志');
+        }
+    } catch (err) {
+        log.textContent += `\n❌ 错误: ${err.message}`;
+        alert('请求失败: ' + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🔄 同步 IP 标签列表';
+    }
+}
+
+refreshIPSyncStatus();
 </script>
 {% endblock %}

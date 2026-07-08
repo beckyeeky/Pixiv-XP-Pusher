@@ -9,6 +9,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(PROJECT_ROOT))
@@ -36,11 +37,47 @@ def load_danbooru_credentials() -> tuple[str, str]:
     return env_login or cfg_login, env_api_key or cfg_api_key
 
 
+def _raise_for_blocked_or_unexpected_response(resp: requests.Response) -> None:
+    """把常见的 Cloudflare / 非 JSON 响应转换成更可读的错误。"""
+    if resp.status_code == 403 and resp.headers.get("Cf-Mitigated") == "challenge":
+        raise RuntimeError(
+            "Blocked by Cloudflare challenge. "
+            "The server IP likely needs an interactive browser check before API access is allowed."
+        )
+
+    content_type = (resp.headers.get("Content-Type") or "").lower()
+    if "json" not in content_type:
+        preview = resp.text[:120].replace("\n", " ").strip()
+        raise RuntimeError(
+            f"Unexpected response content-type: {content_type or 'unknown'}. "
+            f"Body preview: {preview}"
+        )
+
+
+def _decode_json_response(resp: requests.Response) -> list[dict[str, Any]]:
+    """解析 Danbooru JSON，并给出更明确的异常提示。"""
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        preview = resp.text[:200].replace("\n", " ").strip()
+        raise RuntimeError(f"Failed to decode Danbooru JSON. Body preview: {preview}") from exc
+
+    if not isinstance(data, list):
+        raise RuntimeError(f"Unexpected Danbooru payload type: {type(data).__name__}")
+
+    return data
+
+
 def fetch_copyright_tags(login: str, api_key: str):
     """Fetch category=3 (copyright) tags from Danbooru API"""
     url = "https://danbooru.donmai.us/tags.json"
     all_tags = []
     page = 1
+    headers = {
+        # Danbooru / Cloudflare 对匿名脚本请求更严格，使用账号名作为 UA 可提高通过率。
+        "User-Agent": login,
+        "Accept": "application/json",
+    }
     
     while len(all_tags) < LIMIT:
         params = {
@@ -54,9 +91,10 @@ def fetch_copyright_tags(login: str, api_key: str):
         }
         
         try:
-            resp = requests.get(url, params=params, timeout=30)
+            resp = requests.get(url, params=params, headers=headers, timeout=30)
+            _raise_for_blocked_or_unexpected_response(resp)
             resp.raise_for_status()
-            data = resp.json()
+            data = _decode_json_response(resp)
             
             if not data:
                 break

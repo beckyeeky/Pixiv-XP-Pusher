@@ -88,6 +88,8 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
         "top_n": 20,
         "include_private": True,
         "ip_weight_discount": 1.0,
+        "danbooru_login": "",
+        "danbooru_api_key": "",
         "stop_words": [],
         "ai": {
             "enabled": True,

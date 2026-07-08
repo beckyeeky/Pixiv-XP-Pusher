@@ -16,6 +16,8 @@ class SettingsEditorTests(unittest.TestCase):
         self.assertEqual(snapshot["notifier"]["telegram"]["rich_message"]["image_mode"], "photo")
         self.assertEqual(snapshot["fetcher"]["bookmark_threshold"]["related"], 0)
         self.assertEqual(snapshot["network"]["random_delay"], [1.0, 3.0])
+        self.assertEqual(snapshot["profiler"]["danbooru_login"], "")
+        self.assertEqual(snapshot["profiler"]["danbooru_api_key"], "")
 
     def test_snapshot_repairs_malformed_random_delay(self):
         snapshot = build_settings_snapshot({"network": {"random_delay": "bad"}})
