@@ -72,6 +72,14 @@ class ConfigNormalizationTests(unittest.TestCase):
         self.assertEqual(cfg["filter"]["author_diversity"]["decay_factor"], 0.5)
         self.assertEqual(cfg["filter"]["author_diversity"]["floor"], 0.1)
 
+    def test_normalize_proxy_url_string_none_to_null(self):
+        cfg = config.normalize_config({"notifier": {"telegram": {"proxy_url": "None"}}})
+        self.assertIsNone(cfg["notifier"]["telegram"]["proxy_url"])
+
+    def test_normalize_proxy_url_adds_http_scheme(self):
+        cfg = config.normalize_config({"notifier": {"telegram": {"proxy_url": "127.0.0.1:7890"}}})
+        self.assertEqual(cfg["notifier"]["telegram"]["proxy_url"], "http://127.0.0.1:7890")
+
 
 if __name__ == "__main__":
     unittest.main()

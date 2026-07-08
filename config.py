@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from proxy_utils import normalize_proxy_url
 from telegram_rich import normalize_rich_message_config
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,8 @@ def normalize_config(config: dict) -> dict:
     telegram_cfg["rich_message"] = normalize_rich_message_config(
         telegram_cfg.get("rich_message")
     )
+    telegram_cfg["proxy_url"] = normalize_proxy_url(telegram_cfg.get("proxy_url"))
+
     # === 全局 API Key 继承：profiler.ai → scorer / tag_classifier ===
     shared_key = (
         normalized.get("profiler", {}).get("ai", {}).get("api_key", "").strip()
@@ -185,4 +188,3 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     except Exception as e:
         logger.error(f"加载配置文件失败: {e}")
         return {}
-

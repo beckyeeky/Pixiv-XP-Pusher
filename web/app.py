@@ -24,6 +24,7 @@ import yaml
 
 import database as db
 from config import load_config as shared_load_config
+from proxy_utils import normalize_proxy_url
 from web.settings_editor import (
     apply_settings_payload,
     build_settings_snapshot,
@@ -1060,13 +1061,7 @@ async def proxy_image(illust_id: int):
     """
     config = load_config()
     # 复用 Telegram 配置的代理
-    proxy = config.get("notifier", {}).get("telegram", {}).get("proxy_url")
-    
-    # 处理代理 URL：如果是 None、空字符串或字符串 "None"，则设为 None
-    if not proxy or proxy.strip() == "" or proxy.strip().lower() == "none":
-        proxy = None
-    elif proxy and not proxy.startswith("http"):
-        proxy = f"http://{proxy}"
+    proxy = normalize_proxy_url(config.get("notifier", {}).get("telegram", {}).get("proxy_url"))
         
     urls = [
         f"https://pixiv.cat/{illust_id}.jpg",

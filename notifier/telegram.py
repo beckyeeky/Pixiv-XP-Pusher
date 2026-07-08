@@ -13,6 +13,7 @@ from telegram.ext import Application, CallbackQueryHandler
 
 from .base import BaseNotifier, DeliveryBatchResult
 from pixiv_client import Illust, PixivClient
+from proxy_utils import normalize_proxy_url
 from utils import format_xp_profile_lines, get_pixiv_cat_url
 from telegram_rich import build_input_rich_message, normalize_rich_message_config
 
@@ -182,11 +183,12 @@ class TelegramNotifier(BaseNotifier):
         batch_show_tags: bool = True,
         rich_message: dict | None = None,
     ):
+        proxy_url = normalize_proxy_url(proxy_url)
         # Auto-detect proxy if not provided
         if not proxy_url:
             import urllib.request
             sys_proxies = urllib.request.getproxies()
-            proxy_url = sys_proxies.get("https") or sys_proxies.get("http")
+            proxy_url = normalize_proxy_url(sys_proxies.get("https") or sys_proxies.get("http"))
             if proxy_url:
                 logger.info(f"TelegramNotifier using system proxy: {proxy_url}")
 
@@ -4573,4 +4575,3 @@ class TelegramNotifier(BaseNotifier):
         finally:
             if typing_task:
                 typing_task.cancel()
-

@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 import aiohttp
 from pixivpy_async import AppPixivAPI
 
+from proxy_utils import normalize_proxy_url
 from utils import AsyncRateLimiter, retry_async, download_image_with_referer
 
 logger = logging.getLogger(__name__)
@@ -68,18 +69,16 @@ class PixivClient:
         proxy_url: Optional[str] = None
     ):
         self.refresh_token = refresh_token
+        proxy_url = normalize_proxy_url(proxy_url)
         
         # Auto-detect proxy if not provided
         if not proxy_url:
             import urllib.request
             sys_proxies = urllib.request.getproxies()
             # Prioritize https, then http
-            proxy_url = sys_proxies.get("https") or sys_proxies.get("http")
+            proxy_url = normalize_proxy_url(sys_proxies.get("https") or sys_proxies.get("http"))
             if proxy_url:
                 logger.info(f"Using system proxy: {sanitize_proxy_url(proxy_url)}")
-                # Ensure scheme if missing (though getproxies usually includes it)
-                if not proxy_url.startswith("http"):
-                    proxy_url = f"http://{proxy_url}"
 
         # 传递代理给 AppPixivAPI (注意: pixivpy 可能需要特定的代理传参方式，通常是在 login 或 api 调用时)
         # 但 AppPixivAPI 构造函数可以直接接收 env 覆盖，或者我们在 login 时传递 proxy
