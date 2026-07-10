@@ -13,11 +13,25 @@ from starlette.requests import Request
 import database as db_module
 import web.app as web_app_module
 from web.app import app as canonical_app
-from web.app import SettingsRequest, api_gallery, do_setup, gallery, get_config_section, index, save_settings
+from web.app import (
+    SettingsRequest, TagReviewRequest, api_gallery, api_tag_reviews, do_setup, gallery,
+    get_config_section, index, save_settings, submit_tag_review,
+)
 from web.app_v2 import app as compat_app
 
 
 class WebEntrypointTests(unittest.TestCase):
+    def test_tag_review_apis_delegate_to_review_queue(self):
+        with patch.object(web_app_module.db, "get_tag_review_queue", return_value=[{"tag": "needs_review"}]) as get_queue, \
+             patch.object(web_app_module.db, "review_tag_classification") as review:
+            payload = asyncio.run(api_tag_reviews(limit=25, _=None))
+            response = asyncio.run(submit_tag_review(TagReviewRequest(tag="needs_review", classification="feature"), _=None))
+
+        self.assertEqual(payload, {"items": [{"tag": "needs_review"}]})
+        get_queue.assert_awaited_once_with(25)
+        review.assert_awaited_once_with("needs_review", "feature")
+        self.assertTrue(response["success"])
+
     def test_legacy_entrypoint_reexports_canonical_app(self):
         self.assertIs(canonical_app, compat_app)
         self.assertEqual(canonical_app.title, "Pixiv-XP-Pusher")

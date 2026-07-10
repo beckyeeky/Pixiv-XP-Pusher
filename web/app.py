@@ -356,6 +356,11 @@ class FeedbackRequest(BaseModel):
     illust_id: int
     action: str  # 'like' | 'dislike'
 
+
+class TagReviewRequest(BaseModel):
+    tag: str
+    classification: str
+
 class SettingsRequest(BaseModel):
     require_login_password: Optional[bool] = True
     web_password: Optional[str] = ""
@@ -798,6 +803,22 @@ async def api_xp_profile(request: Request, _=Depends(require_auth)):
     """获取XP画像"""
     profile = await db.get_xp_profile()
     return {"profile": profile}
+
+
+@app.get("/api/tag-reviews")
+async def api_tag_reviews(limit: int = Query(100, ge=1, le=500), _=Depends(require_auth)):
+    """Return unresolved tags in the order a human should review them."""
+    return {"items": await db.get_tag_review_queue(limit)}
+
+
+@app.post("/api/tag-reviews")
+async def submit_tag_review(req: TagReviewRequest, _=Depends(require_auth)):
+    """Persist a human Tag Category decision and remove the tag from the queue."""
+    try:
+        await db.review_tag_classification(req.tag, req.classification)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "tag": req.tag, "classification": req.classification}
 
 
 @app.get("/health")

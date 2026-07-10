@@ -9,7 +9,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
 
-from tag_categories import normalize_tag_category
+from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
 
 logger = logging.getLogger(__name__)
 
@@ -416,6 +416,78 @@ async def save_tag_evidence(items: list[tuple[str, str, str, float]]):
                 updated_at = CURRENT_TIMESTAMP
             """,
             rows,
+        )
+        await db.commit()
+
+
+async def get_tag_review_queue(limit: int = 100) -> list[dict]:
+    """List unresolved profile tags, highest preference impact first."""
+    limit = max(1, int(limit))
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            WITH unresolved AS (
+                SELECT cache.normalized_tag, cache.source, cache.updated_at,
+                       COALESCE(profile.weight, 0) AS profile_weight
+                FROM tag_classification_cache AS cache
+                LEFT JOIN xp_profile AS profile ON profile.tag = cache.normalized_tag
+                WHERE cache.classification = ?
+                ORDER BY ABS(COALESCE(profile.weight, 0)) DESC, cache.updated_at ASC
+                LIMIT ?
+            )
+            SELECT unresolved.normalized_tag, unresolved.source, unresolved.updated_at,
+                   unresolved.profile_weight, evidence.source, evidence.classification,
+                   evidence.confidence
+            FROM unresolved
+            LEFT JOIN tag_classification_evidence AS evidence
+                ON evidence.normalized_tag = unresolved.normalized_tag
+            ORDER BY ABS(unresolved.profile_weight) DESC, unresolved.updated_at ASC, evidence.source ASC
+            """,
+            (TAG_CATEGORY_UNRESOLVED, limit),
+        )
+        queue: dict[str, dict] = {}
+        for tag, source, updated_at, weight, evidence_source, evidence_category, confidence in await cursor.fetchall():
+            item = queue.setdefault(tag, {
+                "tag": tag,
+                "profile_weight": float(weight),
+                "classification_source": source,
+                "updated_at": updated_at,
+                "evidence": [],
+            })
+            if evidence_source:
+                item["evidence"].append({
+                    "source": evidence_source,
+                    "classification": normalize_tag_category(evidence_category),
+                    "confidence": float(confidence),
+                })
+        return list(queue.values())
+
+
+async def review_tag_classification(normalized_tag: str, classification: str) -> None:
+    """Accept a human Tag Category decision and remove the tag from review."""
+    category = normalize_tag_category(classification)
+    if category == TAG_CATEGORY_UNRESOLVED:
+        raise ValueError("人工审核必须选择一个已解析的 Tag Category")
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO tag_classification_evidence (normalized_tag, source, classification, confidence, updated_at)
+            VALUES (?, 'manual', ?, 1.0, CURRENT_TIMESTAMP)
+            ON CONFLICT(normalized_tag, source) DO UPDATE SET
+                classification = excluded.classification, confidence = excluded.confidence,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (normalized_tag, category),
+        )
+        await db.execute(
+            """
+            INSERT INTO tag_classification_cache (normalized_tag, classification, source, updated_at)
+            VALUES (?, ?, 'manual', CURRENT_TIMESTAMP)
+            ON CONFLICT(normalized_tag) DO UPDATE SET
+                classification = excluded.classification, source = excluded.source,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (normalized_tag, category),
         )
         await db.commit()
 
