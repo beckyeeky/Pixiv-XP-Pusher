@@ -65,13 +65,19 @@ class TagClassifier:
         self.client = None
         self.judge_clients = {}
         if self.enabled:
-            self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+            try:
+                self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+            except Exception as exc:
+                logger.warning("TagClassifier client unavailable; using classification fallback: %s", exc)
         if requested_enabled and HAS_OPENAI:
             for judge in self.judges:
                 if judge["api_key"]:
-                    self.judge_clients[judge["identity"]] = AsyncOpenAI(
-                        api_key=judge["api_key"], base_url=judge["base_url"]
-                    )
+                    try:
+                        self.judge_clients[judge["identity"]] = AsyncOpenAI(
+                            api_key=judge["api_key"], base_url=judge["base_url"]
+                        )
+                    except Exception as exc:
+                        logger.warning("Judge %s client unavailable: %s", judge["name"], exc)
 
     async def classify_tags(self, tags: list[str]) -> dict[str, TagClassification]:
         """批量分类标签，优先使用未过期缓存。"""
@@ -114,6 +120,10 @@ class TagClassifier:
         if remaining:
             if self.enabled and self.client:
                 fallback_results = self._classify_unaccepted_ai_tags(remaining)
+            elif len(self.judges) > 1:
+                # A multi-Judge setup must not silently turn an unavailable
+                # consensus pass into a Feature classification during delivery.
+                fallback_results = self._classify_unaccepted_ai_tags(remaining)
             else:
                 fallback_results = self._classify_with_manual_list(remaining)
             await db.save_tag_classifications(
@@ -126,7 +136,10 @@ class TagClassifier:
     async def maintain_profile_tags(self, tags: list[str] | dict[str, float], evidence_lookup=None) -> dict[str, TagClassification]:
         """Refresh observed profile-tag evidence; delivery never waits for this method."""
         normalized_tags = await self._select_maintenance_tags(tags)
-        gathered = {tag: list(items) for tag, items in (await db.get_tag_evidence(normalized_tags)).items()}
+        gathered = {
+            tag: list(items)
+            for tag, items in (await db.get_tag_evidence(normalized_tags, include_provenance=True)).items()
+        }
         for tag in normalized_tags:
             gathered.setdefault(tag, [])
             if tag in self.manual_ip_tags:
@@ -134,7 +147,26 @@ class TagClassifier:
         if evidence_lookup is None:
             supplied = await self._collect_machine_evidence(normalized_tags, gathered)
         elif evidence_lookup:
-            supplied = await evidence_lookup(normalized_tags)
+            tags_to_refresh = [
+                tag for tag in normalized_tags
+                if any(
+                    self._source_requires_refresh(tag, source, gathered)
+                    for source in self._configured_machine_sources()
+                )
+            ]
+            try:
+                supplied = await evidence_lookup(tags_to_refresh)
+            except Exception as exc:
+                logger.warning("Injected evidence lookup unavailable; using cached evidence: %s", exc)
+                await self._record_evidence_refresh_failure("injected", exc)
+                supplied = {}
+            supplied = {
+                tag: [
+                    item for item in items
+                    if self._source_requires_refresh(tag, item[0], gathered)
+                ]
+                for tag, items in supplied.items()
+            }
         else:
             supplied = {}
         for tag, items in supplied.items():
@@ -142,10 +174,13 @@ class TagClassifier:
                 {"source": source, "classification": category, "confidence": confidence}
                 for source, category, confidence in items
             )
-        await db.save_tag_evidence([
-            (tag, item["source"], item["classification"], item.get("confidence", 1.0))
-            for tag, items in gathered.items() for item in items
-        ])
+        refreshed_evidence = [
+            (tag, source, category, confidence)
+            for tag, items in supplied.items()
+            for source, category, confidence in items
+        ]
+        if refreshed_evidence:
+            await db.save_tag_evidence(refreshed_evidence)
         results = {tag: resolve_tag_evidence(tag, items) for tag, items in gathered.items()}
         await db.save_tag_classifications([(tag, item.classification, item.source) for tag, item in results.items()])
         return results
@@ -163,32 +198,82 @@ class TagClassifier:
 
     async def _collect_machine_evidence(self, tags: list[str], cached: dict[str, list[dict]]) -> dict[str, list[tuple[str, str, float]]]:
         gathered: dict[str, list[tuple[str, str, float]]] = {}
-        missing_danbooru = [tag for tag in tags if not any(item["source"] == "danbooru" for item in cached.get(tag, []))]
+        missing_danbooru = [
+            tag for tag in tags
+            if self._source_requires_refresh(tag, "danbooru", cached)
+        ]
         if missing_danbooru:
             try:
                 gathered.update(await self.danbooru_lookup.lookup(missing_danbooru))
             except Exception as exc:
                 logger.warning("Danbooru evidence unavailable; using cached evidence and Judge votes: %s", exc)
-        judge_evidence = await self._collect_judge_evidence(tags)
+                await self._record_evidence_refresh_failure("danbooru", exc)
+        if any(
+            self._source_requires_refresh(tag, self._judge_source(judge), cached)
+            for judge in self.judges for tag in tags
+        ):
+            judge_evidence = await self._collect_judge_evidence(tags, cached)
+        else:
+            judge_evidence = {}
         for tag, items in judge_evidence.items():
             gathered.setdefault(tag, []).extend(items)
         return gathered
 
-    async def _collect_judge_evidence(self, tags: list[str]) -> dict[str, list[tuple[str, str, float]]]:
+    async def _collect_judge_evidence(
+        self, tags: list[str], cached: dict[str, list[dict]]
+    ) -> dict[str, list[tuple[str, str, float]]]:
         results: dict[str, list[tuple[str, str, float]]] = {}
         async def collect(judge):
             client = self.judge_clients.get(judge["identity"])
+            judge_tags = [
+                tag for tag in tags
+                if self._source_requires_refresh(tag, self._judge_source(judge), cached)
+            ]
+            if not judge_tags:
+                return judge, {}
             if not client:
+                error = RuntimeError("Judge client is unavailable")
+                logger.warning("Judge %s is unavailable", judge["name"])
+                await self._record_evidence_refresh_failure(self._judge_source(judge), error)
                 return judge, {}
             try:
-                return judge, await self._classify_with_client(tags, client, judge["model"])
+                return judge, await self._classify_with_client(judge_tags, client, judge["model"])
             except Exception as exc:
                 logger.warning("Judge %s failed: %s", judge["name"], exc)
+                await self._record_evidence_refresh_failure(self._judge_source(judge), exc)
                 return judge, {}
-        for judge, classifications in await asyncio.gather(*(collect(judge) for judge in self.judges)):
+        pending = [
+            judge for judge in self.judges
+            if any(self._source_requires_refresh(tag, self._judge_source(judge), cached) for tag in tags)
+        ]
+        if not pending:
+            return results
+        for judge, classifications in await asyncio.gather(*(collect(judge) for judge in pending)):
             for tag, classification in classifications.items():
-                results.setdefault(tag, []).append((f"judge:{judge['identity']}", classification.classification, 1.0))
+                results.setdefault(tag, []).append((self._judge_source(judge), classification.classification, 1.0))
         return results
+
+    def _configured_machine_sources(self) -> list[str]:
+        sources = [self._judge_source(judge) for judge in self.judges]
+        if self.danbooru_lookup.enabled:
+            sources.append("danbooru")
+        return sources
+
+    @staticmethod
+    def _judge_source(judge: dict) -> str:
+        return f"judge:{judge['identity']}"
+
+    @staticmethod
+    def _source_requires_refresh(tag: str, source: str, cached: dict[str, list[dict]]) -> bool:
+        evidence = next((item for item in cached.get(tag, []) if item["source"] == source), None)
+        return evidence is None or not db.is_tag_evidence_fresh(evidence)
+
+    @staticmethod
+    async def _record_evidence_refresh_failure(source: str, error: Exception) -> None:
+        try:
+            await db.set_state(f"tag_evidence_refresh_failure:{source}", str(error))
+        except Exception as status_error:
+            logger.warning("Unable to record %s refresh failure: %s", source, status_error)
 
     def _build_judges(self, configured) -> list[dict]:
         raw = configured if isinstance(configured, list) else []

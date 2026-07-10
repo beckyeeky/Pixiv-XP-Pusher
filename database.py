@@ -15,7 +15,8 @@ from utils import normalize_tag
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+TAG_EVIDENCE_FRESHNESS_DAYS = 60
 
 
 async def init_db():
@@ -149,6 +150,8 @@ def _init_db_sync():
                 source TEXT NOT NULL,
                 classification TEXT NOT NULL,
                 confidence REAL NOT NULL DEFAULT 1.0,
+                observed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                verified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (normalized_tag, source)
             );
@@ -247,6 +250,24 @@ def _init_db_sync():
             logger.info("迁移：illust_cache 添加 chain 列")
         except:
             pass  # 列已存在
+
+        # Machine evidence keeps its own provenance.  Existing rows predate
+        # these columns, so their former update time is the best available
+        # observation and verification time.
+        evidence_columns = {
+            row[1] for row in db.execute("PRAGMA table_info(tag_classification_evidence)")
+        }
+        for column in ("observed_at", "verified_at"):
+            if column not in evidence_columns:
+                db.execute(f"ALTER TABLE tag_classification_evidence ADD COLUMN {column} TIMESTAMP")
+        db.execute(
+            """
+            UPDATE tag_classification_evidence
+            SET observed_at = COALESCE(observed_at, updated_at, CURRENT_TIMESTAMP),
+                verified_at = COALESCE(verified_at, updated_at, CURRENT_TIMESTAMP)
+            """
+        )
+        db.commit()
         
         # === 初始化 schema 版本元数据（兼容旧实例，不做破坏性升级） ===
         db.execute(
@@ -386,20 +407,49 @@ async def save_tag_classifications(items: list[tuple[str, str, str]]):
         await db.commit()
 
 
-async def get_tag_evidence(normalized_tags: list[str]) -> dict[str, list[dict]]:
+def _parse_evidence_timestamp(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def is_tag_evidence_fresh(item: dict, now: datetime | None = None) -> bool:
+    """Manual evidence is permanent; machine evidence is fresh for sixty days."""
+    if item.get("source") == "manual":
+        return True
+    verified_at = _parse_evidence_timestamp(item.get("verified_at"))
+    return bool(verified_at and verified_at >= (now or datetime.now()) - timedelta(days=TAG_EVIDENCE_FRESHNESS_DAYS))
+
+
+async def get_tag_evidence(
+    normalized_tags: list[str], *, include_provenance: bool = False
+) -> dict[str, list[dict]]:
     """Return evidence grouped by tag for maintenance and the future review UI."""
     if not normalized_tags:
         return {}
     unique_tags = list(dict.fromkeys(normalized_tags))
     async with aiosqlite.connect(DB_PATH) as db:
         placeholders = ",".join("?" * len(unique_tags))
+        columns = "normalized_tag, source, classification, confidence"
+        if include_provenance:
+            columns += ", observed_at, verified_at"
         cursor = await db.execute(
-            f"SELECT normalized_tag, source, classification, confidence FROM tag_classification_evidence WHERE normalized_tag IN ({placeholders})",
+            f"SELECT {columns} FROM tag_classification_evidence WHERE normalized_tag IN ({placeholders})",
             unique_tags,
         )
         result: dict[str, list[dict]] = {}
-        for tag, source, classification, confidence in await cursor.fetchall():
-            result.setdefault(tag, []).append({"source": source, "classification": normalize_tag_category(classification), "confidence": float(confidence)})
+        for row in await cursor.fetchall():
+            tag, source, classification, confidence = row[:4]
+            item = {"source": source, "classification": normalize_tag_category(classification), "confidence": float(confidence)}
+            if include_provenance:
+                item["observed_at"] = _parse_evidence_timestamp(row[4])
+                item["verified_at"] = _parse_evidence_timestamp(row[5])
+            result.setdefault(tag, []).append(item)
         return result
 
 
@@ -411,11 +461,12 @@ async def save_tag_evidence(items: list[tuple[str, str, str, float]]):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executemany(
             """
-            INSERT INTO tag_classification_evidence (normalized_tag, source, classification, confidence, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO tag_classification_evidence
+                (normalized_tag, source, classification, confidence, observed_at, verified_at, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(normalized_tag, source) DO UPDATE SET
                 classification = excluded.classification, confidence = excluded.confidence,
-                updated_at = CURRENT_TIMESTAMP
+                verified_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
             """,
             rows,
         )

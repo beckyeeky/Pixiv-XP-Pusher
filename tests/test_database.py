@@ -3,6 +3,7 @@ import gc
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +11,52 @@ import database
 
 
 class DatabaseInitTests(unittest.TestCase):
+    def test_init_db_backfills_provenance_for_legacy_tag_evidence(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                stale_time = datetime.now() - timedelta(days=61)
+                conn = sqlite3.connect(db_path)
+                try:
+                    conn.execute(
+                        """
+                        CREATE TABLE tag_classification_evidence (
+                            normalized_tag TEXT NOT NULL,
+                            source TEXT NOT NULL,
+                            classification TEXT NOT NULL,
+                            confidence REAL NOT NULL DEFAULT 1.0,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (normalized_tag, source)
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO tag_classification_evidence
+                            (normalized_tag, source, classification, confidence, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("tag", "danbooru", "character", 1.0, stale_time),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                await database.init_db()
+                conn = sqlite3.connect(db_path)
+                try:
+                    row = conn.execute(
+                        "SELECT observed_at, verified_at FROM tag_classification_evidence WHERE normalized_tag = ?",
+                        ("tag",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+                return row
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provenance = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
+
+        self.assertEqual(database._parse_evidence_timestamp(provenance[0]).date(), (datetime.now() - timedelta(days=61)).date())
+        self.assertEqual(database._parse_evidence_timestamp(provenance[1]).date(), (datetime.now() - timedelta(days=61)).date())
+
     def test_review_queue_prioritizes_profile_impact_and_accepts_manual_review(self):
         async def _run(db_path):
             with patch.object(database, "DB_PATH", db_path):

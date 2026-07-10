@@ -29,6 +29,7 @@
 - `judges`：多个独立 Judge Model；相同 `provider + base_url + model` 只计一票
 - `maintenance.max_tags_per_run`：每次只刷新高影响画像标签，Unresolved 可优先
 - `danbooru`：仅查询被选中的画像标签；证据会缓存，超时或错误时继续使用缓存和 Judge 投票。若 login/api_key 为空，会继承 `profiler.danbooru_login` / `profiler.danbooru_api_key`
+- 机器 Tag Evidence 按 source 独立保鲜 60 天；缓存读取不会刷新时效，只有该 source 成功复核才会更新。人工审核永不过期。
 
 人工审核既可通过受鉴权保护的 `GET/POST /api/tag-reviews` 完成，也可使用维护命令：
 
@@ -59,5 +60,4 @@ python scripts/review_tag_queue.py review tag_name character
 - `require_login_password`
 - `password`
 - `port`
-
 
