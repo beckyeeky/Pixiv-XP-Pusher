@@ -1,0 +1,3 @@
+# Separate preference facts from delivery policy
+
+The Preference Profile preserves observed affinity weights, including Character and Copyright affinity, without permanently reducing them during profile construction. Typed retrieval and ranking may apply category-specific treatment, while Motive Mix and Identity Caps control the final Daily Slate. This keeps “the user has shown affinity for this identity” distinct from “the system should avoid over-concentrating today's delivery,” at the cost of carrying both raw preference contributions and policy-adjusted selection signals through the pipeline.
