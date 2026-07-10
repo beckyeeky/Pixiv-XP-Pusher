@@ -19,9 +19,74 @@ sys.modules.setdefault(
 
 import database
 from tag_classifier import TagClassification, TagClassifier
+from tag_categories import is_seed_category
 
 
 class TagClassifierTests(unittest.TestCase):
+    def test_maintenance_selects_high_impact_unresolved_tags_and_accepts_multi_judge_consensus(self):
+        async def _run():
+            classifier = TagClassifier({
+                "enabled": False,
+                "maintenance": {"max_tags_per_run": 2, "prefer_unresolved_first": True},
+                "judges": [
+                    {"name": "one", "api_key": "one"},
+                    {"name": "two", "api_key": "two"},
+                ],
+            })
+            with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={
+                "resolved_high": {"classification": "feature", "source": "manual"},
+                "unresolved_low": {"classification": "unresolved", "source": "ai"},
+                "unresolved_high": {"classification": "unresolved", "source": "ai"},
+            })), patch.object(database, "get_tag_evidence", new=AsyncMock(return_value={})), \
+                patch.object(database, "save_tag_evidence", new=AsyncMock()) as save_evidence, \
+                patch.object(database, "save_tag_classifications", new=AsyncMock()):
+                classifier._collect_judge_evidence = AsyncMock(return_value={
+                    "unresolved_high": [("judge:one", "character", 1.0), ("judge:two", "character", 1.0)],
+                    "unresolved_low": [("judge:one", "copyright", 1.0), ("judge:two", "copyright", 1.0)],
+                })
+                result = await classifier.maintain_profile_tags({
+                    "resolved_high": 10.0, "unresolved_low": 1.0, "unresolved_high": 5.0,
+                })
+            return result, classifier._collect_judge_evidence, save_evidence
+
+        result, judges, save_evidence = asyncio.run(_run())
+
+        self.assertEqual(set(result), {"unresolved_high", "unresolved_low"})
+        self.assertEqual(result["unresolved_high"].classification, "character")
+        judges.assert_awaited_once_with(["unresolved_high", "unresolved_low"])
+        self.assertTrue(any(row[0] == "unresolved_high" for row in save_evidence.await_args.args[0]))
+
+    def test_maintenance_keeps_disagreement_unresolved_when_danbooru_is_unavailable(self):
+        async def _run():
+            classifier = TagClassifier({"enabled": False, "judges": [{"name": "one", "api_key": "one"}, {"name": "two", "api_key": "two"}]})
+            with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={})), \
+                patch.object(database, "get_tag_evidence", new=AsyncMock(return_value={"tag": [{"source": "danbooru", "classification": "feature", "confidence": 1.0}]})), \
+                patch.object(database, "save_tag_evidence", new=AsyncMock()), \
+                patch.object(database, "save_tag_classifications", new=AsyncMock()):
+                classifier._collect_judge_evidence = AsyncMock(return_value={
+                    "tag": [("judge:one", "character", 1.0), ("judge:two", "copyright", 1.0)]
+                })
+                result = await classifier.maintain_profile_tags({"tag": 1.0})
+            return result
+
+        result = asyncio.run(_run())
+        self.assertEqual(result["tag"].classification, "unresolved")
+
+    def test_legacy_single_model_is_one_judge_and_danbooru_errors_do_not_stop_maintenance(self):
+        async def _run():
+            classifier = TagClassifier({"enabled": False, "api_key": "legacy", "model": "legacy-model"})
+            with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={})), \
+                patch.object(database, "get_tag_evidence", new=AsyncMock(return_value={})), \
+                patch.object(database, "save_tag_evidence", new=AsyncMock()), \
+                patch.object(database, "save_tag_classifications", new=AsyncMock()):
+                classifier._collect_judge_evidence = AsyncMock(return_value={"tag": [("judge:legacy", "feature", 1.0)]})
+                classifier.danbooru_lookup.lookup = AsyncMock(side_effect=TimeoutError("offline"))
+                result = await classifier.maintain_profile_tags({"tag": 1.0})
+            return classifier, result
+
+        classifier, result = asyncio.run(_run())
+        self.assertEqual(len(classifier.judges), 1)
+        self.assertEqual(result["tag"].classification, "unresolved")
     def test_profile_maintenance_keeps_conflicting_machine_evidence_unresolved(self):
         async def _run():
             classifier = TagClassifier({"enabled": False})
@@ -96,6 +161,20 @@ class TagClassifierTests(unittest.TestCase):
         ), patch.object(database, "save_tag_classifications", new=AsyncMock()) as mock_save:
             asyncio.run(_run())
             mock_save.assert_not_awaited()
+
+    def test_manual_non_preference_decision_is_reused_and_never_becomes_a_seed(self):
+        async def _run():
+            classifier = TagClassifier({"enabled": False})
+            with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={
+                "platform_marker": {"classification": "non_preference", "source": "manual"}
+            })), patch.object(database, "save_tag_classifications", new=AsyncMock()) as save:
+                result = await classifier.classify_tags(["platform_marker"])
+            return result, save
+
+        result, save = asyncio.run(_run())
+        self.assertEqual(result["platform_marker"].source, "manual")
+        self.assertFalse(is_seed_category(result["platform_marker"]))
+        save.assert_not_awaited()
 
     def test_enabled_classifier_rechecks_fallback_cache(self):
         async def _run():
@@ -201,6 +280,25 @@ class TagClassifierTests(unittest.TestCase):
              patch("tag_classifier.HAS_OPENAI", True), \
              patch("tag_classifier.AsyncOpenAI", return_value=object()):
             asyncio.run(_run())
+
+    def test_multi_judge_delivery_defers_new_machine_categories_to_maintenance_consensus(self):
+        async def _run():
+            classifier = TagClassifier({
+                "enabled": True, "api_key": "legacy", "judges": [
+                    {"name": "one", "api_key": "one", "base_url": "https://one.example/v1", "model": "one"},
+                    {"name": "two", "api_key": "two", "base_url": "https://two.example/v1", "model": "two"},
+                ],
+            })
+            classifier.client = object()
+            classifier._classify_with_ai = AsyncMock()
+            with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={})), \
+                patch.object(database, "save_tag_classifications", new=AsyncMock()):
+                result = await classifier.classify_tags(["new_tag"])
+            return result, classifier._classify_with_ai
+
+        result, direct_ai = asyncio.run(_run())
+        self.assertEqual(result["new_tag"].classification, "unresolved")
+        direct_ai.assert_not_awaited()
 
 
 class DatabaseTagClassificationNormalizationTests(unittest.TestCase):

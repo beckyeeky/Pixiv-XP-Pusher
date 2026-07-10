@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
+from utils import normalize_tag
 
 logger = logging.getLogger(__name__)
 
@@ -347,7 +348,8 @@ async def get_tag_classifications(
             f"""
             SELECT normalized_tag, classification, source
             FROM tag_classification_cache
-            WHERE normalized_tag IN ({placeholders}) AND updated_at >= ?
+            WHERE normalized_tag IN ({placeholders})
+              AND (source = 'manual' OR updated_at >= ?)
             """,
             [*unique_tags, cutoff],
         )
@@ -465,6 +467,9 @@ async def get_tag_review_queue(limit: int = 100) -> list[dict]:
 
 async def review_tag_classification(normalized_tag: str, classification: str) -> None:
     """Accept a human Tag Category decision and remove the tag from review."""
+    normalized_tag = normalize_tag(normalized_tag)
+    if not normalized_tag:
+        raise ValueError("人工审核必须提供有效标签")
     category = normalize_tag_category(classification)
     if category == TAG_CATEGORY_UNRESOLVED:
         raise ValueError("人工审核必须选择一个已解析的 Tag Category")

@@ -36,6 +36,8 @@ def _build_match_breakdown(
             "total_score": 0.0,
             "feature_contribution": 0.0,
             "ip_contribution": 0.0,
+            "character_contribution": 0.0,
+            "copyright_contribution": 0.0,
             "feature_match_count": 0,
         }
 
@@ -46,6 +48,7 @@ def _build_match_breakdown(
     feature_weights: list[tuple[float, float]] = []
     non_feature_weights: list[tuple[float, float]] = []
     identity_weights: list[float] = []
+    typed_identity_weights = {"character": [], "copyright": []}
     negative_penalty = 0.0
     seen_positive_tags: set[str] = set()
     seen_negative_tags: set[str] = set()
@@ -71,6 +74,10 @@ def _build_match_breakdown(
                 non_feature_weights.append((effective_weight, float(weight)))
                 if is_identity_category(classification):
                     identity_weights.append(effective_weight)
+                    category = getattr(classification, "classification", classification)
+                    category = str(category).lower()
+                    if category in typed_identity_weights:
+                        typed_identity_weights[category].append(effective_weight)
 
         if negative_profile and tag_key not in seen_negative_tags:
             seen_negative_tags.add(tag_key)
@@ -100,6 +107,8 @@ def _build_match_breakdown(
         "feature_contribution": feature_contribution,
         "ip_contribution": max(identity_weights) if identity_weights else 0.0,
         "identity_contribution": max(identity_weights) if identity_weights else 0.0,
+        "character_contribution": max(typed_identity_weights["character"], default=0.0),
+        "copyright_contribution": max(typed_identity_weights["copyright"], default=0.0),
         "feature_match_count": len(feature_weights),
     }
 
@@ -450,6 +459,8 @@ class ContentFilter:
                 score = _finalize_match_score(breakdown)
                 illust.feature_contribution = float(breakdown["feature_contribution"])
                 illust.ip_contribution = float(breakdown["ip_contribution"])
+                illust.character_contribution = float(breakdown["character_contribution"])
+                illust.copyright_contribution = float(breakdown["copyright_contribution"])
                 illust.feature_match_count = int(breakdown["feature_match_count"])
                 illust.is_feature_led = (
                     illust.feature_contribution > 0
@@ -466,6 +477,8 @@ class ContentFilter:
                 score = 0.0
                 illust.feature_contribution = 0.0
                 illust.ip_contribution = 0.0
+                illust.character_contribution = 0.0
+                illust.copyright_contribution = 0.0
                 illust.feature_match_count = 0
                 illust.is_feature_led = False
                 # 无 XP 时，关注画师也给予基础分

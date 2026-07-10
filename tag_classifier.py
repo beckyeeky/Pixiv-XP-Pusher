@@ -47,6 +47,11 @@ class TagClassifier:
         self.model = cfg.get("model") or "deepseek-v4-flash"
         self.base_url = cfg.get("base_url") or "https://api.deepseek.com/v1"
         self.api_key = cfg.get("api_key", "")
+        maintenance_cfg = cfg.get("maintenance") if isinstance(cfg.get("maintenance"), dict) else {}
+        self.maintenance_max_tags = self._positive_int(maintenance_cfg.get("max_tags_per_run", 40), 40)
+        self.maintenance_min_weight = float(maintenance_cfg.get("min_profile_weight", 0.0) or 0.0)
+        self.prefer_unresolved_first = bool(maintenance_cfg.get("prefer_unresolved_first", True))
+        self.judges = self._build_judges(cfg.get("judges"))
         self.manual_ip_tags = self._load_manual_ip_tags(ip_tags)
         self.danbooru_lookup = DanbooruEvidenceLookup(cfg.get("danbooru"))
 
@@ -58,8 +63,15 @@ class TagClassifier:
             logger.warning("tag_classifier.enabled=true 但未配置 api_key，已回退到手动 IP 列表")
 
         self.client = None
+        self.judge_clients = {}
         if self.enabled:
             self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+        if requested_enabled and HAS_OPENAI:
+            for judge in self.judges:
+                if judge["api_key"]:
+                    self.judge_clients[judge["identity"]] = AsyncOpenAI(
+                        api_key=judge["api_key"], base_url=judge["base_url"]
+                    )
 
     async def classify_tags(self, tags: list[str]) -> dict[str, TagClassification]:
         """批量分类标签，优先使用未过期缓存。"""
@@ -88,7 +100,9 @@ class TagClassifier:
             )
 
         remaining = [tag for tag in unique_tags if tag not in results]
-        if remaining and self.enabled and self.client:
+        # Multi-Judge installs accept machine categories only through maintenance
+        # consensus; delivery must not turn one fast-path response into truth.
+        if remaining and self.enabled and self.client and len(self.judges) == 1:
             ai_results = await self._classify_with_ai(remaining)
             if ai_results:
                 await db.save_tag_classifications(
@@ -109,23 +123,25 @@ class TagClassifier:
 
         return results
 
-    async def maintain_profile_tags(self, tags: list[str], evidence_lookup=None) -> dict[str, TagClassification]:
+    async def maintain_profile_tags(self, tags: list[str] | dict[str, float], evidence_lookup=None) -> dict[str, TagClassification]:
         """Refresh observed profile-tag evidence; delivery never waits for this method."""
-        normalized_tags = list(dict.fromkeys(normalize_tag(tag) for tag in tags if normalize_tag(tag)))
+        normalized_tags = await self._select_maintenance_tags(tags)
         gathered = {tag: list(items) for tag, items in (await db.get_tag_evidence(normalized_tags)).items()}
         for tag in normalized_tags:
             gathered.setdefault(tag, [])
             if tag in self.manual_ip_tags:
                 gathered[tag].append({"source": "manual", "classification": TAG_CATEGORY_COPYRIGHT, "confidence": 1.0})
         if evidence_lookup is None:
-            evidence_lookup = self._collect_machine_evidence
-        if evidence_lookup:
+            supplied = await self._collect_machine_evidence(normalized_tags, gathered)
+        elif evidence_lookup:
             supplied = await evidence_lookup(normalized_tags)
-            for tag, items in supplied.items():
-                gathered.setdefault(tag, []).extend(
-                    {"source": source, "classification": category, "confidence": confidence}
-                    for source, category, confidence in items
-                )
+        else:
+            supplied = {}
+        for tag, items in supplied.items():
+            gathered.setdefault(tag, []).extend(
+                {"source": source, "classification": category, "confidence": confidence}
+                for source, category, confidence in items
+            )
         await db.save_tag_evidence([
             (tag, item["source"], item["classification"], item.get("confidence", 1.0))
             for tag, items in gathered.items() for item in items
@@ -134,13 +150,67 @@ class TagClassifier:
         await db.save_tag_classifications([(tag, item.classification, item.source) for tag, item in results.items()])
         return results
 
-    async def _collect_machine_evidence(self, tags: list[str]) -> dict[str, list[tuple[str, str, float]]]:
-        gathered = await self.danbooru_lookup.lookup(tags)
-        if self.enabled and self.client:
-            for tag, classification in (await self._classify_with_ai(tags)).items():
-                source = f"ai:{self.base_url}:{self.model}"
-                gathered.setdefault(tag, []).append((source, classification.classification, 1.0))
+    async def _select_maintenance_tags(self, tags: list[str] | dict[str, float]) -> list[str]:
+        if isinstance(tags, dict):
+            profile = {normalize_tag(tag): float(weight) for tag, weight in tags.items() if normalize_tag(tag)}
+            candidates = [tag for tag, weight in profile.items() if abs(weight) >= self.maintenance_min_weight]
+            cached = await db.get_tag_classifications(candidates, ttl_days=self.ttl_days)
+            def priority(tag):
+                unresolved = cached.get(tag, {}).get("classification") == TAG_CATEGORY_UNRESOLVED
+                return (0 if self.prefer_unresolved_first and unresolved else 1, -abs(profile[tag]), tag)
+            return sorted(candidates, key=priority)[:self.maintenance_max_tags]
+        return list(dict.fromkeys(normalize_tag(tag) for tag in tags if normalize_tag(tag)))[:self.maintenance_max_tags]
+
+    async def _collect_machine_evidence(self, tags: list[str], cached: dict[str, list[dict]]) -> dict[str, list[tuple[str, str, float]]]:
+        gathered: dict[str, list[tuple[str, str, float]]] = {}
+        missing_danbooru = [tag for tag in tags if not any(item["source"] == "danbooru" for item in cached.get(tag, []))]
+        if missing_danbooru:
+            try:
+                gathered.update(await self.danbooru_lookup.lookup(missing_danbooru))
+            except Exception as exc:
+                logger.warning("Danbooru evidence unavailable; using cached evidence and Judge votes: %s", exc)
+        judge_evidence = await self._collect_judge_evidence(tags)
+        for tag, items in judge_evidence.items():
+            gathered.setdefault(tag, []).extend(items)
         return gathered
+
+    async def _collect_judge_evidence(self, tags: list[str]) -> dict[str, list[tuple[str, str, float]]]:
+        results: dict[str, list[tuple[str, str, float]]] = {}
+        async def collect(judge):
+            client = self.judge_clients.get(judge["identity"])
+            if not client:
+                return judge, {}
+            try:
+                return judge, await self._classify_with_client(tags, client, judge["model"])
+            except Exception as exc:
+                logger.warning("Judge %s failed: %s", judge["name"], exc)
+                return judge, {}
+        for judge, classifications in await asyncio.gather(*(collect(judge) for judge in self.judges)):
+            for tag, classification in classifications.items():
+                results.setdefault(tag, []).append((f"judge:{judge['identity']}", classification.classification, 1.0))
+        return results
+
+    def _build_judges(self, configured) -> list[dict]:
+        raw = configured if isinstance(configured, list) else []
+        if not raw:
+            raw = [{"name": "legacy", "provider": "openai", "api_key": self.api_key, "base_url": self.base_url, "model": self.model}]
+        unique, identities = [], set()
+        for index, item in enumerate(raw):
+            if not isinstance(item, dict):
+                continue
+            judge = {
+                "name": str(item.get("name") or f"judge_{index + 1}"),
+                "provider": str(item.get("provider") or "openai"),
+                "api_key": item.get("api_key") or self.api_key,
+                "base_url": item.get("base_url") or self.base_url,
+                "model": item.get("model") or self.model,
+            }
+            identity = (judge["provider"], judge["base_url"].rstrip("/"), judge["model"])
+            if identity not in identities:
+                identities.add(identity)
+                judge["identity"] = "|".join(identity)
+                unique.append(judge)
+        return unique
 
     def _load_manual_ip_tags(self, ip_tags: Optional[list[str] | str]) -> set[str]:
         raw_tags: list[str] = []
@@ -205,6 +275,30 @@ class TagClassifier:
                 continue
             merged.update(result)
 
+        return merged
+
+    async def _classify_with_client(self, tags: list[str], client, model: str) -> dict[str, TagClassification]:
+        batches = [tags[index:index + self.batch_size] for index in range(0, len(tags), self.batch_size)]
+
+        async def classify_batch(batch):
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "你是 Pixiv 标签分类器，只输出 JSON。"},
+                    {"role": "user", "content": self._build_prompt(batch)},
+                ],
+                temperature=0.0,
+            )
+            return self._parse_ai_classifications(
+                json.loads(self._strip_code_fences(response.choices[0].message.content or "")), batch
+            )
+
+        grouped = await asyncio.gather(*(classify_batch(batch) for batch in batches), return_exceptions=True)
+        merged = {}
+        for result in grouped:
+            if isinstance(result, Exception):
+                raise result
+            merged.update(result)
         return merged
 
     async def _classify_batch(self, tags: list[str]) -> dict[str, TagClassification]:

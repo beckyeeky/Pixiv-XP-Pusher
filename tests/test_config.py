@@ -60,6 +60,24 @@ class ConfigNormalizationTests(unittest.TestCase):
         })
         self.assertEqual(cfg["tag_classifier"]["api_key"], "sk-own")
 
+    def test_normalize_multi_judges_and_inherits_danbooru_credentials(self):
+        cfg = config.normalize_config({
+            "profiler": {"danbooru_login": "profile-login", "danbooru_api_key": "profile-key"},
+            "tag_classifier": {
+                "maintenance": {"max_tags_per_run": "3"},
+                "judges": [
+                    {"name": "first", "api_key": "key-1", "base_url": "https://a.example/v1", "model": "model-a"},
+                    {"name": "duplicate", "api_key": "key-2", "base_url": "https://a.example/v1", "model": "model-a"},
+                ],
+                "danbooru": {"enabled": True},
+            },
+        })
+
+        self.assertEqual(cfg["tag_classifier"]["maintenance"]["max_tags_per_run"], 3)
+        self.assertEqual(len(cfg["tag_classifier"]["judges"]), 2)
+        self.assertEqual(cfg["tag_classifier"]["danbooru"]["login"], "profile-login")
+        self.assertEqual(cfg["tag_classifier"]["danbooru"]["api_key"], "profile-key")
+
     def test_normalize_ip_diversity_defaults_and_invalid_values(self):
         cfg = config.normalize_config({"filter": {"ip_diversity": {"enabled": 1, "decay_factor": "bad", "floor": 2}}})
         self.assertTrue(cfg["filter"]["ip_diversity"]["enabled"])

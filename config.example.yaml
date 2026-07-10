@@ -85,18 +85,30 @@ ai:
     score_weight: 0.3 # AI 分数权重 (用于与基础分数混合)
 
 tag_classifier:
-  enabled: false # 启用后可区分 feature / IP 标签，用于特征加权、展示排序与 IP 多样性
+  enabled: false # 启用后维护可接受的 Feature / Character / Copyright 等类别
   api_key: "" # DeepSeek / OpenAI 兼容 API Key；留空时回退到手动 IP 列表
   base_url: "https://api.deepseek.com/v1"
   model: "deepseek-v4-flash"
   ttl_days: 30
   batch_size: 50
   concurrency: 5
+  maintenance:
+    max_tags_per_run: 40 # 每次仅刷新高影响画像标签，避免全量重跑
+    min_profile_weight: 0.0
+    prefer_unresolved_first: true
+  # 多个不同 provider+base_url+model 身份各投一票；省略时兼容上方单模型配置。
+  judges: []
+  # - name: judge_a
+  #   provider: openai
+  #   api_key: ""
+  #   base_url: "https://api.deepseek.com/v1"
+  #   model: "deepseek-v4-flash"
   danbooru:
     enabled: false # 只查询画像中出现的标签；无需镜像完整标签库
     login: "" # 可选，使用 Danbooru 账号可提高请求额度
     api_key: ""
     base_url: "https://danbooru.donmai.us"
+    timeout_seconds: 15 # 不可用时会继续使用缓存证据与 Judge 投票
 
 scheduler:
   # 定时任务配置 (Cron 表达式: 分 时 日 月 周)

@@ -137,6 +137,41 @@ def normalize_config(config: dict) -> dict:
     danbooru_cfg.setdefault("login", "")
     danbooru_cfg.setdefault("api_key", "")
     danbooru_cfg.setdefault("base_url", "https://danbooru.donmai.us")
+    danbooru_cfg["timeout_seconds"] = max(1, _coerce_int(
+        danbooru_cfg.get("timeout_seconds", 15), default=15,
+        field_name="tag_classifier.danbooru.timeout_seconds",
+    ))
+
+    maintenance_cfg = tag_classifier_cfg.setdefault("maintenance", {})
+    if not isinstance(maintenance_cfg, dict):
+        maintenance_cfg = {}
+        tag_classifier_cfg["maintenance"] = maintenance_cfg
+    maintenance_cfg["max_tags_per_run"] = max(1, _coerce_int(
+        maintenance_cfg.get("max_tags_per_run", 40), default=40,
+        field_name="tag_classifier.maintenance.max_tags_per_run",
+    ))
+    try:
+        maintenance_cfg["min_profile_weight"] = float(maintenance_cfg.get("min_profile_weight", 0.0))
+    except (TypeError, ValueError):
+        maintenance_cfg["min_profile_weight"] = 0.0
+    maintenance_cfg["prefer_unresolved_first"] = bool(maintenance_cfg.get("prefer_unresolved_first", True))
+
+    judges = tag_classifier_cfg.get("judges", [])
+    if not isinstance(judges, list):
+        logger.warning("配置项 tag_classifier.judges 必须是列表，已回退为单模型")
+        judges = []
+    normalized_judges = []
+    for index, judge in enumerate(judges):
+        if not isinstance(judge, dict):
+            continue
+        item = dict(judge)
+        item.setdefault("name", f"judge_{index + 1}")
+        item.setdefault("provider", "openai")
+        item.setdefault("api_key", "")
+        item.setdefault("base_url", tag_classifier_cfg["base_url"])
+        item.setdefault("model", tag_classifier_cfg["model"])
+        normalized_judges.append(item)
+    tag_classifier_cfg["judges"] = normalized_judges
 
     daily_slate_cfg = filter_cfg.setdefault("daily_slate", {})
     if not isinstance(daily_slate_cfg, dict):
@@ -190,6 +225,16 @@ def normalize_config(config: dict) -> dict:
         if not tag_classifier_cfg.get("api_key", "").strip():
             tag_classifier_cfg["api_key"] = shared_key
             logger.debug("tag_classifier.api_key 已从 profiler.ai 继承")
+        for judge in tag_classifier_cfg["judges"]:
+            if not str(judge.get("api_key", "")).strip():
+                judge["api_key"] = shared_key
+
+    profiler_cfg = normalized.get("profiler", {})
+    if isinstance(profiler_cfg, dict):
+        if not str(danbooru_cfg.get("login", "")).strip():
+            danbooru_cfg["login"] = profiler_cfg.get("danbooru_login", "")
+        if not str(danbooru_cfg.get("api_key", "")).strip():
+            danbooru_cfg["api_key"] = profiler_cfg.get("danbooru_api_key", "")
 
     return normalized
 

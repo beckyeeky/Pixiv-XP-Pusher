@@ -99,7 +99,7 @@ class PushRun:
             tag_classifier = self._build_tag_classifier(profiler_cfg)
             if tag_classifier and xp_profile:
                 maintenance_task = asyncio.create_task(
-                    tag_classifier.maintain_profile_tags(list(xp_profile))
+                    tag_classifier.maintain_profile_tags(xp_profile)
                 )
                 maintenance_task.add_done_callback(self._log_profile_maintenance_result)
 

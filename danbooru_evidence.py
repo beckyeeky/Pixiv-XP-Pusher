@@ -13,6 +13,7 @@ class DanbooruEvidenceLookup:
         self.login = cfg.get("login", "")
         self.api_key = cfg.get("api_key", "")
         self.base_url = cfg.get("base_url", "https://danbooru.donmai.us")
+        self.timeout_seconds = max(1, int(cfg.get("timeout_seconds", 15)))
 
     async def lookup(self, tags: list[str]) -> dict[str, list[tuple[str, str, float]]]:
         if not self.enabled or not tags:
@@ -20,7 +21,7 @@ class DanbooruEvidenceLookup:
         params = {"search[name_matches]": ",".join(tags), "limit": len(tags)}
         if self.login and self.api_key:
             params.update({"login": self.login, "api_key": self.api_key})
-        timeout = aiohttp.ClientTimeout(total=15)
+        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(f"{self.base_url.rstrip('/')}/tags.json", params=params) as response:
                 response.raise_for_status()

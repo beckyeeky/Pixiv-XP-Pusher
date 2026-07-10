@@ -24,14 +24,24 @@
 - `ip_diversity`：同 IP 连续出现时对后续作品降权，默认 `decay_factor: 0.6`、`floor: 0.1`
 
 ## tag_classifier
-- `enabled`：启用后将标签区分为 `feature` 与 `ip`
-- `api_key` / `base_url` / `model`：兼容 OpenAI 接口；未配置时会回退到手动 IP 列表
-- `ttl_days` / `batch_size` / `concurrency`：控制缓存与批处理并发
+- `enabled`：启用后将标签区分为 Feature、Character、Copyright、Artist、Non-preference 与 Unresolved
+- `api_key` / `base_url` / `model`：兼容 OpenAI 接口；未配置 `judges` 时作为单 Judge 的兼容回退
+- `judges`：多个独立 Judge Model；相同 `provider + base_url + model` 只计一票
+- `maintenance.max_tags_per_run`：每次只刷新高影响画像标签，Unresolved 可优先
+- `danbooru`：仅查询被选中的画像标签；证据会缓存，超时或错误时继续使用缓存和 Judge 投票。若 login/api_key 为空，会继承 `profiler.danbooru_login` / `profiler.danbooru_api_key`
+
+人工审核既可通过受鉴权保护的 `GET/POST /api/tag-reviews` 完成，也可使用维护命令：
+
+```bash
+python scripts/review_tag_queue.py list
+python scripts/review_tag_queue.py review tag_name character
+```
 
 启用后会影响三处行为：
 - 匹配度计算里 `feature` 标签按 `1.3x` 加权，`ip` 标签不额外加成
 - 推送消息中的 `display_tags` 按 feature-first 排序
 - `filter.ip_diversity` 使用分类结果识别“同坑连续出现”的作品并做衰减
+- `filter.daily_slate` 依据 Feature/Character/Copyright 的 strongest Preference Contribution 决定动机；Feature 缺额时先将 Exploration 扩展到 40%，再考虑扩大身份动机份额
 
 ## fetcher
 - `search_limit`、`date_range_days`
@@ -49,6 +59,5 @@
 - `require_login_password`
 - `password`
 - `port`
-
 
 

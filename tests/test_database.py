@@ -34,6 +34,18 @@ class DatabaseInitTests(unittest.TestCase):
         self.assertEqual([item["tag"] for item in remaining], ["low_impact"])
         self.assertIn({"source": "manual", "classification": "copyright", "confidence": 1.0}, evidence["high_impact"])
 
+    def test_review_normalizes_human_tag_input(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                await database.save_tag_classifications([("blue_archive", "unresolved", "ai")])
+                await database.review_tag_classification("Blue Archive", "non_preference")
+                return await database.get_tag_classifications(["blue_archive"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
+        self.assertEqual(result["blue_archive"]["source"], "manual")
+
     def test_init_db_creates_core_tables(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "pixiv_xp.db"
