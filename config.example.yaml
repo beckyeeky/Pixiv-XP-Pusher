@@ -92,6 +92,11 @@ tag_classifier:
   ttl_days: 30
   batch_size: 50
   concurrency: 5
+  danbooru:
+    enabled: false # 只查询画像中出现的标签；无需镜像完整标签库
+    login: "" # 可选，使用 Danbooru 账号可提高请求额度
+    api_key: ""
+    base_url: "https://danbooru.donmai.us"
 
 scheduler:
   # 定时任务配置 (Cron 表达式: 分 时 日 月 周)
@@ -121,6 +126,15 @@ filter:
   # 多样性增强 (让每次推送都不太一样)
   shuffle_factor: 0.15 # 随机打散因子 (0-0.5)，让排序结果每次不同
   exploration_ratio: 0.2 # 探索比例，从候选池随机抽取 20% 的"潜力股"
+
+  daily_slate:
+    enabled: true # 最终推送按动机配比和身份上限编排
+    feature_ratio: 0.55
+    character_ratio: 0.15
+    copyright_ratio: 0.10
+    exploration_ratio: 0.20
+    max_per_character: 2
+    max_per_copyright: 4
 
   display_tags:
     max_ip_count: 2 # 推送消息中最多展示多少个 IP 标签；feature 标签会优先展示
@@ -280,4 +294,3 @@ web:
   require_login_password: true  # 设为 false 可关闭 Web 登录密码验证（仅建议内网/本机使用）
   password: "YOUR_PASSWORD_HERE"
   port: 8000
-

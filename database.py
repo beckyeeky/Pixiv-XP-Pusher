@@ -14,7 +14,7 @@ from tag_categories import normalize_tag_category
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 async def init_db():
@@ -141,6 +141,15 @@ def _init_db_sync():
                 classification TEXT NOT NULL,
                 source TEXT NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS tag_classification_evidence (
+                normalized_tag TEXT NOT NULL,
+                source TEXT NOT NULL,
+                classification TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (normalized_tag, source)
             );
             
             -- MAB 策略统计表
@@ -371,6 +380,42 @@ async def save_tag_classifications(items: list[tuple[str, str, str]]):
                 updated_at = CURRENT_TIMESTAMP
             """,
             normalized_items,
+        )
+        await db.commit()
+
+
+async def get_tag_evidence(normalized_tags: list[str]) -> dict[str, list[dict]]:
+    """Return evidence grouped by tag for maintenance and the future review UI."""
+    if not normalized_tags:
+        return {}
+    unique_tags = list(dict.fromkeys(normalized_tags))
+    async with aiosqlite.connect(DB_PATH) as db:
+        placeholders = ",".join("?" * len(unique_tags))
+        cursor = await db.execute(
+            f"SELECT normalized_tag, source, classification, confidence FROM tag_classification_evidence WHERE normalized_tag IN ({placeholders})",
+            unique_tags,
+        )
+        result: dict[str, list[dict]] = {}
+        for tag, source, classification, confidence in await cursor.fetchall():
+            result.setdefault(tag, []).append({"source": source, "classification": normalize_tag_category(classification), "confidence": float(confidence)})
+        return result
+
+
+async def save_tag_evidence(items: list[tuple[str, str, str, float]]):
+    """Upsert one current vote per tag/source without discarding other sources."""
+    if not items:
+        return
+    rows = [(tag, source, normalize_tag_category(category), float(confidence)) for tag, source, category, confidence in items]
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            """
+            INSERT INTO tag_classification_evidence (normalized_tag, source, classification, confidence, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(normalized_tag, source) DO UPDATE SET
+                classification = excluded.classification, confidence = excluded.confidence,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            rows,
         )
         await db.commit()
 

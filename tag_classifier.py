@@ -20,6 +20,8 @@ from tag_categories import (
     TagClassification,
     normalize_tag_category,
 )
+from tag_evidence import resolve_tag_evidence
+from danbooru_evidence import DanbooruEvidenceLookup
 from utils import normalize_tag
 
 try:
@@ -46,6 +48,7 @@ class TagClassifier:
         self.base_url = cfg.get("base_url") or "https://api.deepseek.com/v1"
         self.api_key = cfg.get("api_key", "")
         self.manual_ip_tags = self._load_manual_ip_tags(ip_tags)
+        self.danbooru_lookup = DanbooruEvidenceLookup(cfg.get("danbooru"))
 
         requested_enabled = cfg.get("enabled", False)
         self.enabled = bool(requested_enabled and HAS_OPENAI and self.api_key)
@@ -105,6 +108,39 @@ class TagClassifier:
             results.update(fallback_results)
 
         return results
+
+    async def maintain_profile_tags(self, tags: list[str], evidence_lookup=None) -> dict[str, TagClassification]:
+        """Refresh observed profile-tag evidence; delivery never waits for this method."""
+        normalized_tags = list(dict.fromkeys(normalize_tag(tag) for tag in tags if normalize_tag(tag)))
+        gathered = {tag: list(items) for tag, items in (await db.get_tag_evidence(normalized_tags)).items()}
+        for tag in normalized_tags:
+            gathered.setdefault(tag, [])
+            if tag in self.manual_ip_tags:
+                gathered[tag].append({"source": "manual", "classification": TAG_CATEGORY_COPYRIGHT, "confidence": 1.0})
+        if evidence_lookup is None:
+            evidence_lookup = self._collect_machine_evidence
+        if evidence_lookup:
+            supplied = await evidence_lookup(normalized_tags)
+            for tag, items in supplied.items():
+                gathered.setdefault(tag, []).extend(
+                    {"source": source, "classification": category, "confidence": confidence}
+                    for source, category, confidence in items
+                )
+        await db.save_tag_evidence([
+            (tag, item["source"], item["classification"], item.get("confidence", 1.0))
+            for tag, items in gathered.items() for item in items
+        ])
+        results = {tag: resolve_tag_evidence(tag, items) for tag, items in gathered.items()}
+        await db.save_tag_classifications([(tag, item.classification, item.source) for tag, item in results.items()])
+        return results
+
+    async def _collect_machine_evidence(self, tags: list[str]) -> dict[str, list[tuple[str, str, float]]]:
+        gathered = await self.danbooru_lookup.lookup(tags)
+        if self.enabled and self.client:
+            for tag, classification in (await self._classify_with_ai(tags)).items():
+                source = f"ai:{self.base_url}:{self.model}"
+                gathered.setdefault(tag, []).append((source, classification.classification, 1.0))
+        return gathered
 
     def _load_manual_ip_tags(self, ip_tags: Optional[list[str] | str]) -> set[str]:
         raw_tags: list[str] = []

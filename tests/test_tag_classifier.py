@@ -22,6 +22,46 @@ from tag_classifier import TagClassification, TagClassifier
 
 
 class TagClassifierTests(unittest.TestCase):
+    def test_profile_maintenance_keeps_conflicting_machine_evidence_unresolved(self):
+        async def _run():
+            classifier = TagClassifier({"enabled": False})
+            with patch.object(database, "get_tag_evidence", new=AsyncMock(return_value={})), \
+                 patch.object(database, "save_tag_evidence", new=AsyncMock()) as save_evidence, \
+                 patch.object(database, "save_tag_classifications", new=AsyncMock()) as save_classifications:
+                result = await classifier.maintain_profile_tags(
+                    ["ambiguous_tag"],
+                    evidence_lookup=AsyncMock(return_value={
+                        "ambiguous_tag": [("danbooru", "character", 1.0), ("ai:test-model", "copyright", 1.0)]
+                    }),
+                )
+            return result, save_evidence, save_classifications
+
+        result, save_evidence, save_classifications = asyncio.run(_run())
+
+        self.assertEqual(result["ambiguous_tag"].classification, "unresolved")
+        self.assertEqual(result["ambiguous_tag"].source, "evidence_unresolved")
+        save_evidence.assert_awaited_once()
+        save_classifications.assert_awaited_once_with(
+            [("ambiguous_tag", "unresolved", "evidence_unresolved")]
+        )
+
+    def test_profile_maintenance_manual_decision_overrides_machine_evidence(self):
+        async def _run():
+            classifier = TagClassifier({"enabled": False}, ip_tags=["blue_archive"])
+            with patch.object(database, "get_tag_evidence", new=AsyncMock(return_value={})), \
+                 patch.object(database, "save_tag_evidence", new=AsyncMock()), \
+                 patch.object(database, "save_tag_classifications", new=AsyncMock()):
+                return await classifier.maintain_profile_tags(
+                    ["blue_archive"],
+                    evidence_lookup=AsyncMock(return_value={
+                        "blue_archive": [("danbooru", "character", 1.0)]
+                    }),
+                )
+
+        result = asyncio.run(_run())
+
+        self.assertEqual(result["blue_archive"].classification, "copyright")
+        self.assertEqual(result["blue_archive"].source, "manual")
     def test_invalid_numeric_config_uses_defaults(self):
         classifier = TagClassifier(
             {"enabled": False, "ttl_days": "bad", "batch_size": 0, "concurrency": True}

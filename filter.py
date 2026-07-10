@@ -8,6 +8,7 @@ from typing import Optional
 from pixiv_client import Illust
 import database as db
 from tag_categories import is_feature_category, is_identity_category, is_seed_category
+from daily_slate import DailySlateComposer
 from utils import normalize_tag
 
 logger = logging.getLogger(__name__)
@@ -179,6 +180,7 @@ class ContentFilter:
         tag_classifier = None,
         display_tags_max_ip_count: int = 2,
         ip_diversity: Optional[dict] = None,
+        daily_slate: Optional[dict] = None,
     ):
         self._config_blacklist_tags = {normalize_tag(t) for t in (blacklist_tags or []) if t}
         self._db_blacklist_tags: set[str] = set()
@@ -209,6 +211,7 @@ class ContentFilter:
         self.ip_diversity_enabled = ip_diversity_cfg.get("enabled", False)
         self.ip_diversity_decay = ip_diversity_cfg.get("decay_factor", 0.6)
         self.ip_diversity_floor = ip_diversity_cfg.get("floor", 0.1)
+        self.daily_slate = DailySlateComposer(daily_slate)
         
         # 来源加成 (借鉴 X 算法 OON Scorer)
         self.source_boost = source_boost or {
@@ -628,8 +631,13 @@ class ContentFilter:
                 diverse_result.append(illust)
                 artist_count[illust.user_id] = count + 1
         
+        # Daily Slate applies Motive Mix and Identity Caps after ranking.
+        if self.daily_slate.enabled:
+            final_result = self.daily_slate.compose(
+                diverse_result, self.daily_limit, tag_classifications, xp_profile or {}
+            )
         # 7. 探索比例：只从常规 Top N 之外挑 feature 候选，避免把原本就会入选的强图改名成探索
-        if self.exploration_ratio > 0 and len(diverse_result) > self.daily_limit:
+        elif self.exploration_ratio > 0 and len(diverse_result) > self.daily_limit:
             import random
             explore_count = int(self.daily_limit * self.exploration_ratio)
             main_count = self.daily_limit - explore_count

@@ -97,6 +97,11 @@ class PushRun:
                 logger.info(f"📚 历史补充模式：时间范围调整为 {self.historical_days} 天 (实际使用: {fetcher_date_range})")
 
             tag_classifier = self._build_tag_classifier(profiler_cfg)
+            if tag_classifier and xp_profile:
+                maintenance_task = asyncio.create_task(
+                    tag_classifier.maintain_profile_tags(list(xp_profile))
+                )
+                maintenance_task.add_done_callback(self._log_profile_maintenance_result)
 
             fetcher = ContentFetcher(
                 client=self.client,
@@ -157,6 +162,7 @@ class PushRun:
                 ai_scorer=ai_scorer,
                 shuffle_factor=filter_cfg.get("shuffle_factor", 0.0),
                 exploration_ratio=filter_cfg.get("exploration_ratio", 0.0),
+                daily_slate=filter_cfg.get("daily_slate"),
                 tag_classifier=tag_classifier,
                 display_tags_max_ip_count=_get_display_tags_max_ip_count(filter_cfg),
             )
@@ -237,6 +243,16 @@ class PushRun:
         except Exception as e:
             logger.warning(f"TagClassifier 初始化失败，将仅使用 XP 排序: {e}")
             return None
+
+    @staticmethod
+    def _log_profile_maintenance_result(task):
+        """Maintenance is best-effort and must not turn a delivery into a failure."""
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as e:
+            logger.warning(f"标签分类维护失败，将在下次运行重试: {e}")
 
     async def _push_filtered(self, filtered: list) -> None:
         if self.notifiers and filtered:

@@ -128,6 +128,29 @@ def normalize_config(config: dict) -> dict:
         default=5,
         field_name="tag_classifier.concurrency",
     ))
+    danbooru_cfg = tag_classifier_cfg.setdefault("danbooru", {})
+    if not isinstance(danbooru_cfg, dict):
+        logger.warning("配置项 tag_classifier.danbooru 必须是对象，已回退为默认值")
+        danbooru_cfg = {}
+        tag_classifier_cfg["danbooru"] = danbooru_cfg
+    danbooru_cfg.setdefault("enabled", False)
+    danbooru_cfg.setdefault("login", "")
+    danbooru_cfg.setdefault("api_key", "")
+    danbooru_cfg.setdefault("base_url", "https://danbooru.donmai.us")
+
+    daily_slate_cfg = filter_cfg.setdefault("daily_slate", {})
+    if not isinstance(daily_slate_cfg, dict):
+        logger.warning("配置项 filter.daily_slate 必须是对象，已回退为默认值")
+        daily_slate_cfg = {}
+        filter_cfg["daily_slate"] = daily_slate_cfg
+    daily_slate_cfg.setdefault("enabled", True)
+    for key, default in (("feature_ratio", 0.55), ("character_ratio", 0.15), ("copyright_ratio", 0.10), ("exploration_ratio", 0.20)):
+        try:
+            daily_slate_cfg[key] = max(0.0, min(1.0, float(daily_slate_cfg.get(key, default))))
+        except (TypeError, ValueError):
+            daily_slate_cfg[key] = default
+    daily_slate_cfg["max_per_character"] = max(1, _coerce_int(daily_slate_cfg.get("max_per_character", 2), default=2, field_name="filter.daily_slate.max_per_character"))
+    daily_slate_cfg["max_per_copyright"] = max(1, _coerce_int(daily_slate_cfg.get("max_per_copyright", 4), default=4, field_name="filter.daily_slate.max_per_copyright"))
 
     notifier_cfg = normalized.get("notifier")
     if notifier_cfg is None:

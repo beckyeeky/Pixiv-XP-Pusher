@@ -35,6 +35,58 @@ class StubTagClassifier:
 
 
 class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_daily_slate_applies_motive_mix_and_identity_caps(self):
+        def illust(illust_id, tags):
+            return Illust(
+                id=illust_id, title=str(illust_id), user_id=illust_id, user_name="artist",
+                tags=tags, bookmark_count=1000 - illust_id, view_count=1000,
+                page_count=1, image_urls=["https://example.com/a.jpg"], is_r18=False,
+                ai_type=0, create_date=datetime.now(),
+            )
+
+        illusts = [
+            illust(1, ["pantyhose", "blue_archive"]),
+            illust(2, ["white_hair", "blue_archive"]),
+            illust(3, ["maid", "blue_archive"]),
+            illust(4, ["hoshino"]),
+            illust(5, ["shiroko"]),
+            illust(6, ["genshin_impact"]),
+            illust(7, ["fate_grand_order"]),
+            illust(8, ["cat_ears"]),
+        ]
+        classifications = {
+            "pantyhose": TagClassification("feature", "manual"),
+            "white_hair": TagClassification("feature", "manual"),
+            "maid": TagClassification("feature", "manual"),
+            "cat_ears": TagClassification("feature", "manual"),
+            "blue_archive": TagClassification("copyright", "manual"),
+            "hoshino": TagClassification("character", "manual"),
+            "shiroko": TagClassification("character", "manual"),
+            "genshin_impact": TagClassification("copyright", "manual"),
+            "fate_grand_order": TagClassification("copyright", "manual"),
+        }
+        content_filter = ContentFilter(
+            daily_limit=8, max_per_artist=10, exclude_ai=False,
+            tag_classifier=StubTagClassifier(),
+            daily_slate={"enabled": True, "feature_ratio": 0.55, "character_ratio": 0.15,
+                         "copyright_ratio": 0.10, "exploration_ratio": 0.20,
+                         "max_per_character": 1, "max_per_copyright": 2},
+        )
+
+        with patch("filter.db.get_pushed_ids_batch", new=AsyncMock(return_value=set())), \
+             patch("filter.db.get_muted_tags", new=AsyncMock(return_value=[])), \
+             patch("filter.db.get_negative_profile", new=AsyncMock(return_value={})), \
+             patch("filter.db.get_blocked_tags", new=AsyncMock(return_value=[])), \
+             patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[])), \
+             patch.object(content_filter, "_classify_tags_for_illusts", new=AsyncMock(return_value=classifications)):
+            ranked = await content_filter.filter(
+                illusts,
+                xp_profile={tag: 1.0 for tag in classifications},
+            )
+
+        self.assertEqual(len(ranked), 7)
+        self.assertLessEqual(sum("blue_archive" in item.tags for item in ranked), 2)
+        self.assertEqual(sum(getattr(item, "recommendation_motive", None) == "feature" for item in ranked), 3)
     def test_feature_tags_receive_extra_match_weight(self):
         ip_only = Illust(
             id=1,
