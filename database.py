@@ -9,6 +9,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
 
+from tag_categories import normalize_tag_category
+
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
@@ -133,7 +135,7 @@ def _init_db_sync():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
-            -- Tag 分类缓存 (feature/ip)
+            -- Tag 分类缓存 (Tag Category; legacy ip is interpreted as copyright)
             CREATE TABLE IF NOT EXISTS tag_classification_cache (
                 normalized_tag TEXT PRIMARY KEY,
                 classification TEXT NOT NULL,
@@ -342,7 +344,7 @@ async def get_tag_classifications(
         )
         rows = await cursor.fetchall()
         return {
-            row[0]: {"classification": row[1], "source": row[2]}
+            row[0]: {"classification": normalize_tag_category(row[1]), "source": row[2]}
             for row in rows
         }
 
@@ -351,6 +353,11 @@ async def save_tag_classifications(items: list[tuple[str, str, str]]):
     """批量写入 Tag 分类缓存。"""
     if not items:
         return
+
+    normalized_items = [
+        (tag, normalize_tag_category(classification), source)
+        for tag, classification, source in items
+    ]
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executemany(
@@ -363,7 +370,7 @@ async def save_tag_classifications(items: list[tuple[str, str, str]]):
                 source = excluded.source,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            items,
+            normalized_items,
         )
         await db.commit()
 

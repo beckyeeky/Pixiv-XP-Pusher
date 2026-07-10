@@ -19,7 +19,7 @@ sys.modules.setdefault(
 
 from filter import ContentFilter, calculate_match_score
 from pixiv_client import Illust
-from tag_classifier import TagClassification
+from tag_categories import TagClassification
 
 
 class StubTagClassifier:
@@ -27,8 +27,10 @@ class StubTagClassifier:
         return {
             "pantyhose": TagClassification("feature", "ai"),
             "white_hair": TagClassification("feature", "ai"),
-            "blue_archive": TagClassification("ip", "manual"),
-            "genshin_impact": TagClassification("ip", "ai"),
+            "blue_archive": TagClassification("copyright", "manual"),
+            "genshin_impact": TagClassification("copyright", "ai"),
+            "high_resolution": TagClassification("non_preference", "ai"),
+            "ambiguous_tag": TagClassification("unresolved", "ai"),
         }
 
 
@@ -65,7 +67,7 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
 
         xp_profile = {"top_preference": 5.0, "genshin_impact": 1.0, "pantyhose": 1.0}
         classifications = {
-            "genshin_impact": TagClassification("ip", "manual"),
+            "genshin_impact": TagClassification("copyright", "manual"),
             "pantyhose": TagClassification("feature", "manual"),
         }
 
@@ -167,6 +169,38 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
             illust.display_tags,
             ["pantyhose", "white_hair", "blue_archive"],
         )
+
+    async def test_display_tags_skips_resolved_non_seed_categories(self):
+        illust = Illust(
+            id=10,
+            title="test",
+            user_id=1,
+            user_name="artist",
+            tags=["pantyhose", "high_resolution", "ambiguous_tag"],
+            bookmark_count=100,
+            view_count=1000,
+            page_count=1,
+            image_urls=["https://example.com/a.jpg"],
+            is_r18=False,
+            ai_type=0,
+            create_date=datetime.now(),
+        )
+
+        content_filter = ContentFilter(
+            daily_limit=10,
+            tag_classifier=StubTagClassifier(),
+        )
+
+        await content_filter.apply_display_tags(
+            [illust],
+            {
+                "pantyhose": 1.0,
+                "high_resolution": 0.9,
+                "ambiguous_tag": 0.8,
+            },
+        )
+
+        self.assertEqual(illust.display_tags, ["pantyhose"])
 
     def test_display_tags_max_ip_count_accepts_string_config(self):
         content_filter = ContentFilter(display_tags_max_ip_count="3")
@@ -347,8 +381,8 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
             "maid": 0.55,
         }
         tag_classifications = {
-            "blue_archive": TagClassification("ip", "manual"),
-            "genshin_impact": TagClassification("ip", "manual"),
+            "blue_archive": TagClassification("copyright", "manual"),
+            "genshin_impact": TagClassification("copyright", "manual"),
             "pantyhose": TagClassification("feature", "manual"),
             "white_hair": TagClassification("feature", "manual"),
             "maid": TagClassification("feature", "manual"),

@@ -1,22 +1,32 @@
 """
 Tag 分类器
-将 Pixiv 标签区分为视觉特征(feature)与 IP/copyright(ip)
+将 Pixiv 标签归入推荐领域模型中的 Tag Category。
 """
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import database as db
 from profiler import DEFAULT_IP_TAGS
+from tag_categories import (
+    TAG_CATEGORY_ARTIST,
+    TAG_CATEGORY_CHARACTER,
+    TAG_CATEGORY_COPYRIGHT,
+    TAG_CATEGORY_FEATURE,
+    TAG_CATEGORY_NON_PREFERENCE,
+    TAG_CATEGORY_UNRESOLVED,
+    TagClassification,
+    normalize_tag_category,
+)
 from utils import normalize_tag
 
 try:
     from openai import AsyncOpenAI
     HAS_OPENAI = True
 except ImportError:
+    AsyncOpenAI = None
     HAS_OPENAI = False
 
 logger = logging.getLogger(__name__)
@@ -24,14 +34,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_IP_TAGS_FILE = Path(__file__).parent / "data" / "ip_tags.json"
 
 
-@dataclass(frozen=True)
-class TagClassification:
-    classification: str
-    source: str
-
-
 class TagClassifier:
-    """IP / feature 标签分类器。"""
+    """Normalized Tag 的全局 Tag Category 分类器。"""
 
     def __init__(self, config: Optional[dict] = None, ip_tags: Optional[list[str] | str] = None):
         cfg = config or {}
@@ -91,7 +95,10 @@ class TagClassifier:
                 remaining = [tag for tag in remaining if tag not in ai_results]
 
         if remaining:
-            fallback_results = self._classify_with_manual_list(remaining)
+            if self.enabled and self.client:
+                fallback_results = self._classify_unaccepted_ai_tags(remaining)
+            else:
+                fallback_results = self._classify_with_manual_list(remaining)
             await db.save_tag_classifications(
                 [(tag, item.classification, item.source) for tag, item in fallback_results.items()]
             )
@@ -125,8 +132,17 @@ class TagClassifier:
     def _classify_with_manual_list(self, tags: list[str]) -> dict[str, TagClassification]:
         return {
             tag: TagClassification(
-                classification="ip" if tag in self.manual_ip_tags else "feature",
+                classification=TAG_CATEGORY_COPYRIGHT if tag in self.manual_ip_tags else TAG_CATEGORY_FEATURE,
                 source="manual" if tag in self.manual_ip_tags else "fallback",
+            )
+            for tag in tags
+        }
+
+    def _classify_unaccepted_ai_tags(self, tags: list[str]) -> dict[str, TagClassification]:
+        return {
+            tag: TagClassification(
+                classification=TAG_CATEGORY_COPYRIGHT if tag in self.manual_ip_tags else TAG_CATEGORY_UNRESOLVED,
+                source="manual" if tag in self.manual_ip_tags else "ai_unresolved",
             )
             for tag in tags
         }
@@ -167,36 +183,83 @@ class TagClassifier:
         content = response.choices[0].message.content or ""
         data = json.loads(self._strip_code_fences(content))
 
-        ip_tags = {normalize_tag(tag) for tag in data.get("ip_tags", [])}
-        feature_tags = {normalize_tag(tag) for tag in data.get("feature_tags", [])}
+        return self._parse_ai_classifications(data, tags)
+
+    def _parse_ai_classifications(self, data: dict, tags: list[str]) -> dict[str, TagClassification]:
+        input_tags = set(tags)
+        assigned: dict[str, str] = {}
+
+        def assign(raw_tag, raw_category):
+            normalized = normalize_tag(str(raw_tag)) if raw_tag is not None else None
+            if not normalized or normalized not in input_tags:
+                return
+
+            category = normalize_tag_category(str(raw_category))
+            existing = assigned.get(normalized)
+            if existing is not None and existing != category:
+                assigned[normalized] = TAG_CATEGORY_UNRESOLVED
+                return
+            assigned[normalized] = category
+
+        for key, category in (
+            ("feature_tags", TAG_CATEGORY_FEATURE),
+            ("character_tags", TAG_CATEGORY_CHARACTER),
+            ("copyright_tags", TAG_CATEGORY_COPYRIGHT),
+            ("ip_tags", TAG_CATEGORY_COPYRIGHT),
+            ("artist_tags", TAG_CATEGORY_ARTIST),
+            ("non_preference_tags", TAG_CATEGORY_NON_PREFERENCE),
+            ("nonpreference_tags", TAG_CATEGORY_NON_PREFERENCE),
+            ("unresolved_tags", TAG_CATEGORY_UNRESOLVED),
+        ):
+            for raw_tag in data.get(key, []) or []:
+                assign(raw_tag, category)
+
+        for key in ("classifications", "tag_categories", "tags"):
+            payload = data.get(key)
+            if isinstance(payload, dict):
+                for raw_tag, raw_category in payload.items():
+                    assign(raw_tag, raw_category)
+            elif isinstance(payload, list):
+                for item in payload:
+                    if not isinstance(item, dict):
+                        continue
+                    raw_tag = item.get("tag") or item.get("normalized_tag") or item.get("name")
+                    raw_category = item.get("category") or item.get("classification")
+                    assign(raw_tag, raw_category)
 
         results: dict[str, TagClassification] = {}
-        for tag in tags:
-            if tag in ip_tags:
-                results[tag] = TagClassification("ip", "ai")
-            elif tag in feature_tags:
-                results[tag] = TagClassification("feature", "ai")
+        for tag, category in assigned.items():
+            results[tag] = TagClassification(category, "ai")
         return results
 
     def _build_prompt(self, tags: list[str]) -> str:
-        return f"""请将下面这些 Pixiv 标签分类为两类：
-- ip_tags: 作品所属 IP / 版权 / 系列 / 游戏 / 动漫 / 角色阵营
-- feature_tags: 视觉特征 / 萌属性 / 穿着 / 动作 / 构图 / 题材
+        return f"""请将下面这些 Pixiv 标签分类为一个 Tag Category：
+- feature_tags: 视觉特征 / 萌属性 / 穿着 / 动作 / 构图 / 题材，可跨角色和作品迁移
+- character_tags: 具体虚构角色
+- copyright_tags: 作品 IP / 版权 / 系列 / 游戏 / 动漫 / 漫画 / 世界观
+- artist_tags: 创作者、画师、社团或作者身份
+- non_preference_tags: 平台标签、活动标签、热度标签、元数据等不表达推荐偏好的标签
+- unresolved_tags: 证据不足、含义冲突或你无法可靠分类的标签
 
 分类原则：
-1. 像 `blue_archive`、`genshin_impact` 属于 ip_tags。
-2. 像 `pantyhose`、`white_hair`、`cat_ears` 属于 feature_tags。
-3. 如果标签明显是作品系列或世界观，归入 ip_tags。
-4. 如果标签描述外观、服饰、姿态、场景或 fetish，归入 feature_tags。
-5. 只返回输入中出现过的标签，不要扩展，不要解释。
+1. 像 `blue_archive`、`genshin_impact` 属于 copyright_tags。
+2. 像 `hoshino_(blue_archive)`、`hatsune_miku` 属于 character_tags。
+3. 像 `pantyhose`、`white_hair`、`cat_ears` 属于 feature_tags。
+4. 像画师名、作者名、社团名，归入 artist_tags。
+5. 像 `high_resolution`、`commission`、`sample`、`pixivision` 这类元数据，归入 non_preference_tags。
+6. 只返回输入中出现过的标签，不要扩展，不要解释；不确定就归入 unresolved_tags。
 
 输入标签：
 {json.dumps(tags, ensure_ascii=False)}
 
 输出 JSON 结构：
 {{
-  "ip_tags": ["tag1"],
-  "feature_tags": ["tag2"]
+  "feature_tags": ["tag1"],
+  "character_tags": ["tag2"],
+  "copyright_tags": ["tag3"],
+  "artist_tags": ["tag4"],
+  "non_preference_tags": ["tag5"],
+  "unresolved_tags": ["tag6"]
 }}"""
 
     @staticmethod

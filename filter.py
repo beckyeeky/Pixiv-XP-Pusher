@@ -7,6 +7,7 @@ from typing import Optional
 
 from pixiv_client import Illust
 import database as db
+from tag_categories import is_feature_category, is_identity_category, is_seed_category
 from utils import normalize_tag
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ FEATURE_CONTRIBUTION_SCHEDULE = (1.0, 0.5, 0.25)
 
 
 def _is_feature_classification(classification) -> bool:
-    return bool(classification and getattr(classification, "classification", None) == "feature")
+    return is_feature_category(classification)
 
 
 def _build_match_breakdown(
@@ -43,7 +44,7 @@ def _build_match_breakdown(
 
     feature_weights: list[tuple[float, float]] = []
     non_feature_weights: list[tuple[float, float]] = []
-    ip_weights: list[float] = []
+    identity_weights: list[float] = []
     negative_penalty = 0.0
     seen_positive_tags: set[str] = set()
     seen_negative_tags: set[str] = set()
@@ -67,8 +68,8 @@ def _build_match_breakdown(
                 feature_weights.append((effective_weight, float(weight)))
             else:
                 non_feature_weights.append((effective_weight, float(weight)))
-                if classification and getattr(classification, "classification", None) == "ip":
-                    ip_weights.append(effective_weight)
+                if is_identity_category(classification):
+                    identity_weights.append(effective_weight)
 
         if negative_profile and tag_key not in seen_negative_tags:
             seen_negative_tags.add(tag_key)
@@ -96,7 +97,8 @@ def _build_match_breakdown(
         "negative_penalty": negative_penalty,
         "total_score": feature_contribution + non_feature_total,
         "feature_contribution": feature_contribution,
-        "ip_contribution": max(ip_weights) if ip_weights else 0.0,
+        "ip_contribution": max(identity_weights) if identity_weights else 0.0,
+        "identity_contribution": max(identity_weights) if identity_weights else 0.0,
         "feature_match_count": len(feature_weights),
     }
 
@@ -550,7 +552,7 @@ class ContentFilter:
         score_map = {item[0].id: item[1] for item in scored_result}
         sorted_illusts = [item[0] for item in scored_result]
         
-        # 优化标签展示顺序：feature-first，IP 数量受限，AI 判定的 IP 靠后
+        # 优化标签展示顺序：feature-first，Identity 数量受限，AI 判定的 Identity 靠后
         if xp_profile:
             await self.apply_display_tags(sorted_illusts, xp_profile, tag_classifications=tag_classifications)
         
@@ -581,18 +583,18 @@ class ContentFilter:
             except Exception as e:
                 logger.warning(f"AI 精排失败: {e}")
         
-        # 7. 多样性控制：IP / 画师多样性衰减 + 硬性限制
+        # 7. 多样性控制：Identity / 画师多样性衰减 + 硬性限制
         if self.ip_diversity_enabled:
-            ip_position = {}
+            identity_position = {}
             for illust, score in scored_result:
-                primary_ip = self._get_primary_ip_tag(illust, tag_classifications, xp_profile)
-                if not primary_ip:
+                primary_identity = self._get_primary_identity_tag(illust, tag_classifications, xp_profile)
+                if not primary_identity:
                     continue
 
-                pos = ip_position.get(primary_ip, 0)
+                pos = identity_position.get(primary_identity, 0)
                 multiplier = (1.0 - self.ip_diversity_floor) * (self.ip_diversity_decay ** pos) + self.ip_diversity_floor
                 score_map[illust.id] = score * multiplier
-                ip_position[primary_ip] = pos + 1
+                identity_position[primary_identity] = pos + 1
 
             scored_result = [(ill, score_map[ill.id]) for ill, _ in scored_result]
             scored_result.sort(key=lambda x: x[1], reverse=True)
@@ -742,47 +744,47 @@ class ContentFilter:
 
         for illust in illusts:
             feature_tags: list[tuple[str, float]] = []
-            ip_tags: list[tuple[str, float, int]] = []
+            identity_tags: list[tuple[str, float, int]] = []
             for tag, normalized_tag, score in per_illust_tags.get(illust.id, []):
                 classification = classifications.get(normalized_tag)
-                if classification and classification.classification == "ip":
+                if classification and is_identity_category(classification):
                     source_rank = 1 if classification.source == "ai" else 0
-                    ip_tags.append((tag, score, source_rank))
-                else:
+                    identity_tags.append((tag, score, source_rank))
+                elif classification is None or is_seed_category(classification):
                     feature_tags.append((tag, score))
 
             feature_tags.sort(key=lambda item: item[1], reverse=True)
-            ip_tags.sort(key=lambda item: (item[2], -item[1]))
+            identity_tags.sort(key=lambda item: (item[2], -item[1]))
 
             illust.display_tags = [
                 *(tag for tag, _ in feature_tags),
-                *(tag for tag, _, _ in ip_tags[:self.display_tags_max_ip_count]),
+                *(tag for tag, _, _ in identity_tags[:self.display_tags_max_ip_count]),
             ]
 
     @staticmethod
-    def _get_primary_ip_tag(
+    def _get_primary_identity_tag(
         illust: Illust,
         tag_classifications: Optional[dict] = None,
         xp_profile: Optional[dict[str, float]] = None,
     ) -> Optional[str]:
-        primary_ip = None
-        primary_ip_score = float("-inf")
+        primary_identity = None
+        primary_identity_score = float("-inf")
 
         for tag in illust.tags or []:
             normalized_tag = normalize_tag(tag)
             classification = (tag_classifications or {}).get(normalized_tag)
-            if not classification or getattr(classification, "classification", None) != "ip":
+            if not is_identity_category(classification):
                 continue
 
             tag_score = 0.0
             if xp_profile:
                 tag_score = xp_profile.get(normalized_tag, xp_profile.get(tag.lower(), 0.0))
 
-            if primary_ip is None or tag_score > primary_ip_score:
-                primary_ip = normalized_tag
-                primary_ip_score = tag_score
+            if primary_identity is None or tag_score > primary_identity_score:
+                primary_identity = normalized_tag
+                primary_identity_score = tag_score
 
-        return primary_ip
+        return primary_identity
 
     @staticmethod
     def _normalize_max_ip_count(value) -> int:

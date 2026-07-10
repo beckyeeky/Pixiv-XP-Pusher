@@ -11,6 +11,7 @@ from typing import Optional
 from pixiv_client import Illust, PixivClient
 import database as db
 from related_recommender import RelatedRecommender
+from tag_categories import is_identity_category, is_seed_category
 from utils import expand_search_query
 
 logger = logging.getLogger(__name__)
@@ -123,8 +124,37 @@ class ContentFetcher:
         return (
             classification1 is not None
             and classification2 is not None
-            and getattr(classification1, "classification", None) == "ip"
-            and getattr(classification2, "classification", None) == "ip"
+            and is_identity_category(classification1)
+            and is_identity_category(classification2)
+        )
+
+    @staticmethod
+    def _is_disallowed_seed_tag(
+        tag: str,
+        tag_classifications: Optional[dict] = None,
+    ) -> bool:
+        classification = (tag_classifications or {}).get(tag)
+        return classification is not None and not is_seed_category(classification)
+
+    def _is_allowed_search_pair(
+        self,
+        tag1: str,
+        tag2: str,
+        tag_classifications: Optional[dict] = None,
+    ) -> bool:
+        q1 = expand_search_query(tag1)
+        q2 = expand_search_query(tag2)
+        if q1 == q2 or tag1 in q2 or tag2 in q1:
+            return False
+        if (
+            self._is_disallowed_seed_tag(tag1, tag_classifications)
+            or self._is_disallowed_seed_tag(tag2, tag_classifications)
+        ):
+            return False
+        return not self._is_identity_pair(
+            tag1,
+            tag2,
+            tag_classifications=tag_classifications,
         )
 
     async def _classify_seed_tags(
@@ -167,11 +197,7 @@ class ContentFetcher:
             if pair_key in seen_pairs:
                 continue
 
-            q1 = expand_search_query(t1)
-            q2 = expand_search_query(t2)
-            if q1 == q2 or t1 in q2 or t2 in q1:
-                continue
-            if self._is_identity_pair(t1, t2, tag_classifications=tag_classifications):
+            if not self._is_allowed_search_pair(t1, t2, tag_classifications):
                 continue
 
             seen_pairs.add(pair_key)
@@ -236,11 +262,7 @@ class ContentFetcher:
             if pair_key in used_pairs:
                 continue
 
-            q1 = expand_search_query(t1)
-            q2 = expand_search_query(t2)
-            if q1 == q2 or t1 in q2 or t2 in q1:
-                continue
-            if self._is_identity_pair(t1, t2, tag_classifications=tag_classifications):
+            if not self._is_allowed_search_pair(t1, t2, tag_classifications):
                 continue
 
             used_pairs.add(pair_key)
@@ -328,6 +350,8 @@ class ContentFetcher:
                 
                 tag = tags_to_search[0]
                 if tag in used_seed_tags:
+                    continue
+                if self._is_disallowed_seed_tag(tag, tag_classifications):
                     continue
                 
                 fallback_tasks.append(self._search_single(tag, max(10, remaining // 2)))
