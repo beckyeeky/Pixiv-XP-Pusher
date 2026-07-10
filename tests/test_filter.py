@@ -8,6 +8,14 @@ sys.modules.setdefault(
     "pixivpy_async",
     types.SimpleNamespace(AppPixivAPI=object),
 )
+sys.modules.setdefault(
+    "aiohttp",
+    types.SimpleNamespace(ClientSession=object, ClientTimeout=object),
+)
+sys.modules.setdefault(
+    "aiosqlite",
+    types.SimpleNamespace(connect=None),
+)
 
 from filter import ContentFilter, calculate_match_score
 from pixiv_client import Illust
@@ -65,6 +73,63 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
         feature_score = calculate_match_score(feature_match, xp_profile, tag_classifications=classifications)
 
         self.assertGreater(feature_score, ip_only_score)
+
+    def test_feature_matches_use_diminishing_returns(self):
+        three_feature_match = Illust(
+            id=20,
+            title="three-feature-match",
+            user_id=20,
+            user_name="artist",
+            tags=["pantyhose", "white_hair", "maid"],
+            bookmark_count=100,
+            view_count=1000,
+            page_count=1,
+            image_urls=["https://example.com/20.jpg"],
+            is_r18=False,
+            ai_type=0,
+            create_date=datetime.now(),
+        )
+        four_feature_match = Illust(
+            id=21,
+            title="four-feature-match",
+            user_id=21,
+            user_name="artist",
+            tags=["pantyhose", "white_hair", "maid", "cat_ears"],
+            bookmark_count=100,
+            view_count=1000,
+            page_count=1,
+            image_urls=["https://example.com/21.jpg"],
+            is_r18=False,
+            ai_type=0,
+            create_date=datetime.now(),
+        )
+
+        xp_profile = {
+            "top_preference": 5.0,
+            "pantyhose": 1.0,
+            "white_hair": 0.9,
+            "maid": 0.8,
+            "cat_ears": 0.7,
+        }
+        classifications = {
+            "pantyhose": TagClassification("feature", "manual"),
+            "white_hair": TagClassification("feature", "manual"),
+            "maid": TagClassification("feature", "manual"),
+            "cat_ears": TagClassification("feature", "manual"),
+        }
+
+        three_feature_score = calculate_match_score(
+            three_feature_match,
+            xp_profile,
+            tag_classifications=classifications,
+        )
+        four_feature_score = calculate_match_score(
+            four_feature_match,
+            xp_profile,
+            tag_classifications=classifications,
+        )
+
+        self.assertAlmostEqual(three_feature_score, four_feature_score, places=6)
 
     async def test_display_tags_feature_first_and_limit_ip_count(self):
         illust = Illust(
@@ -178,6 +243,129 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([illust.id for illust in ranked[:3]], [1, 3, 2])
 
+    async def test_exploration_uses_feature_candidates_outside_normal_top_range(self):
+        illusts = [
+            Illust(
+                id=1,
+                title="top-1",
+                user_id=1,
+                user_name="artist-1",
+                tags=["blue_archive", "pantyhose"],
+                bookmark_count=1000,
+                view_count=1000,
+                page_count=1,
+                image_urls=["https://example.com/1.jpg"],
+                is_r18=False,
+                ai_type=0,
+                create_date=datetime.now(),
+            ),
+            Illust(
+                id=2,
+                title="top-2",
+                user_id=2,
+                user_name="artist-2",
+                tags=["blue_archive", "white_hair"],
+                bookmark_count=900,
+                view_count=1000,
+                page_count=1,
+                image_urls=["https://example.com/2.jpg"],
+                is_r18=False,
+                ai_type=0,
+                create_date=datetime.now(),
+            ),
+            Illust(
+                id=3,
+                title="top-3",
+                user_id=3,
+                user_name="artist-3",
+                tags=["genshin_impact", "pantyhose"],
+                bookmark_count=800,
+                view_count=1000,
+                page_count=1,
+                image_urls=["https://example.com/3.jpg"],
+                is_r18=False,
+                ai_type=0,
+                create_date=datetime.now(),
+            ),
+            Illust(
+                id=4,
+                title="normal-top-4",
+                user_id=4,
+                user_name="artist-4",
+                tags=["genshin_impact"],
+                bookmark_count=700,
+                view_count=1000,
+                page_count=1,
+                image_urls=["https://example.com/4.jpg"],
+                is_r18=False,
+                ai_type=0,
+                create_date=datetime.now(),
+            ),
+            Illust(
+                id=5,
+                title="feature-explore",
+                user_id=5,
+                user_name="artist-5",
+                tags=["maid"],
+                bookmark_count=600,
+                view_count=1000,
+                page_count=1,
+                image_urls=["https://example.com/5.jpg"],
+                is_r18=False,
+                ai_type=0,
+                create_date=datetime.now(),
+            ),
+            Illust(
+                id=6,
+                title="identity-only-explore",
+                user_id=6,
+                user_name="artist-6",
+                tags=["blue_archive"],
+                bookmark_count=500,
+                view_count=1000,
+                page_count=1,
+                image_urls=["https://example.com/6.jpg"],
+                is_r18=False,
+                ai_type=0,
+                create_date=datetime.now(),
+            ),
+        ]
+
+        content_filter = ContentFilter(
+            daily_limit=4,
+            max_per_artist=10,
+            exclude_ai=False,
+            exploration_ratio=0.25,
+            tag_classifier=StubTagClassifier(),
+        )
+
+        xp_profile = {
+            "blue_archive": 1.0,
+            "genshin_impact": 0.95,
+            "pantyhose": 0.7,
+            "white_hair": 0.6,
+            "maid": 0.55,
+        }
+        tag_classifications = {
+            "blue_archive": TagClassification("ip", "manual"),
+            "genshin_impact": TagClassification("ip", "manual"),
+            "pantyhose": TagClassification("feature", "manual"),
+            "white_hair": TagClassification("feature", "manual"),
+            "maid": TagClassification("feature", "manual"),
+        }
+
+        with patch("filter.db.get_pushed_ids_batch", new=AsyncMock(return_value=set())), \
+             patch("filter.db.get_muted_tags", new=AsyncMock(return_value=[])), \
+             patch("filter.db.get_negative_profile", new=AsyncMock(return_value={})), \
+             patch("filter.db.get_blocked_tags", new=AsyncMock(return_value=[])), \
+             patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[])), \
+             patch.object(content_filter, "_classify_tags_for_illusts", new=AsyncMock(return_value=tag_classifications)), \
+             patch("random.sample", side_effect=lambda seq, k: list(seq)[:k]), \
+             patch("random.shuffle", side_effect=lambda seq: None):
+            ranked = await content_filter.filter(illusts, xp_profile=xp_profile)
+
+        self.assertEqual([illust.id for illust in ranked], [1, 2, 3, 5])
+
     async def test_filter_loads_db_blocked_tags_and_artists(self):
         blocked_tag_illust = Illust(
             id=10,
@@ -237,3 +425,4 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([illust.id for illust in ranked], [12])
         self.assertIn("blue_archive", content_filter.blacklist_tags)
         self.assertIn(99, content_filter.blocked_artist_ids)
+

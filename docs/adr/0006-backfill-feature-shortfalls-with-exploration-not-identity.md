@@ -1,0 +1,3 @@
+# Backfill feature shortfalls with exploration, not identity expansion
+
+The Daily Slate starts from a Motive Mix that favors Feature-led recommendations: the initial default is 55% Feature-led, 15% Character-led, 10% Copyright-led, and 20% Exploration. When Feature-led candidates are insufficient, we expand Exploration up to 40% rather than widening Character or Copyright share, and Exploration draws from candidates that would not already win as ordinary top-ranked picks. Across all motives, shared identity caps still apply by default at at most two works for the same primary Character and four works for the same primary Copyright, so familiar identities may appear during exploration only when identity affinity is not the dominant reason for selection.

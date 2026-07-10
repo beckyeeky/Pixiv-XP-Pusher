@@ -12,92 +12,142 @@ from utils import normalize_tag
 logger = logging.getLogger(__name__)
 
 
-def calculate_match_score(
-    illust: Illust, 
+FEATURE_CONTRIBUTION_SCHEDULE = (1.0, 0.5, 0.25)
+
+
+def _is_feature_classification(classification) -> bool:
+    return bool(classification and getattr(classification, "classification", None) == "feature")
+
+
+def _build_match_breakdown(
+    illust: Illust,
     xp_profile: dict[str, float],
-    negative_profile: dict[str, float] = None,  # 负向画像
+    negative_profile: dict[str, float] = None,
+    tag_classifications: Optional[dict] = None,
+) -> dict[str, float | int]:
+    if not illust.tags or not xp_profile:
+        return {
+            "max_weight": 1.0,
+            "matched_count": 0,
+            "high_weight_matches": 0,
+            "negative_penalty": 0.0,
+            "total_score": 0.0,
+            "feature_contribution": 0.0,
+            "ip_contribution": 0.0,
+            "feature_match_count": 0,
+        }
+
+    sorted_weights = sorted(xp_profile.values(), reverse=True)
+    max_weight = sorted_weights[0] if sorted_weights else 1.0
+    top_threshold = sorted_weights[len(sorted_weights) // 5] if len(sorted_weights) >= 5 else max_weight * 0.8
+
+    feature_weights: list[tuple[float, float]] = []
+    non_feature_weights: list[tuple[float, float]] = []
+    ip_weights: list[float] = []
+    negative_penalty = 0.0
+    seen_positive_tags: set[str] = set()
+    seen_negative_tags: set[str] = set()
+
+    for tag in illust.tags:
+        normalized_tag = normalize_tag(tag)
+        tag_key = normalized_tag or tag.lower().strip()
+
+        weight = None
+        if normalized_tag in xp_profile:
+            weight = xp_profile[normalized_tag]
+        elif tag.lower() in xp_profile:
+            weight = xp_profile[tag.lower()]
+
+        if weight is not None and tag_key not in seen_positive_tags:
+            seen_positive_tags.add(tag_key)
+            classification = (tag_classifications or {}).get(normalized_tag)
+            effective_weight = float(weight) * (1.3 if _is_feature_classification(classification) else 1.0)
+
+            if _is_feature_classification(classification):
+                feature_weights.append((effective_weight, float(weight)))
+            else:
+                non_feature_weights.append((effective_weight, float(weight)))
+                if classification and getattr(classification, "classification", None) == "ip":
+                    ip_weights.append(effective_weight)
+
+        if negative_profile and tag_key not in seen_negative_tags:
+            seen_negative_tags.add(tag_key)
+            neg_weight = negative_profile.get(normalized_tag, negative_profile.get(tag.lower(), 0))
+            if neg_weight > 0:
+                negative_penalty += neg_weight * 0.5
+
+    feature_weights.sort(key=lambda item: item[0], reverse=True)
+    feature_contribution = 0.0
+    feature_high_weight_matches = 0
+    contributing_feature_count = 0
+    for index, (effective_weight, raw_weight) in enumerate(feature_weights[:len(FEATURE_CONTRIBUTION_SCHEDULE)]):
+        feature_contribution += effective_weight * FEATURE_CONTRIBUTION_SCHEDULE[index]
+        contributing_feature_count += 1
+        if raw_weight >= top_threshold:
+            feature_high_weight_matches += 1
+
+    non_feature_total = sum(effective_weight for effective_weight, _ in non_feature_weights)
+    non_feature_high_weight_matches = sum(1 for _, raw_weight in non_feature_weights if raw_weight >= top_threshold)
+
+    return {
+        "max_weight": max_weight,
+        "matched_count": contributing_feature_count + len(non_feature_weights),
+        "high_weight_matches": feature_high_weight_matches + non_feature_high_weight_matches,
+        "negative_penalty": negative_penalty,
+        "total_score": feature_contribution + non_feature_total,
+        "feature_contribution": feature_contribution,
+        "ip_contribution": max(ip_weights) if ip_weights else 0.0,
+        "feature_match_count": len(feature_weights),
+    }
+
+
+def _finalize_match_score(breakdown: dict[str, float | int]) -> float:
+    import math
+
+    matched_count = int(breakdown["matched_count"])
+    max_weight = float(breakdown["max_weight"])
+    negative_penalty = float(breakdown["negative_penalty"])
+
+    if matched_count == 0:
+        if negative_penalty > 0:
+            return max(-negative_penalty / (max_weight + 1), -0.5)
+        return 0.0
+
+    base_score = float(breakdown["total_score"]) / (matched_count * max_weight) if max_weight > 0 else 0.0
+    quantity_bonus = min(math.log(1 + matched_count) / math.log(6), 0.3)
+    quality_bonus = min(int(breakdown["high_weight_matches"]) * 0.05, 0.2)
+    penalty_normalized = negative_penalty / (max_weight + 1) if max_weight > 0 else 0
+
+    final_score = base_score + quantity_bonus + quality_bonus - penalty_normalized
+    return max(min(final_score, 1.0), 0.0)
+
+
+def calculate_match_score(
+    illust: Illust,
+    xp_profile: dict[str, float],
+    negative_profile: dict[str, float] = None,
     tag_classifications: Optional[dict] = None,
 ) -> float:
     """
     计算作品与 XP 画像的匹配度（改进版）
-    
+
     算法:
-    1. 累加匹配 tag 的权重
-    2. 按最高权重归一化
-    3. 奖励高权重匹配（Top 20% 的 tag 匹配额外 +20%）
+    1. 多个 feature 命中采用递减贡献，避免 tag 堆叠
+    2. 非 feature 偏好保持原有累加方式
+    3. 按最高权重归一化
     4. 使用对数平滑匹配数量影响
     5. 负向画像惩罚（匹配到不喜欢的 Tag 时扣分）
-    
+
     Returns:
         0.0 ~ 1.0 归一化分数
     """
-    import math
-    
-    if not illust.tags or not xp_profile:
-        return 0.0
-    
-    # 获取 XP 中的最大权重和 Top 20% 阈值
-    sorted_weights = sorted(xp_profile.values(), reverse=True)
-    max_weight = sorted_weights[0] if sorted_weights else 1.0
-    top_threshold = sorted_weights[len(sorted_weights) // 5] if len(sorted_weights) >= 5 else max_weight * 0.8
-    
-    total_score = 0.0
-    matched_count = 0
-    high_weight_matches = 0
-    negative_penalty = 0.0  # 负向惩罚累计
-    
-    for tag in illust.tags:
-        # 使用统一的归一化逻辑
-        normalized_tag = normalize_tag(tag)
-        
-        # 正向匹配
-        weight = None
-        if normalized_tag in xp_profile:
-            weight = xp_profile[normalized_tag]
-        # Fallback: 尝试原始Tag的小写 (有些特例可能未被归一化覆盖)
-        elif tag.lower() in xp_profile:
-            weight = xp_profile[tag.lower()]
-        
-        if weight is not None:
-            tag_multiplier = 1.0
-            classification = (tag_classifications or {}).get(normalized_tag)
-            if classification and getattr(classification, "classification", None) == "feature":
-                tag_multiplier = 1.3
-
-            effective_weight = weight * tag_multiplier
-            total_score += effective_weight
-            matched_count += 1
-            if weight >= top_threshold:
-                high_weight_matches += 1
-        
-        # 负向匹配（匹配到不喜欢的 Tag）
-        if negative_profile:
-            neg_weight = negative_profile.get(normalized_tag, 0)
-            if neg_weight > 0:
-                # 惩罚系数 0.5，避免过度惩罚
-                negative_penalty += neg_weight * 0.5
-    
-    if matched_count == 0:
-        # 即使没有正向匹配，如果有负向匹配也要惩罚
-        if negative_penalty > 0:
-            return max(-negative_penalty / (max_weight + 1), -0.5)  # 最多负 -0.5
-        return 0.0
-    
-    # 基础分：权重总和 / (匹配数 × 最大权重)
-    base_score = total_score / (matched_count * max_weight) if max_weight > 0 else 0.0
-    
-    # 匹配数量奖励：log(1 + n) / log(6) → 匹配5个以上趋于饱和
-    quantity_bonus = min(math.log(1 + matched_count) / math.log(6), 0.3)
-    
-    # 高权重匹配奖励：每匹配一个 Top 20% 的 tag +5%，最多 +20%
-    quality_bonus = min(high_weight_matches * 0.05, 0.2)
-    
-    # 负向惩罚（归一化后扣除）
-    penalty_normalized = negative_penalty / (max_weight + 1) if max_weight > 0 else 0
-    
-    final_score = base_score + quantity_bonus + quality_bonus - penalty_normalized
-    return max(min(final_score, 1.0), 0.0)  # 限制在 0~1
-
+    breakdown = _build_match_breakdown(
+        illust,
+        xp_profile,
+        negative_profile,
+        tag_classifications=tag_classifications,
+    )
+    return _finalize_match_score(breakdown)
 
 class ContentFilter:
     """内容过滤器"""
@@ -386,21 +436,33 @@ class ContentFilter:
         
         for illust in unique_result:
             if xp_profile:
-                score = calculate_match_score(
+                breakdown = _build_match_breakdown(
                     illust,
                     xp_profile,
                     negative_profile,
                     tag_classifications=tag_classifications,
                 )
-                
+                score = _finalize_match_score(breakdown)
+                illust.feature_contribution = float(breakdown["feature_contribution"])
+                illust.ip_contribution = float(breakdown["ip_contribution"])
+                illust.feature_match_count = int(breakdown["feature_match_count"])
+                illust.is_feature_led = (
+                    illust.feature_contribution > 0
+                    and illust.feature_contribution >= illust.ip_contribution
+                )
+
                 # 画师权重加成：关注画师的作品额外加成
                 if illust.user_id in self.subscribed_artists:
                     score = min(score + self.artist_boost, 1.0)
-                
+
                 if score < self.min_match_score:
                     continue
             else:
                 score = 0.0
+                illust.feature_contribution = 0.0
+                illust.ip_contribution = 0.0
+                illust.feature_match_count = 0
+                illust.is_feature_led = False
                 # 无 XP 时，关注画师也给予基础分
                 if illust.user_id in self.subscribed_artists:
                     score = self.artist_boost
@@ -564,25 +626,33 @@ class ContentFilter:
                 diverse_result.append(illust)
                 artist_count[illust.user_id] = count + 1
         
-        # 7. 探索比例：从后半部分随机抽取一些"潜力股"
+        # 7. 探索比例：只从常规 Top N 之外挑 feature 候选，避免把原本就会入选的强图改名成探索
         if self.exploration_ratio > 0 and len(diverse_result) > self.daily_limit:
             import random
             explore_count = int(self.daily_limit * self.exploration_ratio)
             main_count = self.daily_limit - explore_count
-            
-            # 前 main_count 个是高分作品
-            main_result = diverse_result[:main_count]
-            
-            # 从后半部分随机抽取 explore_count 个
-            candidate_pool = diverse_result[main_count:main_count * 3]  # 后续 2 倍候选
-            if len(candidate_pool) >= explore_count:
-                explore_picks = random.sample(candidate_pool, explore_count)
+
+            ordinary_result = diverse_result[:self.daily_limit]
+            main_result = ordinary_result[:main_count]
+            candidate_pool = diverse_result[self.daily_limit:self.daily_limit + (self.daily_limit * 2)]
+            feature_pool = [
+                illust
+                for illust in candidate_pool
+                if getattr(illust, "feature_match_count", 0) > 0
+                and getattr(illust, "feature_contribution", 0.0) >= getattr(illust, "ip_contribution", 0.0)
+            ]
+
+            if len(feature_pool) >= explore_count:
+                explore_picks = random.sample(feature_pool, explore_count)
             else:
-                explore_picks = candidate_pool
-            
-            # 混合并打散
-            final_result = main_result + explore_picks
-            random.shuffle(final_result)  # 打散顺序，避免探索推荐集中在末尾
+                explore_picks = list(feature_pool)
+
+            restore_count = explore_count - len(explore_picks)
+            restore_picks = ordinary_result[main_count:main_count + restore_count]
+            final_result = main_result + explore_picks + restore_picks
+
+            if explore_picks:
+                random.shuffle(final_result)
             logger.info(f"探索推荐: 混入 {len(explore_picks)} 个潜力作品")
         else:
             # 8. 每日上限
@@ -806,3 +876,4 @@ class ContentFilter:
         """动态添加黑名单Tag"""
         self.blacklist_tags.add(tag.lower())
         logger.info(f"Tag '{tag}' 已加入黑名单")
+

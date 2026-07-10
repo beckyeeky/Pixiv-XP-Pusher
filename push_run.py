@@ -96,6 +96,8 @@ class PushRun:
             if self.historical_days is not None:
                 logger.info(f"📚 历史补充模式：时间范围调整为 {self.historical_days} 天 (实际使用: {fetcher_date_range})")
 
+            tag_classifier = self._build_tag_classifier(profiler_cfg)
+
             fetcher = ContentFetcher(
                 client=self.client,
                 sync_client=self.sync_client,
@@ -107,6 +109,7 @@ class PushRun:
                 ranking_config=fetcher_cfg.get("ranking"),
                 dynamic_threshold_config=fetcher_cfg.get("dynamic_threshold"),
                 search_limit=fetcher_cfg.get("search_limit", 50),
+                tag_classifier=tag_classifier,
             )
 
             top_tags = await self.profiler.get_top_tags(profiler_cfg.get("top_n", 20))
@@ -133,7 +136,6 @@ class PushRun:
 
             embedder = self._build_embedder()
             ai_scorer = self._build_ai_scorer()
-            tag_classifier = self._build_tag_classifier(profiler_cfg)
 
             content_filter = ContentFilter(
                 blacklist_tags=filter_cfg.get("blacklist_tags"),
@@ -350,3 +352,5 @@ class PushRun:
                         break
             except Exception as e:
                 logger.warning(f"发送运行摘要失败: {e}")
+
+

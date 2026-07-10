@@ -31,7 +31,8 @@ class ContentFetcher:
         mab_limits: Optional[dict] = None,
         sync_client: PixivClient = None,
         dynamic_threshold_config: Optional[dict] = None,  # 动态阈值配置
-        search_limit: int = 50  # 默认搜索数量
+        search_limit: int = 50,  # 默认搜索数量
+        tag_classifier = None,
     ):
         self.client = client  # 主客户端 (搜索、排行榜)
         self.sync_client = sync_client or client  # 同步客户端 (订阅、关注)
@@ -56,6 +57,7 @@ class ContentFetcher:
         
         # 搜索数量限制
         self.search_limit = search_limit
+        self.tag_classifier = tag_classifier
 
         # 缓存 Tag 的最高热度，避免重复查询 (Session Valid)
         self._search_max_bookmarks_cache = {}
@@ -110,10 +112,48 @@ class ContentFetcher:
 
         return selected
 
+    @staticmethod
+    def _is_identity_pair(
+        tag1: str,
+        tag2: str,
+        tag_classifications: Optional[dict] = None,
+    ) -> bool:
+        classification1 = (tag_classifications or {}).get(tag1)
+        classification2 = (tag_classifications or {}).get(tag2)
+        return (
+            classification1 is not None
+            and classification2 is not None
+            and getattr(classification1, "classification", None) == "ip"
+            and getattr(classification2, "classification", None) == "ip"
+        )
+
+    async def _classify_seed_tags(
+        self,
+        top_pairs: list[tuple[str, str, float]],
+        xp_tags: list[tuple[str, float]],
+    ) -> dict:
+        if not self.tag_classifier:
+            return {}
+
+        tags = []
+        for tag1, tag2, _ in top_pairs:
+            tags.extend([tag1, tag2])
+        tags.extend(tag for tag, _ in xp_tags)
+
+        if not tags:
+            return {}
+
+        try:
+            return await self.tag_classifier.classify_tags(tags)
+        except Exception as e:
+            logger.warning(f"种子标签分类失败，回退到原有组合搜索: {e}")
+            return {}
+
     def _select_search_pairs(
         self,
         top_pairs: list[tuple[str, str, float]],
-        max_combo_tasks: int
+        max_combo_tasks: int,
+        tag_classifications: Optional[dict] = None,
     ) -> list[tuple[str, str, float]]:
         """在热门组合中保留主干，并留出一部分名额做加权探索。"""
         if max_combo_tasks <= 0:
@@ -130,6 +170,8 @@ class ContentFetcher:
             q1 = expand_search_query(t1)
             q2 = expand_search_query(t2)
             if q1 == q2 or t1 in q2 or t2 in q1:
+                continue
+            if self._is_identity_pair(t1, t2, tag_classifications=tag_classifications):
                 continue
 
             seen_pairs.add(pair_key)
@@ -168,12 +210,12 @@ class ContentFetcher:
                     break
 
         return selected[:max_combo_tasks]
-
     def _build_exploration_pairs(
         self,
         xp_tags: list[tuple[str, float]],
         used_pairs: set[tuple[str, str]],
-        count: int
+        count: int,
+        tag_classifications: Optional[dict] = None,
     ) -> list[tuple[str, str, float]]:
         """从 XP 标签池里补一些随机组合，提升种子多样性。"""
         if count <= 0 or len(xp_tags) < 2:
@@ -198,12 +240,13 @@ class ContentFetcher:
             q2 = expand_search_query(t2)
             if q1 == q2 or t1 in q2 or t2 in q1:
                 continue
+            if self._is_identity_pair(t1, t2, tag_classifications=tag_classifications):
+                continue
 
             used_pairs.add(pair_key)
             extra_pairs.append((t1, t2, 0.0))
 
-        return extra_pairs
-    
+        return extra_pairs    
     async def discover(
         self,
         xp_tags: list[tuple[str, float]],
@@ -222,13 +265,18 @@ class ContentFetcher:
         top_pairs = await db.get_top_tag_pairs(limit=50)
         if not top_pairs:
             top_pairs = []
+        tag_classifications = await self._classify_seed_tags(top_pairs, xp_tags)
         used_pairs = set()
-        
+
         tasks = []
-        
+
         # 1. 构建组合搜索任务
         max_combo_tasks = 20 # 限制并发数
-        selected_pairs = self._select_search_pairs(top_pairs, max_combo_tasks)
+        selected_pairs = self._select_search_pairs(
+            top_pairs,
+            max_combo_tasks,
+            tag_classifications=tag_classifications,
+        )
         used_pairs.update(tuple(sorted((t1, t2))) for t1, t2, _ in selected_pairs)
 
         if len(selected_pairs) < max_combo_tasks and self.discovery_rate > 0:
@@ -237,6 +285,7 @@ class ContentFetcher:
                     xp_tags,
                     used_pairs,
                     max_combo_tasks - len(selected_pairs),
+                    tag_classifications=tag_classifications,
                 )
             )
 
@@ -739,3 +788,5 @@ class ContentFetcher:
             except Exception as e:
                 logger.error(f"获取 {mode} 排行榜失败: {e}")
         return all_illusts
+
+
