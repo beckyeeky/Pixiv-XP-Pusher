@@ -78,6 +78,10 @@ class DatabaseInitTests(unittest.TestCase):
             queue, remaining, evidence = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
 
         self.assertEqual([item["tag"] for item in queue], ["high_impact", "low_impact"])
+        self.assertEqual(queue[0]["evidence"][0]["source"], "danbooru")
+        self.assertTrue(queue[0]["evidence"][0]["is_fresh"])
+        self.assertIsNotNone(queue[0]["evidence"][0]["observed_at"])
+        self.assertIsNotNone(queue[0]["evidence"][0]["verified_at"])
         self.assertEqual([item["tag"] for item in remaining], ["low_impact"])
         self.assertIn({"source": "manual", "classification": "copyright", "confidence": 1.0}, evidence["high_impact"])
 
@@ -92,6 +96,23 @@ class DatabaseInitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             result = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
         self.assertEqual(result["blue_archive"]["source"], "manual")
+
+    def test_manual_review_keeps_permanent_evidence_provenance(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                await database.review_tag_classification("blue_archive", "feature")
+                return await database.get_tag_evidence(
+                    ["blue_archive"], include_provenance=True,
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            evidence = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
+
+        manual = evidence["blue_archive"][0]
+        self.assertEqual(manual["source"], "manual")
+        self.assertIsNotNone(manual["observed_at"])
+        self.assertIsNotNone(manual["verified_at"])
 
     def test_init_db_creates_core_tables(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -214,6 +214,17 @@
         max-height: 400px;
         overflow-y: auto;
     }
+
+    .review-queue { display: grid; gap: 0.8rem; }
+    .review-item { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }
+    .review-item-header { display: flex; justify-content: space-between; gap: 1rem; align-items: start; flex-wrap: wrap; }
+    .review-tag { font-weight: 600; font-size: 1.05rem; }
+    .review-meta, .maintenance-status { color: var(--text-secondary); font-size: 0.82rem; }
+    .evidence-list { margin: 0.75rem 0; padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.84rem; }
+    .review-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+    .review-actions button { border: 1px solid var(--border); border-radius: 5px; padding: 0.35rem 0.6rem; background: var(--bg-primary); color: var(--text-primary); cursor: pointer; }
+    .review-actions button:hover { border-color: var(--accent); }
+    .review-feedback { min-height: 1.3rem; margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.85rem; }
 </style>
 {% endblock %}
 
@@ -285,12 +296,108 @@
         </div>
     </div>
 </div>
+
+<div class="card" aria-labelledby="review-queue-title">
+    <div class="card-header">
+        <div>
+            <h2 id="review-queue-title" class="card-title">🧭 标签审核队列</h2>
+            <p class="review-meta">按对推荐结果的影响排序；人工决定会立即覆盖机器证据。</p>
+        </div>
+        <button type="button" onclick="loadReviewQueue()">刷新</button>
+    </div>
+    <div id="maintenanceStatus" class="maintenance-status">正在读取分类维护状态…</div>
+    <div id="reviewFeedback" class="review-feedback" role="status" aria-live="polite"></div>
+    <div id="reviewQueue" class="review-queue" aria-live="polite">正在加载审核队列…</div>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}
 <script>
 // 页面加载时获取当前设置
-document.addEventListener('DOMContentLoaded', loadTagSettings);
+document.addEventListener('DOMContentLoaded', () => {
+    loadTagSettings();
+    loadReviewQueue();
+});
+
+const tagCategoryLabels = {
+    feature: '特征', character: '角色', copyright: '作品', artist: '作者', non_preference: '非偏好'
+};
+
+function escapeHtml(value) {
+    const element = document.createElement('div');
+    element.textContent = value == null ? '' : String(value);
+    return element.innerHTML;
+}
+
+function formatEvidence(item) {
+    const freshness = item.source === 'manual' ? '人工决定（永久）' : (item.is_fresh ? '证据有效' : '证据已过期');
+    const observed = item.observed_at ? `首次观察：${escapeHtml(item.observed_at)}` : '首次观察时间未知';
+    const verified = item.verified_at ? `最近验证：${escapeHtml(item.verified_at)}` : '最近验证时间未知';
+    return `<li><strong>${escapeHtml(item.source)}</strong>：${escapeHtml(tagCategoryLabels[item.classification] || item.classification)}（置信度 ${escapeHtml(item.confidence)}，${freshness}）<br>${observed}；${verified}</li>`;
+}
+
+function renderReviewQueue(items) {
+    const queue = document.getElementById('reviewQueue');
+    if (!items.length) {
+        queue.innerHTML = '<p class="empty-state">没有待审核的未解决标签。</p>';
+        return;
+    }
+    queue.innerHTML = items.map(item => {
+        const evidence = item.evidence.length ? item.evidence.map(formatEvidence).join('') : '<li>尚无可用证据</li>';
+        const encodedTag = encodeURIComponent(item.tag).replace(/'/g, '%27');
+        const actions = ['feature', 'character', 'copyright', 'artist', 'non_preference']
+            .map(category => `<button type="button" onclick="submitManualDecision(decodeURIComponent('${encodedTag}'), '${category}')">标为${tagCategoryLabels[category]}</button>`)
+            .join('');
+        return `<article class="review-item">
+            <div class="review-item-header"><div><div class="review-tag">${escapeHtml(item.tag)}</div><div class="review-meta">状态：未解决 · 影响权重：${escapeHtml(item.profile_weight)} · 当前来源：${escapeHtml(item.classification_source)}</div></div></div>
+            <ul class="evidence-list">${evidence}</ul><div class="review-actions" aria-label="manual decision">${actions}</div>
+        </article>`;
+    }).join('');
+}
+
+function renderMaintenanceStatus(status) {
+    const show = value => !value ? '尚无记录' : `${escapeHtml(value.status || 'unknown')}${value.completed_at ? `（${escapeHtml(value.completed_at)}）` : ''}${value.error ? `：${escapeHtml(value.error)}` : ''}`;
+    document.getElementById('maintenanceStatus').innerHTML = `推送后的维护：${show(status.completion)}；后台维护：${show(status.background)}`;
+}
+
+async function loadReviewQueue() {
+    const queue = document.getElementById('reviewQueue');
+    const feedback = document.getElementById('reviewFeedback');
+    queue.textContent = '正在加载审核队列…';
+    feedback.textContent = '';
+    try {
+        const reviewsResponse = await fetch('/api/tag-reviews');
+        if (!reviewsResponse.ok) throw new Error('无法读取审核数据');
+        const reviews = await reviewsResponse.json();
+        renderReviewQueue(reviews.items || []);
+    } catch (error) {
+        queue.innerHTML = '<p class="empty-state">审核队列加载失败，请稍后重试。</p>';
+        feedback.textContent = error.message;
+    }
+    try {
+        const statusResponse = await fetch('/api/classification-maintenance-status');
+        if (!statusResponse.ok) throw new Error('状态不可用');
+        renderMaintenanceStatus(await statusResponse.json());
+    } catch (error) {
+        document.getElementById('maintenanceStatus').textContent = '分类维护状态暂不可用。';
+    }
+}
+
+async function submitManualDecision(tag, classification) {
+    const feedback = document.getElementById('reviewFeedback');
+    feedback.textContent = `正在保存 ${tag} 的人工决定…`;
+    try {
+        const response = await fetch('/api/tag-reviews', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({tag, classification})
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || '保存失败');
+        await loadReviewQueue();
+        feedback.textContent = `${tag} 已标为${tagCategoryLabels[classification]}，并已从队列移除。`;
+    } catch (error) {
+        feedback.textContent = `无法保存人工决定：${error.message}`;
+    }
+}
 
 function loadTagSettings() {
     // 加载 Boost Tags

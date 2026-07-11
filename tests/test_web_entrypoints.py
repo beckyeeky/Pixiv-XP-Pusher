@@ -15,7 +15,8 @@ import web.app as web_app_module
 from web.app import app as canonical_app
 from web.app import (
     SettingsRequest, TagReviewRequest, api_gallery, api_tag_reviews, do_setup, gallery,
-    get_config_section, index, save_settings, submit_tag_review,
+    get_config_section, get_classification_maintenance_status, index, save_settings,
+    submit_tag_review,
 )
 from web.app_v2 import app as compat_app
 
@@ -31,6 +32,65 @@ class WebEntrypointTests(unittest.TestCase):
         get_queue.assert_awaited_once_with(25)
         review.assert_awaited_once_with("needs_review", "feature")
         self.assertTrue(response["success"])
+
+    def test_maintenance_status_api_exposes_settled_delivery_and_background_work(self):
+        completion = '{"status": "succeeded", "completed_at": "2026-07-11T10:00:00"}'
+        background = '{"status": "failed", "completed_at": "2026-07-11T10:01:00", "error": "offline"}'
+        with patch.object(web_app_module.db, "get_state", side_effect=[completion, background]) as get_state:
+            payload = asyncio.run(get_classification_maintenance_status(_=None))
+
+        self.assertEqual(payload["completion"]["status"], "succeeded")
+        self.assertEqual(payload["background"]["status"], "failed")
+        self.assertEqual(payload["background"]["error"], "offline")
+        self.assertEqual(
+            [call.args[0] for call in get_state.await_args_list],
+            ["runtime.last_maintenance_completion", "runtime.last_maintenance_background_status"],
+        )
+
+    def test_authenticated_tags_page_contains_the_review_queue_flow(self):
+        session_id = "tag-review-session"
+        web_app_module.sessions[session_id] = web_app_module.datetime.now()
+        try:
+            response = TestClient(canonical_app).get("/tags", cookies={"session_id": session_id})
+        finally:
+            web_app_module.sessions.pop(session_id, None)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("标签审核队列", response.text)
+        self.assertIn("/api/tag-reviews", response.text)
+        self.assertIn("/api/classification-maintenance-status", response.text)
+        self.assertIn("manual decision", response.text)
+        self.assertIn("没有待审核的未解决标签", response.text)
+        self.assertIn("审核队列加载失败", response.text)
+        self.assertIn("正在加载审核队列", response.text)
+        self.assertIn("await loadReviewQueue()", response.text)
+
+    def test_authenticated_review_api_flow_returns_queue_and_persists_a_manual_decision(self):
+        async def authenticated():
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(db_module, "DB_PATH", Path(tmpdir) / "pixiv_xp.db"):
+            asyncio.run(db_module.init_db())
+            asyncio.run(db_module.update_xp_profile({"needs_review": 3.0}))
+            asyncio.run(db_module.save_tag_classifications([("needs_review", "unresolved", "evidence_unresolved")]))
+            asyncio.run(db_module.save_tag_evidence([("needs_review", "danbooru", "character", 1.0)]))
+            canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+            try:
+                client = TestClient(canonical_app)
+                queue_response = client.get("/api/tag-reviews")
+                decision_response = client.post("/api/tag-reviews", json={
+                    "tag": "needs_review", "classification": "feature",
+                })
+            finally:
+                canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+            remaining = asyncio.run(db_module.get_tag_review_queue())
+            evidence = asyncio.run(db_module.get_tag_evidence(["needs_review"]))
+
+        self.assertEqual(queue_response.status_code, 200)
+        self.assertEqual(queue_response.json()["items"][0]["tag"], "needs_review")
+        self.assertEqual(decision_response.status_code, 200)
+        self.assertEqual(remaining, [])
+        self.assertIn({"source": "manual", "classification": "feature", "confidence": 1.0}, evidence["needs_review"])
 
     def test_legacy_entrypoint_reexports_canonical_app(self):
         self.assertIs(canonical_app, compat_app)

@@ -821,6 +821,28 @@ async def submit_tag_review(req: TagReviewRequest, _=Depends(require_auth)):
     return {"success": True, "tag": req.tag, "classification": req.classification}
 
 
+def _decode_maintenance_status(raw: str | None) -> dict | None:
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        value = None
+    return value if isinstance(value, dict) else {"status": "unknown", "error": "状态记录格式无效"}
+
+
+@app.get("/api/classification-maintenance-status")
+async def get_classification_maintenance_status(_=Depends(require_auth)):
+    """Return the independently recorded delivery and background maintenance outcomes."""
+    completion, background = await db.get_state("runtime.last_maintenance_completion"), await db.get_state(
+        "runtime.last_maintenance_background_status"
+    )
+    return {
+        "completion": _decode_maintenance_status(completion),
+        "background": _decode_maintenance_status(background),
+    }
+
+
 @app.get("/health")
 async def health():
     """健康检查端点 (无需认证)"""

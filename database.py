@@ -426,6 +426,21 @@ def is_tag_evidence_fresh(item: dict, now: datetime | None = None) -> bool:
     return bool(verified_at and verified_at >= (now or datetime.now()) - timedelta(days=TAG_EVIDENCE_FRESHNESS_DAYS))
 
 
+def _tag_evidence_item(
+    source: str, classification: str, confidence: float, *,
+    observed_at=None, verified_at=None, include_provenance: bool = False,
+) -> dict:
+    item = {
+        "source": source,
+        "classification": normalize_tag_category(classification),
+        "confidence": float(confidence),
+    }
+    if include_provenance:
+        item["observed_at"] = _parse_evidence_timestamp(observed_at)
+        item["verified_at"] = _parse_evidence_timestamp(verified_at)
+    return item
+
+
 async def get_tag_evidence(
     normalized_tags: list[str], *, include_provenance: bool = False
 ) -> dict[str, list[dict]]:
@@ -445,10 +460,12 @@ async def get_tag_evidence(
         result: dict[str, list[dict]] = {}
         for row in await cursor.fetchall():
             tag, source, classification, confidence = row[:4]
-            item = {"source": source, "classification": normalize_tag_category(classification), "confidence": float(confidence)}
-            if include_provenance:
-                item["observed_at"] = _parse_evidence_timestamp(row[4])
-                item["verified_at"] = _parse_evidence_timestamp(row[5])
+            item = _tag_evidence_item(
+                source, classification, confidence,
+                observed_at=row[4] if include_provenance else None,
+                verified_at=row[5] if include_provenance else None,
+                include_provenance=include_provenance,
+            )
             result.setdefault(tag, []).append(item)
         return result
 
@@ -490,7 +507,7 @@ async def get_tag_review_queue(limit: int = 100) -> list[dict]:
             )
             SELECT unresolved.normalized_tag, unresolved.source, unresolved.updated_at,
                    unresolved.profile_weight, evidence.source, evidence.classification,
-                   evidence.confidence
+                   evidence.confidence, evidence.observed_at, evidence.verified_at
             FROM unresolved
             LEFT JOIN tag_classification_evidence AS evidence
                 ON evidence.normalized_tag = unresolved.normalized_tag
@@ -499,7 +516,10 @@ async def get_tag_review_queue(limit: int = 100) -> list[dict]:
             (TAG_CATEGORY_UNRESOLVED, limit),
         )
         queue: dict[str, dict] = {}
-        for tag, source, updated_at, weight, evidence_source, evidence_category, confidence in await cursor.fetchall():
+        for (
+            tag, source, updated_at, weight, evidence_source, evidence_category,
+            confidence, observed_at, verified_at,
+        ) in await cursor.fetchall():
             item = queue.setdefault(tag, {
                 "tag": tag,
                 "profile_weight": float(weight),
@@ -508,11 +528,12 @@ async def get_tag_review_queue(limit: int = 100) -> list[dict]:
                 "evidence": [],
             })
             if evidence_source:
-                item["evidence"].append({
-                    "source": evidence_source,
-                    "classification": normalize_tag_category(evidence_category),
-                    "confidence": float(confidence),
-                })
+                evidence_item = _tag_evidence_item(
+                    evidence_source, evidence_category, confidence,
+                    observed_at=observed_at, verified_at=verified_at, include_provenance=True,
+                )
+                evidence_item["is_fresh"] = is_tag_evidence_fresh(evidence_item)
+                item["evidence"].append(evidence_item)
         return list(queue.values())
 
 
