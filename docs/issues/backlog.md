@@ -33,7 +33,7 @@
   本地文档：[`docs/issues/0034-multi-judge-danbooru-evidence.md`](./0034-multi-judge-danbooru-evidence.md)
 - [x] [#38](https://github.com/beckyeeky/Pixiv-XP-Pusher/issues/38) Provider / Model / Credential / Tag-review 管理面（由 #39–#43 交付）
 
-### Open residuals from #38
+### Residuals from #38
 
-- [ ] [#44](https://github.com/beckyeeky/Pixiv-XP-Pusher/issues/44) Settings 暴露 Classification Maintenance 运维字段
-- [ ] [#45](https://github.com/beckyeeky/Pixiv-XP-Pusher/issues/45) Provider / Model 删除控件 + 引用检查
+- [x] [#44](https://github.com/beckyeeky/Pixiv-XP-Pusher/issues/44) Settings 暴露 Classification Maintenance 运维字段
+- [x] [#45](https://github.com/beckyeeky/Pixiv-XP-Pusher/issues/45) Provider / Model 删除控件 + 引用检查
