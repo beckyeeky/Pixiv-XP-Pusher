@@ -24,17 +24,17 @@ from tag_categories import is_seed_category
 
 
 class TagClassifierTests(unittest.TestCase):
-    def test_resolves_judge_profile_references(self):
+    def test_resolves_selected_model_through_its_provider(self):
         classifier = TagClassifier({
             "enabled": False,
-            "judge_profiles": {
-                "fast": {
-                    "provider": "openai",
+            "providers": {
+                "gateway": {
+                    "type": "openai_compatible",
                     "api_key": "profile-key",
                     "base_url": "https://judge.example/v1",
-                    "model": "judge-model",
                 },
             },
+            "models": {"fast": {"provider": "gateway", "model": "judge-model"}},
             "judges": ["fast"],
         })
 

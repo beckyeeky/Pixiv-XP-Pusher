@@ -329,7 +329,7 @@ async def settings_page(request: Request):
     if not verify_session(request):
         return RedirectResponse("/", status_code=302)
 
-    config = build_settings_view_config(load_config())
+    config = build_settings_view_config(_redact_sensitive_config(load_config()))
     return render_template(request, "settings_v2.html", {
         "active_page": "settings",
         "config": config

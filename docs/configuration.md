@@ -25,8 +25,9 @@
 
 ## tag_classifier
 - `enabled`：启用后将标签区分为 Feature、Character、Copyright、Artist、Non-preference 与 Unresolved
-- `judge_profiles`：顶层可复用 Judge Model 配置。每项包含 `provider`、`api_key`、`base_url` 与 `model`；空 `api_key` 会继承 `profiler.ai.api_key`。
-- `judges`：引用 `judge_profiles` 的名称列表；每个不同 `provider + base_url + model` 身份只计一票。内嵌 Judge 对象不再支持。
+- `providers`：顶层 LLM Provider 配置，Provider 持有 `api_key` 和类型相关字段；自定义 OpenAI-compatible Provider 必须提供 `base_url`。
+- `models`：顶层 Model 配置，每项只引用一个 Provider，并填写该 Provider 可用的模型名称。
+- `judges`：引用 `models` 的名称列表；每个不同 `Provider + Model` 身份只计一票。内嵌 Judge 对象不再支持。
 - `maintenance.max_tags_per_run`：每次只刷新高影响画像标签，Unresolved 可优先
 - `danbooru`：仅查询被选中的画像标签；证据会缓存，超时或错误时继续使用缓存和 Judge 投票。若 login/api_key 为空，会继承 `profiler.danbooru_login` / `profiler.danbooru_api_key`
 - 机器 Tag Evidence 按 source 独立保鲜 60 天；缓存读取不会刷新时效，只有该 source 成功复核才会更新。人工审核永不过期。

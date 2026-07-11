@@ -219,8 +219,11 @@ class RelatedRecommender:
         profiler_cfg = self.config.get("profiler", {})
         tag_classifier = None
         try:
+            classifier_config = dict(self.config.get("tag_classifier", {}))
+            classifier_config["providers"] = self.config.get("providers", {})
+            classifier_config["models"] = self.config.get("models", {})
             tag_classifier = TagClassifier(
-                self.config.get("tag_classifier", {}),
+                classifier_config,
                 ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),
             )
         except Exception as e:

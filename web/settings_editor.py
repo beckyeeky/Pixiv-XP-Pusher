@@ -124,7 +124,8 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
             "score_weight": 0.3,
         },
     },
-    "judge_profiles": {},
+    "providers": {},
+    "models": {},
     "tag_classifier": {
         "enabled": False,
         "judges": [],
@@ -239,6 +240,13 @@ def build_settings_snapshot(raw_config: Any) -> dict:
     return merged
 
 
+def _mask_secret(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    return f"{text[:2]}…{text[-4:]}"
+
+
 def redact_sensitive_config(data: Any) -> Any:
     """Recursively redact credentials for API responses."""
     if isinstance(data, dict):
@@ -246,7 +254,7 @@ def redact_sensitive_config(data: Any) -> Any:
         for key, value in data.items():
             key_lower = str(key).lower()
             if any(sensitive in key_lower for sensitive in SENSITIVE_CONFIG_KEYS):
-                redacted[key] = "***REDACTED***"
+                redacted[key] = _mask_secret(value)
             else:
                 redacted[key] = redact_sensitive_config(value)
         return redacted
@@ -265,7 +273,11 @@ def apply_settings_payload(
         raise ValueError("配置内容必须是对象")
 
     current = current_config if isinstance(current_config, dict) else {}
+    payload = deepcopy(payload)
+    _preserve_masked_secrets(current, payload)
+    _preserve_or_delete_provider_credentials(current, payload)
     merged = merge_config_replace_lists(current, payload)
+    _validate_provider_model_config(merged)
     web_cfg = merged.setdefault("web", {})
     current_web_cfg = current.get("web", {}) if isinstance(current.get("web"), dict) else {}
 
@@ -292,3 +304,63 @@ def apply_settings_payload(
     merged.pop("web_password", None)
     merged.pop("web_password_confirm", None)
     return merged
+
+
+def _preserve_or_delete_provider_credentials(current: dict, payload: dict) -> None:
+    """Apply the Provider credential modal's explicit replace/delete semantics."""
+    providers = payload.get("providers")
+    if not isinstance(providers, dict):
+        return
+    existing = current.get("providers") if isinstance(current.get("providers"), dict) else {}
+    for name, submitted in providers.items():
+        if not isinstance(submitted, dict):
+            continue
+        old = existing.get(name) if isinstance(existing.get(name), dict) else {}
+        action = submitted.pop("credential_action", None)
+        value = submitted.get("api_key")
+        if action == "delete":
+            submitted["api_key"] = ""
+        elif value is None or value == "" or (isinstance(value, str) and "…" in value):
+            if "api_key" in old:
+                submitted["api_key"] = old["api_key"]
+
+
+def _preserve_masked_secrets(current: Any, submitted: Any) -> None:
+    """A settings read returns fingerprints, so sending one back must not overwrite it."""
+    if not isinstance(current, dict) or not isinstance(submitted, dict):
+        return
+    for key, value in submitted.items():
+        old = current.get(key)
+        if any(token in str(key).lower() for token in SENSITIVE_CONFIG_KEYS):
+            if old is not None and (value == "" or (isinstance(value, str) and "…" in value)):
+                submitted[key] = old
+        elif isinstance(old, dict) and isinstance(value, dict):
+            _preserve_masked_secrets(old, value)
+
+
+def _validate_provider_model_config(config: dict) -> None:
+    providers = config.get("providers", {})
+    models = config.get("models", {})
+    if not isinstance(providers, dict) or not isinstance(models, dict):
+        raise ValueError("Providers 和 Models 必须是对象")
+    allowed_types = {"openai", "deepseek", "anthropic", "google", "openai_compatible"}
+    for name, provider in providers.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(provider, dict):
+            raise ValueError("每个 Provider 都需要名称和配置")
+        provider_type = provider.get("type")
+        if provider_type not in allowed_types:
+            raise ValueError(f"Provider {name} 的类型无效")
+        if provider_type == "openai_compatible" and not str(provider.get("base_url") or "").strip():
+            raise ValueError(f"自定义 Provider {name} 需要 Base URL")
+    for name, model in models.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(model, dict):
+            raise ValueError("每个 Model 都需要名称和配置")
+        if model.get("provider") not in providers:
+            raise ValueError(f"Model {name} 必须引用一个已配置 Provider")
+        if not str(model.get("model") or "").strip():
+            raise ValueError(f"Model {name} 需要模型名称")
+    classifier = config.get("tag_classifier", {})
+    if isinstance(classifier, dict):
+        judges = classifier.get("judges", [])
+        if not isinstance(judges, list) or any(name not in models for name in judges):
+            raise ValueError("Judge 必须选择已配置的 Model")

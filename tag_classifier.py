@@ -44,14 +44,19 @@ class TagClassifier:
         self.ttl_days = self._positive_int(cfg.get("ttl_days", 30), 30)
         self.batch_size = self._positive_int(cfg.get("batch_size", 50), 50)
         self.concurrency = self._positive_int(cfg.get("concurrency", 5), 5)
-        self.model = cfg.get("model") or "deepseek-v4-flash"
-        self.base_url = cfg.get("base_url") or "https://api.deepseek.com/v1"
-        self.api_key = cfg.get("api_key", "")
+        self.model = "deepseek-v4-flash"
+        self.base_url = "https://api.deepseek.com/v1"
+        self.api_key = ""
         maintenance_cfg = cfg.get("maintenance") if isinstance(cfg.get("maintenance"), dict) else {}
         self.maintenance_max_tags = self._positive_int(maintenance_cfg.get("max_tags_per_run", 40), 40)
         self.maintenance_min_weight = float(maintenance_cfg.get("min_profile_weight", 0.0) or 0.0)
         self.prefer_unresolved_first = bool(maintenance_cfg.get("prefer_unresolved_first", True))
-        self.judge_profiles = cfg.get("judge_profiles") if isinstance(cfg.get("judge_profiles"), dict) else {}
+        self.providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        self.models = cfg.get("models") if isinstance(cfg.get("models"), dict) else {}
+        self.legacy_api_key = cfg.get("api_key", "")
+        self.legacy_base_url = cfg.get("base_url") or "https://api.deepseek.com/v1"
+        self.legacy_model = cfg.get("model") or "deepseek-v4-flash"
+        self.legacy_profiles = cfg.get("judge_profiles") if isinstance(cfg.get("judge_profiles"), dict) else {}
         self.judges = self._build_judges(cfg.get("judges"))
         if self.judges:
             primary_judge = self.judges[0]
@@ -283,27 +288,49 @@ class TagClassifier:
 
     def _build_judges(self, configured) -> list[dict]:
         raw = configured if isinstance(configured, list) else []
-        if not raw:
-            raw = [{"name": "legacy", "provider": "openai", "api_key": self.api_key, "base_url": self.base_url, "model": self.model}]
+        if not raw and self.legacy_api_key:
+            raw = [{"name": "legacy", "api_key": self.legacy_api_key, "base_url": self.legacy_base_url, "model": self.legacy_model}]
         unique, identities = [], set()
-        for index, item in enumerate(raw):
-            if isinstance(item, str):
-                profile_name = item
-                profile = self.judge_profiles.get(profile_name)
-                if not isinstance(profile, dict):
-                    logger.warning("Judge Profile %s 不存在，已跳过", profile_name)
+        for index, model_name in enumerate(raw):
+            if isinstance(model_name, dict):
+                item = model_name
+                judge = {
+                    "name": str(item.get("name") or f"judge_{index + 1}"),
+                    "provider": str(item.get("provider") or "openai_compatible"),
+                    "api_key": str(item.get("api_key") or self.legacy_api_key),
+                    "base_url": str(item.get("base_url") or self.legacy_base_url),
+                    "model": str(item.get("model") or self.legacy_model),
+                }
+            else:
+                if not isinstance(model_name, str):
                     continue
-                item = dict(profile)
-                item.setdefault("name", profile_name)
-            if not isinstance(item, dict):
-                continue
-            judge = {
-                "name": str(item.get("name") or f"judge_{index + 1}"),
-                "provider": str(item.get("provider") or "openai"),
-                "api_key": item.get("api_key") or self.api_key,
-                "base_url": item.get("base_url") or self.base_url,
-                "model": item.get("model") or self.model,
-            }
+                model = self.models.get(model_name)
+                if not isinstance(model, dict):
+                    profile = self.legacy_profiles.get(model_name)
+                    if isinstance(profile, dict):
+                        judge = {
+                            "name": model_name,
+                            "provider": str(profile.get("provider") or "openai_compatible"),
+                            "api_key": str(profile.get("api_key") or self.legacy_api_key),
+                            "base_url": str(profile.get("base_url") or self.legacy_base_url),
+                            "model": str(profile.get("model") or self.legacy_model),
+                        }
+                    else:
+                        logger.warning("Judge Model %s 不存在，已跳过", model_name)
+                        continue
+                else:
+                    provider_name = model.get("provider")
+                    provider = self.providers.get(provider_name)
+                    if not isinstance(provider, dict):
+                        logger.warning("Judge Model %s 引用了不存在的 Provider %s，已跳过", model_name, provider_name)
+                        continue
+                    judge = {
+                        "name": model_name,
+                        "provider": str(provider_name),
+                        "api_key": str(provider.get("api_key") or ""),
+                        "base_url": str(provider.get("base_url") or "https://api.openai.com/v1"),
+                        "model": str(model.get("model") or ""),
+                    }
             identity = (judge["provider"], judge["base_url"].rstrip("/"), judge["model"])
             if identity not in identities:
                 identities.add(identity)

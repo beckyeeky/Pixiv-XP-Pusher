@@ -78,9 +78,24 @@ class SettingsEditorTests(unittest.TestCase):
             "profiler": {"boost_tags": {"cat": 1.8}},
         })
 
-        self.assertEqual(redacted["pixiv"]["refresh_token"], "***REDACTED***")
-        self.assertEqual(redacted["notifier"]["telegram"]["bot_token"], "***REDACTED***")
+        self.assertEqual(redacted["pixiv"]["refresh_token"], "se…cret")
+        self.assertEqual(redacted["notifier"]["telegram"]["bot_token"], "to…oken")
         self.assertEqual(redacted["profiler"]["boost_tags"]["cat"], 1.8)
+
+    def test_provider_credentials_are_masked_replaced_or_explicitly_deleted(self):
+        current = {
+            "web": {"require_login_password": False, "password": ""},
+            "providers": {"gateway": {"type": "openai_compatible", "base_url": "https://gateway.example/v1", "api_key": "sk-0123456789"}},
+        }
+        retained = apply_settings_payload(current, {"providers": {"gateway": {"type": "openai_compatible", "api_key": ""}}}, str)
+        replaced = apply_settings_payload(current, {"providers": {"gateway": {"type": "openai_compatible", "api_key": "new-secret"}}}, str)
+        deleted = apply_settings_payload(current, {"providers": {"gateway": {"type": "openai_compatible", "credential_action": "delete"}}}, str)
+
+        self.assertEqual(redact_sensitive_config(current)["providers"]["gateway"]["api_key"], "sk…6789")
+        self.assertEqual(retained["providers"]["gateway"]["api_key"], "sk-0123456789")
+        self.assertEqual(replaced["providers"]["gateway"]["api_key"], "new-secret")
+        self.assertEqual(deleted["providers"]["gateway"]["api_key"], "")
+        self.assertNotIn("credential_action", deleted["providers"]["gateway"])
 
 
 if __name__ == "__main__":

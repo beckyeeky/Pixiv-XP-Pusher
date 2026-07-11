@@ -355,6 +355,7 @@ textarea.form-control {
         <button class="settings-nav-item" data-section="strategies" aria-controls="section-strategies" aria-selected="false" onclick="showSection('strategies', event)">🎯 推送策略</button>
         <button class="settings-nav-item" data-section="notifier" aria-controls="section-notifier" aria-selected="false" onclick="showSection('notifier', event)">📢 推送通道</button>
         <button class="settings-nav-item" data-section="profiler" aria-controls="section-profiler" aria-selected="false" onclick="showSection('profiler', event)">👤 画像分析</button>
+        <button class="settings-nav-item" data-section="llm" aria-controls="section-llm" aria-selected="false" onclick="showSection('llm', event)">🧠 LLM Providers</button>
         <button class="settings-nav-item" data-section="ai" aria-controls="section-ai" aria-selected="false" onclick="showSection('ai', event)">🤖 AI 增强</button>
         <button class="settings-nav-item" data-section="filter" aria-controls="section-filter" aria-selected="false" onclick="showSection('filter', event)">🛡️ 内容过滤</button>
         <button class="settings-nav-item" data-section="fetcher" aria-controls="section-fetcher" aria-selected="false" onclick="showSection('fetcher', event)">📥 内容获取</button>
@@ -671,6 +672,13 @@ textarea.form-control {
         </div>
 
         <!-- AI 增强 -->
+        <div id="section-llm" class="settings-section">
+            <div class="section-header"><h2>LLM Providers 与 Models</h2><p>Provider 保存凭据，Model 只引用一个 Provider；Judge 从 Model 中选择。</p></div>
+            <div class="settings-card"><h3>Providers</h3><div id="provider_list"></div><button type="button" class="btn-secondary" onclick="addProvider()">添加 Provider</button></div>
+            <div class="settings-card"><h3>Models 与 Judge 选择</h3><div id="model_list"></div><button type="button" class="btn-secondary" onclick="addModel()">添加 Model</button></div>
+            <datalist id="known_llm_models">{% for model in ['gpt-4o-mini', 'gpt-4.1-mini', 'deepseek-v4-flash', 'claude-3-5-haiku-latest', 'gemini-2.0-flash'] %}<option value="{{ model }}">{% endfor %}</datalist>
+        </div>
+
         <div id="section-ai" class="settings-section">
             <h3 class="section-title">🤖 AI 增强</h3>
             <div class="form-grid">
@@ -1099,6 +1107,16 @@ textarea.form-control {
     </div>
 </div>
 
+<dialog id="providerCredentialDialog">
+    <form method="dialog" class="settings-card">
+        <h3 id="credentialDialogTitle">编辑 Provider 凭据</h3>
+        <p>留空保持现有凭据；删除必须明确确认。</p>
+        <input type="password" class="form-control" id="provider_credential_value" autocomplete="new-password">
+        <label class="toggle-switch"><input type="checkbox" id="provider_credential_delete"><span>删除此凭据</span></label>
+        <div class="form-actions"><button type="button" class="btn-secondary" onclick="closeCredentialDialog()">取消</button><button type="button" class="btn-primary" onclick="saveProviderCredential()">保存</button></div>
+    </form>
+</dialog>
+
 <!-- 固定底部保存栏 -->
 <div class="save-bar">
     <span id="saveStatus" class="save-status" aria-live="polite"></span>
@@ -1171,6 +1189,35 @@ function ensureObject(parent, key) {
     }
     return parent[key];
 }
+
+const KNOWN_LLM_MODELS = ['gpt-4o-mini', 'gpt-4.1-mini', 'deepseek-v4-flash', 'claude-3-5-haiku-latest', 'gemini-2.0-flash'];
+let editingProviderCredential = null;
+
+function renderLLMSettings() {
+    const providers = ensureObject(initialConfig, 'providers');
+    const models = ensureObject(initialConfig, 'models');
+    const judges = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'judges');
+    if (!Array.isArray(judges)) initialConfig.tag_classifier.judges = [];
+    document.getElementById('provider_list').innerHTML = Object.entries(providers).map(([name, provider]) => `
+        <div class="form-row"><div class="form-group"><label>名称</label><input class="form-control" value="${escapeHtml(name)}" onchange="renameProvider('${escapeJs(name)}', this.value)"></div>
+        <div class="form-group"><label>类型</label><select class="form-control" onchange="initialConfig.providers['${escapeJs(name)}'].type=this.value"><option value="openai" ${provider.type === 'openai' ? 'selected' : ''}>OpenAI</option><option value="deepseek" ${provider.type === 'deepseek' ? 'selected' : ''}>DeepSeek</option><option value="anthropic" ${provider.type === 'anthropic' ? 'selected' : ''}>Anthropic</option><option value="google" ${provider.type === 'google' ? 'selected' : ''}>Google</option><option value="openai_compatible" ${provider.type === 'openai_compatible' ? 'selected' : ''}>自定义 OpenAI-compatible</option></select></div>
+        <div class="form-group"><label>Base URL（自定义必填）</label><input class="form-control" value="${escapeHtml(provider.base_url || '')}" onchange="initialConfig.providers['${escapeJs(name)}'].base_url=this.value"></div>
+        <button type="button" class="btn-secondary" onclick="openCredentialDialog('${escapeJs(name)}')">凭据 ${escapeHtml(provider.api_key || '未设置')}</button></div>`).join('') || '<p>尚未配置 Provider。</p>';
+    document.getElementById('model_list').innerHTML = Object.entries(models).map(([name, model]) => `
+        <div class="form-row"><div class="form-group"><label>名称</label><input class="form-control" value="${escapeHtml(name)}" onchange="renameModel('${escapeJs(name)}', this.value)"></div>
+        <div class="form-group"><label>Provider</label><select class="form-control" onchange="initialConfig.models['${escapeJs(name)}'].provider=this.value">${Object.keys(providers).map(provider => `<option value="${escapeHtml(provider)}" ${provider === model.provider ? 'selected' : ''}>${escapeHtml(provider)}</option>`).join('')}</select></div>
+        <div class="form-group"><label>模型目录 / 自定义模型</label><input list="known_llm_models" class="form-control" value="${escapeHtml(model.model || '')}" onchange="initialConfig.models['${escapeJs(name)}'].model=this.value"><label class="toggle-switch"><input type="checkbox" ${initialConfig.tag_classifier.judges.includes(name) ? 'checked' : ''} onchange="toggleJudge('${escapeJs(name)}', this.checked)"><span>用于 Judge</span></label></div></div>`).join('') || '<p>请先添加 Provider，再添加 Model。</p>';
+}
+function escapeHtml(value) { const node = document.createElement('span'); node.textContent = String(value); return node.innerHTML; }
+function escapeJs(value) { return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
+function addProvider() { const name = `provider_${Object.keys(ensureObject(initialConfig, 'providers')).length + 1}`; initialConfig.providers[name] = {type: 'openai_compatible', base_url: '', api_key: ''}; renderLLMSettings(); }
+function addModel() { const providers = Object.keys(ensureObject(initialConfig, 'providers')); if (!providers.length) return alert('请先添加 Provider'); const name = `model_${Object.keys(ensureObject(initialConfig, 'models')).length + 1}`; initialConfig.models[name] = {provider: providers[0], model: KNOWN_LLM_MODELS[0]}; renderLLMSettings(); }
+function renameProvider(oldName, newName) { newName = newName.trim(); if (!newName || newName === oldName || initialConfig.providers[newName]) return renderLLMSettings(); initialConfig.providers[newName] = initialConfig.providers[oldName]; delete initialConfig.providers[oldName]; Object.values(initialConfig.models || {}).forEach(model => { if (model.provider === oldName) model.provider = newName; }); renderLLMSettings(); }
+function renameModel(oldName, newName) { newName = newName.trim(); if (!newName || newName === oldName || initialConfig.models[newName]) return renderLLMSettings(); initialConfig.models[newName] = initialConfig.models[oldName]; delete initialConfig.models[oldName]; initialConfig.tag_classifier.judges = initialConfig.tag_classifier.judges.map(name => name === oldName ? newName : name); renderLLMSettings(); }
+function toggleJudge(name, enabled) { const judges = initialConfig.tag_classifier.judges; initialConfig.tag_classifier.judges = enabled ? [...new Set([...judges, name])] : judges.filter(item => item !== name); }
+function openCredentialDialog(name) { editingProviderCredential = name; document.getElementById('credentialDialogTitle').textContent = `编辑 ${name} 的凭据`; document.getElementById('provider_credential_value').value = ''; document.getElementById('provider_credential_delete').checked = false; document.getElementById('providerCredentialDialog').showModal(); }
+function closeCredentialDialog() { document.getElementById('providerCredentialDialog').close(); }
+function saveProviderCredential() { const provider = initialConfig.providers[editingProviderCredential]; const deleting = document.getElementById('provider_credential_delete').checked; if (deleting && !confirm('确定删除此 Provider 的凭据吗？')) return; provider.credential_action = deleting ? 'delete' : 'replace'; provider.api_key = document.getElementById('provider_credential_value').value; closeCredentialDialog(); renderLLMSettings(); }
 
 function asInt(value, fallback) {
     const n = parseInt(value, 10);
@@ -1506,5 +1553,6 @@ async function syncIPTags(button) {
 }
 
 refreshIPSyncStatus();
+renderLLMSettings();
 </script>
 {% endblock %}

@@ -25,8 +25,8 @@ class ConfigNormalizationTests(unittest.TestCase):
     def test_normalize_tag_classifier_defaults_and_ints(self):
         cfg = config.normalize_config({"tag_classifier": {"ttl_days": "14", "batch_size": "bad"}})
         self.assertFalse(cfg["tag_classifier"]["enabled"])
-        self.assertEqual(cfg["tag_classifier"]["base_url"], "https://api.deepseek.com/v1")
-        self.assertEqual(cfg["tag_classifier"]["model"], "deepseek-v4-flash")
+        self.assertEqual(cfg["providers"], {})
+        self.assertEqual(cfg["models"], {})
         self.assertEqual(cfg["tag_classifier"]["ttl_days"], 14)
         self.assertEqual(cfg["tag_classifier"]["batch_size"], 50)
         self.assertEqual(cfg["tag_classifier"]["concurrency"], 5)
@@ -43,14 +43,14 @@ class ConfigNormalizationTests(unittest.TestCase):
             self.assertEqual(config.load_config(path), {})
 
     def test_global_key_inheritance(self):
-        """profiler.ai.api_key → scorer + tag_classifier 自动继承"""
+        """profiler.ai.api_key → scorer 自动继承；分类器改由 Provider 持有凭据"""
         cfg = config.normalize_config({
             "profiler": {"ai": {"api_key": "sk-shared"}},
             "ai": {"scorer": {"enabled": True}},
             "tag_classifier": {"enabled": True},
         })
         self.assertEqual(cfg["ai"]["scorer"]["api_key"], "sk-shared")
-        self.assertEqual(cfg["tag_classifier"]["api_key"], "sk-shared")
+        self.assertNotIn("api_key", cfg["tag_classifier"])
 
     def test_global_key_no_override_existing(self):
         """已有自己的 key 时不被覆盖"""
@@ -58,44 +58,32 @@ class ConfigNormalizationTests(unittest.TestCase):
             "profiler": {"ai": {"api_key": "sk-shared"}},
             "tag_classifier": {"api_key": "sk-own", "enabled": True},
         })
-        self.assertEqual(cfg["tag_classifier"]["api_key"], "sk-own")
+        self.assertNotIn("api_key", cfg["tag_classifier"])
 
-    def test_normalize_judge_profiles_and_resolves_references(self):
+    def test_normalize_providers_models_and_resolves_judge_model_references(self):
         cfg = config.normalize_config({
-            "profiler": {
-                "ai": {"api_key": "shared-key"},
-                "danbooru_login": "profile-login",
-                "danbooru_api_key": "profile-key",
-            },
-            "judge_profiles": {
-                "fast": {
+            "providers": {
+                "gateway": {
+                    "type": "openai_compatible",
                     "base_url": "https://a.example/v1",
-                    "model": "model-a",
+                    "api_key": "provider-key",
                 },
+            },
+            "models": {
+                "fast": {"provider": "gateway", "model": "model-a"},
             },
             "tag_classifier": {
                 "maintenance": {"max_tags_per_run": "3"},
                 "judges": ["fast", "missing"],
-                "danbooru": {"enabled": True},
             },
         })
 
         self.assertEqual(cfg["tag_classifier"]["maintenance"]["max_tags_per_run"], 3)
         self.assertEqual(cfg["tag_classifier"]["judges"], ["fast"])
-        self.assertEqual(cfg["judge_profiles"]["fast"]["api_key"], "shared-key")
-        self.assertEqual(cfg["judge_profiles"]["fast"]["name"], "fast")
-        self.assertEqual(cfg["tag_classifier"]["danbooru"]["login"], "profile-login")
-        self.assertEqual(cfg["tag_classifier"]["danbooru"]["api_key"], "profile-key")
+        self.assertEqual(cfg["models"]["fast"]["provider"], "gateway")
+        self.assertEqual(cfg["providers"]["gateway"]["api_key"], "provider-key")
 
-    def test_normalize_drops_legacy_inline_judge_objects(self):
-        cfg = config.normalize_config({
-            "judge_profiles": {"fast": {"api_key": "key"}},
-            "tag_classifier": {"judges": [{"name": "old", "api_key": "key"}, "fast"]},
-        })
-
-        self.assertEqual(cfg["tag_classifier"]["judges"], ["fast"])
-
-    def test_normalize_migrates_current_single_model_classifier_to_a_profile(self):
+    def test_normalize_migrates_current_single_model_classifier_to_provider_and_model(self):
         cfg = config.normalize_config({
             "tag_classifier": {
                 "api_key": "existing-key",
@@ -105,8 +93,9 @@ class ConfigNormalizationTests(unittest.TestCase):
         })
 
         self.assertEqual(cfg["tag_classifier"]["judges"], ["tag_classifier_default"])
-        self.assertEqual(cfg["judge_profiles"]["tag_classifier_default"]["api_key"], "existing-key")
-        self.assertEqual(cfg["judge_profiles"]["tag_classifier_default"]["model"], "existing-model")
+        self.assertEqual(cfg["models"]["tag_classifier_default"]["provider"], "tag_classifier_provider")
+        self.assertEqual(cfg["models"]["tag_classifier_default"]["model"], "existing-model")
+        self.assertEqual(cfg["providers"]["tag_classifier_provider"]["api_key"], "existing-key")
 
     def test_normalize_ip_diversity_defaults_and_invalid_values(self):
         cfg = config.normalize_config({"filter": {"ip_diversity": {"enabled": 1, "decay_factor": "bad", "floor": 2}}})

@@ -173,11 +173,25 @@ class WebSecurityOptionTests(unittest.TestCase):
 
         asyncio.run(web_app_module.require_auth(self.make_request({"session_id": session_id})))
         payload = asyncio.run(get_config_section(section=None))
-        self.assertEqual(payload["web"]["password"], "***REDACTED***")
-        self.assertEqual(payload["pixiv"]["refresh_token"], "***REDACTED***")
-        self.assertEqual(payload["notifier"]["telegram"]["bot_token"], "***REDACTED***")
-        self.assertEqual(payload["profiler"]["danbooru_api_key"], "***REDACTED***")
+        self.assertEqual(payload["web"]["password"], "ha…cret")
+        self.assertEqual(payload["pixiv"]["refresh_token"], "pi…resh")
+        self.assertEqual(payload["notifier"]["telegram"]["bot_token"], "te…oken")
+        self.assertEqual(payload["profiler"]["danbooru_api_key"], "db…-key")
         self.assertEqual(payload["profiler"]["boost_tags"]["cat"], 1.8)
+
+    def test_settings_page_does_not_embed_a_provider_secret(self):
+        self.config_path.write_text(yaml.safe_dump({
+            "web": {"require_login_password": False, "password": ""},
+            "providers": {"gateway": {"type": "openai_compatible", "base_url": "https://example.test/v1", "api_key": "sk-super-secret"}},
+            "models": {"judge": {"provider": "gateway", "model": "gpt-4o-mini"}},
+            "tag_classifier": {"judges": ["judge"]},
+        }, allow_unicode=True), encoding="utf-8")
+
+        response = TestClient(canonical_app).get("/settings")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("sk-super-secret", response.text)
+        self.assertIn("sk…cret", response.text)
 
     def test_settings_page_renders_with_sparse_config(self):
         self.config_path.write_text(

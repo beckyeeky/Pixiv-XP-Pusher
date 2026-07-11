@@ -110,33 +110,73 @@ def normalize_config(config: dict) -> dict:
         normalized["tag_classifier"] = tag_classifier_cfg
 
     tag_classifier_cfg.setdefault("enabled", False)
-    tag_classifier_cfg.setdefault("api_key", "")
-    tag_classifier_cfg.setdefault("base_url", "https://api.deepseek.com/v1")
-    tag_classifier_cfg.setdefault("model", "deepseek-v4-flash")
 
-    judge_profiles = normalized.get("judge_profiles")
-    if judge_profiles is None:
-        judge_profiles = {}
-        normalized["judge_profiles"] = judge_profiles
-    elif not isinstance(judge_profiles, dict):
-        logger.warning("配置项 judge_profiles 必须是对象，已回退为空配置")
-        judge_profiles = {}
-        normalized["judge_profiles"] = judge_profiles
+    providers = normalized.get("providers")
+    if not isinstance(providers, dict):
+        providers = {}
+    models = normalized.get("models")
+    if not isinstance(models, dict):
+        models = {}
 
-    normalized_profiles = {}
-    for name, profile in judge_profiles.items():
-        if not isinstance(name, str) or not name.strip() or not isinstance(profile, dict):
-            logger.warning("judge_profiles 中存在无效的 Judge Profile，已跳过")
-            continue
-        profile_name = name.strip()
-        normalized_profiles[profile_name] = {
-            "name": profile_name,
-            "provider": str(profile.get("provider") or "openai"),
-            "api_key": str(profile.get("api_key") or ""),
-            "base_url": str(profile.get("base_url") or "https://api.deepseek.com/v1"),
-            "model": str(profile.get("model") or "deepseek-v4-flash"),
+    # The previous profile vocabulary was unshipped.  Convert it while reading
+    # so existing local configs gain a first-class Provider and Model instead
+    # of carrying credentials on a Judge selection.
+    legacy_profiles = normalized.pop("judge_profiles", {})
+    if isinstance(legacy_profiles, dict):
+        for profile_name, profile in legacy_profiles.items():
+            if not isinstance(profile_name, str) or not profile_name.strip() or not isinstance(profile, dict):
+                continue
+            profile_name = profile_name.strip()
+            provider_name = f"judge_profile_{profile_name}"
+            providers.setdefault(provider_name, {
+                "type": str(profile.get("provider") or "openai_compatible"),
+                "api_key": str(profile.get("api_key") or ""),
+                "base_url": str(profile.get("base_url") or "https://api.deepseek.com/v1"),
+            })
+            models.setdefault(profile_name, {
+                "provider": provider_name,
+                "model": str(profile.get("model") or "deepseek-v4-flash"),
+            })
+
+    # Current single-model installs are migrated on load.  Inline multi-Judge
+    # configs were never shipped and deliberately have no compatibility path.
+    if not models and not tag_classifier_cfg.get("judges") and str(tag_classifier_cfg.get("api_key", "")).strip():
+        provider_name = "tag_classifier_provider"
+        model_name = "tag_classifier_default"
+        providers[provider_name] = {
+            "type": str(tag_classifier_cfg.get("provider") or "openai_compatible"),
+            "api_key": str(tag_classifier_cfg.get("api_key") or ""),
+            "base_url": str(tag_classifier_cfg.get("base_url") or "https://api.deepseek.com/v1"),
         }
-    normalized["judge_profiles"] = normalized_profiles
+        models[model_name] = {"provider": provider_name, "model": str(tag_classifier_cfg.get("model") or "deepseek-v4-flash")}
+        tag_classifier_cfg["judges"] = [model_name]
+        logger.info("已将单模型 tag_classifier 配置迁移为 Provider 和 Model")
+
+    normalized_providers = {}
+    for name, provider in providers.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(provider, dict):
+            logger.warning("providers 中存在无效 Provider，已跳过")
+            continue
+        normalized_providers[name.strip()] = {
+            "type": str(provider.get("type") or "openai_compatible"),
+            "api_key": str(provider.get("api_key") or ""),
+            "base_url": str(provider.get("base_url") or ""),
+        }
+    normalized_models = {}
+    for name, model in models.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(model, dict):
+            logger.warning("models 中存在无效 Model，已跳过")
+            continue
+        provider_name = str(model.get("provider") or "").strip()
+        model_name = str(model.get("model") or "").strip()
+        if provider_name not in normalized_providers or not model_name:
+            logger.warning("Model %s 引用了不存在 Provider 或缺少模型名称，已跳过", name)
+            continue
+        normalized_models[name.strip()] = {"provider": provider_name, "model": model_name}
+    normalized["providers"] = normalized_providers
+    normalized["models"] = normalized_models
+    for legacy_key in ("api_key", "base_url", "model", "provider"):
+        tag_classifier_cfg.pop(legacy_key, None)
     tag_classifier_cfg["ttl_days"] = max(1, _coerce_int(
         tag_classifier_cfg.get("ttl_days", 30),
         default=30,
@@ -184,25 +224,14 @@ def normalize_config(config: dict) -> dict:
     if not isinstance(judges, list):
         logger.warning("配置项 tag_classifier.judges 必须是 Judge Profile 名称列表，已回退为空列表")
         judges = []
-    if not normalized_profiles and not judges and str(tag_classifier_cfg.get("api_key", "")).strip():
-        legacy_profile_name = "tag_classifier_default"
-        normalized_profiles[legacy_profile_name] = {
-            "name": legacy_profile_name,
-            "provider": "openai",
-            "api_key": str(tag_classifier_cfg["api_key"]),
-            "base_url": str(tag_classifier_cfg["base_url"]),
-            "model": str(tag_classifier_cfg["model"]),
-        }
-        judges = [legacy_profile_name]
-        logger.info("已将单模型 tag_classifier 配置规范化为 Judge Profile %s", legacy_profile_name)
     normalized_judges = []
     for judge_name in judges:
         if not isinstance(judge_name, str):
-            logger.warning("内嵌 Judge 配置已不支持，请改用 judge_profiles 名称引用")
+            logger.warning("内嵌 Judge 配置已不支持，请改用 Model 名称引用")
             continue
         name = judge_name.strip()
-        if name not in normalized_profiles:
-            logger.warning("tag_classifier.judges 引用了不存在的 Judge Profile %s，已跳过", name)
+        if name not in normalized_models:
+            logger.warning("tag_classifier.judges 引用了不存在的 Model %s，已跳过", name)
             continue
         normalized_judges.append(name)
     tag_classifier_cfg["judges"] = normalized_judges
@@ -255,13 +284,9 @@ def normalize_config(config: dict) -> dict:
             scorer_cfg["api_key"] = shared_key
             logger.debug("ai.scorer.api_key 已从 profiler.ai 继承")
 
-        # tag_classifier
-        if not tag_classifier_cfg.get("api_key", "").strip():
-            tag_classifier_cfg["api_key"] = shared_key
-            logger.debug("tag_classifier.api_key 已从 profiler.ai 继承")
-        for profile in normalized_profiles.values():
-            if not profile["api_key"].strip():
-                profile["api_key"] = shared_key
+        for provider in normalized_providers.values():
+            if not provider["api_key"].strip():
+                provider["api_key"] = shared_key
 
     profiler_cfg = normalized.get("profiler", {})
     if isinstance(profiler_cfg, dict):

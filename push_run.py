@@ -309,7 +309,8 @@ class PushRun:
     def _build_tag_classifier(self, profiler_cfg: dict):
         try:
             classifier_config = dict(self.config.get("tag_classifier", {}))
-            classifier_config["judge_profiles"] = self.config.get("judge_profiles", {})
+            classifier_config["providers"] = self.config.get("providers", {})
+            classifier_config["models"] = self.config.get("models", {})
             return TagClassifier(
                 classifier_config,
                 ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),
