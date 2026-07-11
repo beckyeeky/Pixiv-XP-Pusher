@@ -373,7 +373,7 @@ def _validate_provider_model_config(config: dict) -> None:
     models = config.get("models", {})
     if not isinstance(providers, dict) or not isinstance(models, dict):
         raise ValueError("Providers 和 Models 必须是对象")
-    allowed_types = {"openai", "deepseek", "anthropic", "google", "openai_compatible", "pixiv", "danbooru"}
+    allowed_types = {"openai", "deepseek", "anthropic", "google", "openai_compatible", "local", "pixiv", "danbooru"}
     singleton_labels = {"pixiv": "Pixiv", "danbooru": "Danbooru"}
     singleton_counts = {key: 0 for key in singleton_labels}
     for name, provider in providers.items():
@@ -399,8 +399,27 @@ def _validate_provider_model_config(config: dict) -> None:
             raise ValueError(f"Model {name} 必须引用 LLM Provider")
         if not str(model.get("model") or "").strip():
             raise ValueError(f"Model {name} 需要模型名称")
+        capabilities = model.get("capabilities", model.get("capability", ["llm"]))
+        if isinstance(capabilities, str):
+            capabilities = [capabilities]
+        if not isinstance(capabilities, list) or not capabilities or any(
+            capability not in {"llm", "embedding"} for capability in capabilities
+        ):
+            raise ValueError(f"Model {name} 的能力必须是 llm 或 embedding")
     classifier = config.get("tag_classifier", {})
     if isinstance(classifier, dict):
         judges = classifier.get("judges", [])
         if not isinstance(judges, list) or any(name not in models for name in judges):
             raise ValueError("Judge 必须选择已配置的 Model")
+    ai = config.get("ai", {})
+    if isinstance(ai, dict):
+        for function_name, capability in (("embedding", "embedding"), ("scorer", "llm")):
+            function_cfg = ai.get(function_name, {})
+            model_ref = function_cfg.get("model") if isinstance(function_cfg, dict) else None
+            if not isinstance(function_cfg, dict) or not function_cfg.get("enabled"):
+                continue
+            if not model_ref or model_ref not in models:
+                raise ValueError(f"ai.{function_name}.model 必须选择 {capability} Model")
+            model_capabilities = models[model_ref].get("capabilities", ["llm"])
+            if capability not in model_capabilities:
+                raise ValueError(f"ai.{function_name}.model 必须选择 {capability} Model")

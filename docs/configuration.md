@@ -18,7 +18,11 @@ python scripts/refresh_config.py config.yaml --output config.new.yaml
 - `type: pixiv`：唯一的 Pixiv Provider，包含 `refresh_token`、可选 `sync_token` 与 `user_id`。
 - `type: danbooru`：唯一的 Danbooru Provider，包含可选 `login`、`api_key` 和 `base_url`；不会配置 Model。
 - LLM Provider 可配置多个；Model 只可引用 LLM Provider。
+- `models.<name>.capabilities` 声明可用功能：`llm` 用于 Scorer/Judge，`embedding` 用于语义 Embedding，也可同时填写两者。
+- `ai.embedding.model` 只能选择具备 `embedding` 能力的 Model；`ai.scorer.model` 只能选择具备 `llm` 能力的 Model。两者的凭据、地址和 Provider 类型统一从所选 Model 解析。
 - 旧版根级 `pixiv`、`profiler.danbooru_*` 与 `tag_classifier.danbooru` 凭据会在读取时迁移到 typed Provider，兼容字段仅供旧脚本读取。
+
+旧版 `ai.embedding` / `ai.scorer` 中的 `provider`、`api_key`、`base_url` 和实际模型名会在读取时分别迁移为 `embedding_default` / `scorer_default` Model；运行时仍保留旧配置回退路径。
 
 ## strategies
 可选策略：`xp_search` / `related` / `ranking` / `subscription`

@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional
 
 import database as db_module
+from config import resolve_model
 from database import cache_illust, mark_pushed
 from fetcher import ContentFetcher
 from filter import ContentFilter
@@ -270,6 +271,12 @@ class PushRun:
             try:
                 from embedder import Embedder
 
+                model_ref = embedding_cfg.get("model")
+                if model_ref in self.config.get("models", {}):
+                    embedding_cfg = {
+                        **embedding_cfg,
+                        **resolve_model(self.config, model_ref, "embedding"),
+                    }
                 embedder = Embedder(embedding_cfg)
                 if embedder.enabled:
                     logger.info(f"已启用 AI 语义匹配 (model={embedder.model})")
@@ -285,7 +292,14 @@ class PushRun:
             try:
                 from ai_scorer import AIScorer
 
-                if scorer_cfg.get("use_profiler_api", True):
+                model_ref = scorer_cfg.get("model")
+                if model_ref in self.config.get("models", {}):
+                    scorer_cfg = {
+                        **scorer_cfg,
+                        **resolve_model(self.config, model_ref, "llm"),
+                    }
+                    ai_scorer = AIScorer(scorer_cfg)
+                elif scorer_cfg.get("use_profiler_api", True):
                     profiler_ai_cfg = self.config.get("profiler", {}).get("ai", {})
                     merged_cfg = {
                         "enabled": scorer_cfg.get("enabled", False),

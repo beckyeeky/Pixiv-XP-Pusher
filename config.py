@@ -11,6 +11,19 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path("config.yaml")
 SINGLETON_PROVIDER_TYPES = frozenset({"pixiv", "danbooru"})
+MODEL_CAPABILITIES = frozenset({"llm", "embedding"})
+
+
+def _model_capabilities(model: dict) -> list[str]:
+    raw_capabilities = model.get("capabilities", model.get("capability", ["llm"]))
+    if isinstance(raw_capabilities, str):
+        raw_capabilities = [raw_capabilities]
+    capabilities = [
+        capability.strip()
+        for capability in raw_capabilities
+        if isinstance(capability, str) and capability.strip() in MODEL_CAPABILITIES
+    ] if isinstance(raw_capabilities, list) else []
+    return list(dict.fromkeys(capabilities or ["llm"]))
 
 
 def validate_singleton_providers(providers: dict) -> None:
@@ -23,6 +36,44 @@ def validate_singleton_providers(providers: dict) -> None:
     for provider_type, count in counts.items():
         if count != 1:
             raise ValueError(f"必须配置且只能配置一个 {labels[provider_type]} Provider")
+
+
+def _migrate_legacy_function_models(normalized: dict, providers: dict, models: dict) -> None:
+    """Move old inline Embedding/Scorer credentials behind shared Models."""
+    ai = normalized.get("ai")
+    if not isinstance(ai, dict):
+        return
+
+    for function_name, capability in (("embedding", "embedding"), ("scorer", "llm")):
+        function_cfg = ai.get(function_name)
+        if not isinstance(function_cfg, dict):
+            continue
+        selected = str(function_cfg.get("model") or "").strip()
+        if selected in models:
+            continue
+
+        legacy_keys = ("provider", "api_key", "base_url")
+        has_legacy_settings = any(str(function_cfg.get(key) or "").strip() for key in legacy_keys)
+        if not has_legacy_settings and not function_cfg.get("enabled"):
+            continue
+
+        provider_name = f"{function_name}_provider"
+        model_ref = f"{function_name}_default"
+        suffix = "text-embedding-3-small" if capability == "embedding" else "gpt-4o-mini"
+        providers.setdefault(provider_name, {
+            "type": str(function_cfg.get("provider") or "openai"),
+            "api_key": str(function_cfg.get("api_key") or ""),
+            "base_url": str(function_cfg.get("base_url") or ""),
+        })
+        models.setdefault(model_ref, {
+            "provider": provider_name,
+            "model": selected or suffix,
+            "capabilities": [capability],
+        })
+        function_cfg["model"] = model_ref
+        for key in legacy_keys:
+            function_cfg.pop(key, None)
+        logger.info("已将旧版 ai.%s 配置迁移为 Provider 和 Model", function_name)
 
 
 def _coerce_int(value: Any, *, default: int, field_name: str) -> int:
@@ -130,6 +181,7 @@ def normalize_config(config: dict) -> dict:
     models = normalized.get("models")
     if not isinstance(models, dict):
         models = {}
+    _migrate_legacy_function_models(normalized, providers, models)
 
     # The previous profile vocabulary was unshipped.  Convert it while reading
     # so existing local configs gain a first-class Provider and Model instead
@@ -237,7 +289,11 @@ def normalize_config(config: dict) -> dict:
         ):
             logger.warning("Model %s 引用了不存在 Provider 或缺少模型名称，已跳过", name)
             continue
-        normalized_models[name.strip()] = {"provider": provider_name, "model": model_name}
+        normalized_models[name.strip()] = {
+            "provider": provider_name,
+            "model": model_name,
+            "capabilities": _model_capabilities(model),
+        }
     normalized["providers"] = normalized_providers
     normalized["models"] = normalized_models
     validate_singleton_providers(normalized_providers)
@@ -393,6 +449,43 @@ def get_singleton_provider(config: dict, provider_type: str) -> dict:
         if isinstance(provider, dict) and provider.get("type") == provider_type
     ]
     return copy.deepcopy(matches[0]) if len(matches) == 1 else {}
+
+
+def get_compatible_models(config: dict, capability: str) -> dict[str, dict]:
+    """Return shared Models that can be selected by a product function."""
+    if capability not in MODEL_CAPABILITIES:
+        raise ValueError(f"不支持的 Model capability: {capability}")
+    models = config.get("models") if isinstance(config, dict) else None
+    if not isinstance(models, dict):
+        return {}
+    return {
+        name: copy.deepcopy(model)
+        for name, model in models.items()
+        if isinstance(model, dict) and capability in _model_capabilities(model)
+    }
+
+
+def resolve_model(config: dict, model_ref: str, capability: str | None = None) -> dict:
+    """Resolve a Model reference into runtime credentials and provider details."""
+    models = config.get("models") if isinstance(config, dict) else None
+    providers = config.get("providers") if isinstance(config, dict) else None
+    model = models.get(model_ref) if isinstance(models, dict) else None
+    if not isinstance(model, dict):
+        raise ValueError(f"未找到 Model: {model_ref}")
+    if capability is not None and model_ref not in get_compatible_models(config, capability):
+        raise ValueError(f"Model {model_ref} 不兼容 {capability} function")
+    provider_name = model.get("provider")
+    provider = providers.get(provider_name) if isinstance(providers, dict) else None
+    if not isinstance(provider, dict):
+        raise ValueError(f"Model {model_ref} 引用了不存在的 Provider: {provider_name}")
+    resolved = copy.deepcopy(model)
+    resolved.update({
+        "provider_name": provider_name,
+        "provider": provider.get("type", "openai_compatible"),
+        "api_key": provider.get("api_key", ""),
+        "base_url": provider.get("base_url", ""),
+    })
+    return resolved
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:

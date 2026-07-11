@@ -58,10 +58,7 @@ ai:
   # 使用向量相似度替代简单 Tag 交集匹配，提升推荐精准度
   embedding:
     enabled: false # 是否启用 (默认关闭)
-    provider: openai # openai (第三方API) | local (本地模型)
-    api_key: "" # OpenAI/DeepSeek 等 API Key
-    base_url: "" # API 地址 (留空使用 OpenAI 官方)
-    model: text-embedding-3-small # 模型名
+    model: embedding_small # 从 Models 中选择 capabilities=embedding 的 Model
     dimensions: 256 # 向量维度 (越低越省存储, 256/512/1024)
     semantic_weight: 0.3 # 语义分数权重 (0-1, 与 Tag 分数加权)
     cache_ttl_days: 30 # Embedding 缓存天数
@@ -69,10 +66,7 @@ ai:
   # AI 评分器 (LLM 精排，对候选作品进行二次评分)
   scorer:
     enabled: false # 是否启用
-    provider: openai # openai 或其他兼容 API
-    api_key: "" # 可复用 profiler.ai 的配置
-    base_url: "" # 留空使用 OpenAI 官方
-    model: gpt-4o-mini # 推荐轻量模型以降低成本
+    model: deepseek_flash # 从 Models 中选择 capabilities=llm 的 Model
     max_candidates: 50 # 候选超过此数量时跳过 AI 评分
     score_weight: 0.3 # AI 分数权重 (用于与基础分数混合)
 
@@ -100,6 +94,12 @@ models:
   deepseek_flash:
     provider: deepseek
     model: "deepseek-v4-flash"
+    capabilities: [llm]
+
+  embedding_small:
+    provider: deepseek
+    model: "text-embedding-3-small"
+    capabilities: [embedding]
 
   # openai_mini:
   #   provider: openai

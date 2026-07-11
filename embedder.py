@@ -76,7 +76,7 @@ class Embedder:
         if not self.enabled:
             return
         
-        if self.provider == "openai":
+        if self.provider != "local":
             if not HAS_OPENAI:
                 logger.error("openai 库未安装，无法使用 OpenAI Embedding")
                 self.enabled = False
@@ -126,7 +126,7 @@ class Embedder:
             return None
         
         try:
-            if self.provider == "openai":
+            if self.provider != "local":
                 response = await self._client.embeddings.create(
                     model=self.model,
                     input=text,
@@ -187,7 +187,7 @@ class Embedder:
             return [None] * len(texts)
         
         try:
-            if self.provider == "openai":
+            if self.provider != "local":
                 response = await self._client.embeddings.create(
                     model=self.model,
                     input=texts,
