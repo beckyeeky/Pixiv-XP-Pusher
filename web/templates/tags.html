@@ -225,6 +225,9 @@
     .review-actions button { border: 1px solid var(--border); border-radius: 5px; padding: 0.35rem 0.6rem; background: var(--bg-primary); color: var(--text-primary); cursor: pointer; }
     .review-actions button:hover { border-color: var(--accent); }
     .review-feedback { min-height: 1.3rem; margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.85rem; }
+    .review-csv-tools { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin: 0.8rem 0; }
+    .review-csv-tools input[type="file"] { max-width: 260px; color: var(--text-secondary); }
+    .review-csv-hint { color: var(--text-secondary); font-size: 0.82rem; margin-bottom: 0.8rem; }
 </style>
 {% endblock %}
 
@@ -306,6 +309,12 @@
         <button type="button" onclick="loadReviewQueue()">刷新</button>
     </div>
     <div id="maintenanceStatus" class="maintenance-status">正在读取分类维护状态…</div>
+    <div class="review-csv-tools">
+        <button type="button" onclick="downloadReviewCsv()">下载待审核 CSV</button>
+        <input type="file" id="reviewCsvFile" accept=".csv,text/csv" aria-label="待审核标签 CSV 文件">
+        <button type="button" onclick="uploadReviewCsv()">上传并应用</button>
+    </div>
+    <p class="review-csv-hint">填写 <code>classification</code> 列后上传；支持 feature、character、copyright、artist、non_preference。留空的行会保留待审核。</p>
     <div id="reviewFeedback" class="review-feedback" role="status" aria-live="polite"></div>
     <div id="reviewQueue" class="review-queue" aria-live="polite">正在加载审核队列…</div>
 </div>
@@ -396,6 +405,53 @@ async function submitManualDecision(tag, classification) {
         feedback.textContent = `${tag} 已标为${tagCategoryLabels[classification]}，并已从队列移除。`;
     } catch (error) {
         feedback.textContent = `无法保存人工决定：${error.message}`;
+    }
+}
+
+async function downloadReviewCsv() {
+    const feedback = document.getElementById('reviewFeedback');
+    feedback.textContent = '正在生成待审核 CSV…';
+    try {
+        const response = await fetch('/api/tag-reviews/csv');
+        if (!response.ok) throw new Error('下载失败');
+        const url = URL.createObjectURL(await response.blob());
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'tag-review-queue.csv';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        feedback.textContent = 'CSV 已下载，填写 classification 列后即可上传。';
+    } catch (error) {
+        feedback.textContent = `无法下载 CSV：${error.message}`;
+    }
+}
+
+function formatCsvErrors(errors) {
+    return (errors || []).map(item => `第 ${item.line || '?'} 行：${item.message || '未知错误'}`).join('；');
+}
+
+async function uploadReviewCsv() {
+    const input = document.getElementById('reviewCsvFile');
+    const feedback = document.getElementById('reviewFeedback');
+    const file = input.files && input.files[0];
+    if (!file) {
+        feedback.textContent = '请先选择 CSV 文件。';
+        return;
+    }
+    feedback.textContent = '正在校验并应用 CSV…';
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+        const response = await fetch('/api/tag-reviews/csv', {method: 'POST', body: formData});
+        const payload = await response.json();
+        if (!response.ok) throw new Error(formatCsvErrors(payload.errors) || payload.detail || '上传失败');
+        input.value = '';
+        await loadReviewQueue();
+        feedback.textContent = `已应用 ${payload.processed} 条人工决定；跳过 ${payload.skipped} 条未填写的记录。`;
+    } catch (error) {
+        feedback.textContent = `CSV 未应用：${error.message}`;
     }
 }
 

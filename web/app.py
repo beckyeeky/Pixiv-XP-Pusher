@@ -3,6 +3,8 @@ Web UI - FastAPI 后端
 深色护眼主题，模板化设计
 """
 import hashlib
+import csv
+import io
 import logging
 import secrets
 import subprocess
@@ -13,8 +15,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, Request, HTTPException, Depends, Form, Query, Response, Body
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Request, HTTPException, Depends, Form, Query, Response, Body, File, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -25,6 +27,8 @@ import yaml
 import database as db
 from config import get_known_model_catalog, load_config as shared_load_config
 from proxy_utils import normalize_proxy_url
+from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
+from utils import normalize_tag
 from web.settings_editor import (
     apply_settings_payload,
     build_settings_snapshot,
@@ -363,6 +367,10 @@ class FeedbackRequest(BaseModel):
 class TagReviewRequest(BaseModel):
     tag: str
     classification: str
+
+
+TAG_REVIEW_CSV_MAX_BYTES = 2 * 1024 * 1024
+TAG_REVIEW_CSV_CATEGORIES = {"feature", "character", "copyright", "artist", "non_preference"}
 
 class SettingsRequest(BaseModel):
     require_login_password: Optional[bool] = True
@@ -822,6 +830,105 @@ async def submit_tag_review(req: TagReviewRequest, _=Depends(require_auth)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"success": True, "tag": req.tag, "classification": req.classification}
+
+
+def _format_review_evidence(item: dict) -> str:
+    evidence = item.get("evidence") or []
+    if not evidence:
+        return ""
+    return "; ".join(
+        f"{entry.get('source', 'unknown')}: {entry.get('classification', 'unresolved')}"
+        f" ({entry.get('confidence', 0)})"
+        for entry in evidence
+    )
+
+
+def _parse_tag_review_csv(content: bytes) -> tuple[list[tuple[str, str]], int, list[dict], dict[str, int]]:
+    """Validate an uploaded review spreadsheet before any database write."""
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return [], 0, [{"line": 0, "message": "CSV 必须使用 UTF-8 编码"}], {}
+
+    reader = csv.DictReader(io.StringIO(text))
+    fieldnames = reader.fieldnames or []
+    required_columns = {"tag", "classification"}
+    missing_columns = required_columns - set(fieldnames)
+    if missing_columns:
+        return [], 0, [{"line": 1, "message": f"缺少必填列：{', '.join(sorted(missing_columns))}"}], {}
+
+    items: list[tuple[str, str]] = []
+    errors: list[dict] = []
+    seen_tags: dict[str, int] = {}
+    skipped = 0
+    for line, row in enumerate(reader, start=2):
+        if None in row:
+            errors.append({"line": line, "message": "列数与表头不一致"})
+            continue
+        classification_value = (row.get("classification") or "").strip()
+        if not classification_value:
+            skipped += 1
+            continue
+        tag = normalize_tag((row.get("tag") or "").strip())
+        if not tag:
+            errors.append({"line": line, "message": "tag 不能为空"})
+            continue
+        category = normalize_tag_category(classification_value)
+        if category == TAG_CATEGORY_UNRESOLVED or category not in TAG_REVIEW_CSV_CATEGORIES:
+            errors.append({"line": line, "message": f"无效的 classification：{classification_value}"})
+            continue
+        if tag in seen_tags:
+            errors.append({"line": line, "message": f"标签与第 {seen_tags[tag]} 行重复：{tag}"})
+            continue
+        seen_tags[tag] = line
+        items.append((tag, category))
+    return items, skipped, errors, seen_tags
+
+
+@app.get("/api/tag-reviews/csv")
+async def export_tag_reviews_csv(_=Depends(require_auth)):
+    """Export the current unresolved review queue as an editable UTF-8 CSV."""
+    items = await db.get_tag_review_queue(500)
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(["tag", "classification", "profile_weight", "classification_source", "evidence_summary"])
+    for item in items:
+        writer.writerow([
+            item["tag"], "", item.get("profile_weight", 0),
+            item.get("classification_source", ""), _format_review_evidence(item),
+        ])
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="tag-review-queue.csv"'},
+    )
+
+
+@app.post("/api/tag-reviews/csv")
+async def import_tag_reviews_csv(file: UploadFile = File(...), _=Depends(require_auth)):
+    """Atomically apply non-empty manual decisions from a queue CSV export."""
+    content = await file.read()
+    if len(content) > TAG_REVIEW_CSV_MAX_BYTES:
+        return JSONResponse(status_code=413, content={
+            "success": False,
+            "errors": [{"line": 0, "message": "CSV 文件不能超过 2 MiB"}],
+        })
+    items, skipped, errors, line_by_tag = _parse_tag_review_csv(content)
+    if errors:
+        return JSONResponse(status_code=422, content={"success": False, "errors": errors})
+    if not items:
+        return {"success": True, "processed": 0, "skipped": skipped}
+
+    stale_tags = await db.review_tag_classifications_batch(items)
+    if stale_tags:
+        return JSONResponse(status_code=409, content={
+            "success": False,
+            "errors": [
+                {"line": line_by_tag[tag], "message": f"标签已不在待审核队列：{tag}"}
+                for tag in stale_tags
+            ],
+        })
+    return {"success": True, "processed": len(items), "skipped": skipped}
 
 
 def _decode_maintenance_status(raw: str | None) -> dict | None:

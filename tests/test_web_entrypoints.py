@@ -58,12 +58,68 @@ class WebEntrypointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("标签审核队列", response.text)
         self.assertIn("/api/tag-reviews", response.text)
+        self.assertIn("下载待审核 CSV", response.text)
+        self.assertIn("/api/tag-reviews/csv", response.text)
         self.assertIn("/api/classification-maintenance-status", response.text)
         self.assertIn("manual decision", response.text)
         self.assertIn("没有待审核的未解决标签", response.text)
         self.assertIn("审核队列加载失败", response.text)
         self.assertIn("正在加载审核队列", response.text)
         self.assertIn("await loadReviewQueue()", response.text)
+
+    def test_authenticated_csv_review_flow_exports_and_applies_only_filled_rows(self):
+        async def authenticated():
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(db_module, "DB_PATH", Path(tmpdir) / "pixiv_xp.db"):
+            asyncio.run(db_module.init_db())
+            asyncio.run(db_module.update_xp_profile({"first": 4.0, "second": 1.0}))
+            asyncio.run(db_module.save_tag_classifications([
+                ("first", "unresolved", "ai"),
+                ("second", "unresolved", "ai"),
+            ]))
+            canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+            try:
+                client = TestClient(canonical_app)
+                export_response = client.get("/api/tag-reviews/csv")
+                import_response = client.post(
+                    "/api/tag-reviews/csv",
+                    files={"file": ("reviews.csv", "tag,classification\nfirst,feature\nsecond,\n", "text/csv")},
+                )
+            finally:
+                canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+            queue = asyncio.run(db_module.get_tag_review_queue())
+
+        self.assertEqual(export_response.status_code, 200)
+        self.assertIn("tag,classification,profile_weight,classification_source,evidence_summary", export_response.text)
+        self.assertIn("first,,4.0,ai,", export_response.text)
+        self.assertEqual(import_response.status_code, 200)
+        self.assertEqual(import_response.json(), {"success": True, "processed": 1, "skipped": 1})
+        self.assertEqual([item["tag"] for item in queue], ["second"])
+
+    def test_csv_review_import_rejects_invalid_rows_without_partial_writes(self):
+        async def authenticated():
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(db_module, "DB_PATH", Path(tmpdir) / "pixiv_xp.db"):
+            asyncio.run(db_module.init_db())
+            asyncio.run(db_module.save_tag_classifications([
+                ("first", "unresolved", "ai"),
+                ("second", "unresolved", "ai"),
+            ]))
+            canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+            try:
+                response = TestClient(canonical_app).post(
+                    "/api/tag-reviews/csv",
+                    files={"file": ("reviews.csv", "tag,classification\nfirst,feature\nsecond,not-a-category\n", "text/csv")},
+                )
+            finally:
+                canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+            queue = asyncio.run(db_module.get_tag_review_queue())
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["errors"][0]["line"], 3)
+        self.assertEqual({item["tag"] for item in queue}, {"first", "second"})
 
     def test_authenticated_review_api_flow_returns_queue_and_persists_a_manual_decision(self):
         async def authenticated():
