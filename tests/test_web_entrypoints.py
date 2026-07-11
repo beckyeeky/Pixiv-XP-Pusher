@@ -265,3 +265,7 @@ class WebSecurityOptionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Pixiv Provider", response.text)
         self.assertIn('data-section="pixiv"', response.text)
+        self.assertIn("gpt-4o-mini", response.text)
+        self.assertIn("text-embedding-3-small", response.text)
+        self.assertIn("profiler_ai_model", response.text)
+        self.assertNotIn("profiler_ai_api_key", response.text)

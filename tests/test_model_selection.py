@@ -133,6 +133,109 @@ class ModelSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ai.embedding.model"):
             apply_settings_payload(current, {}, str)
 
+    def test_known_model_catalogs_do_not_mix_capabilities(self):
+        llm_catalog = config.get_known_model_catalog("llm")
+        embedding_catalog = config.get_known_model_catalog("embedding")
+
+        self.assertIn("gpt-4o-mini", llm_catalog)
+        self.assertIn("text-embedding-3-small", embedding_catalog)
+        self.assertNotIn("text-embedding-3-small", llm_catalog)
+        self.assertNotIn("gpt-4o-mini", embedding_catalog)
+        with self.assertRaises(ValueError):
+            config.get_known_model_catalog("vision")
+
+    def test_normalize_migrates_legacy_profiler_ai_to_shared_model(self):
+        normalized = config.normalize_config({
+            "profiler": {
+                "ai": {
+                    "enabled": True,
+                    "provider": "openai_compatible",
+                    "api_key": "profiler-key",
+                    "base_url": "https://profiler.example/v1",
+                    "model": "gpt-profiler",
+                    "concurrency": 8,
+                    "batch_size": 50,
+                },
+            },
+        })
+
+        model_ref = normalized["profiler"]["ai"]["model"]
+        self.assertIn(model_ref, normalized["models"])
+        self.assertEqual(normalized["models"][model_ref]["capabilities"], ["llm"])
+        self.assertNotIn("api_key", normalized["profiler"]["ai"])
+        self.assertNotIn("base_url", normalized["profiler"]["ai"])
+        self.assertNotIn("provider", normalized["profiler"]["ai"])
+        resolved = config.resolve_profiler_ai_config(normalized)
+        self.assertEqual(resolved["api_key"], "profiler-key")
+        self.assertEqual(resolved["base_url"], "https://profiler.example/v1")
+        self.assertEqual(resolved["model"], "gpt-profiler")
+        self.assertEqual(resolved["concurrency"], 8)
+
+    def test_settings_reject_incompatible_profiler_model(self):
+        current = {
+            "web": {"require_login_password": False, "password": ""},
+            "providers": {
+                "gateway": {"type": "openai_compatible", "base_url": "https://gateway.example/v1"},
+            },
+            "models": {
+                "embed_only": {"provider": "gateway", "model": "embed", "capabilities": ["embedding"]},
+            },
+            "profiler": {"ai": {"enabled": True, "model": "embed_only"}},
+        }
+
+        with self.assertRaisesRegex(ValueError, "profiler.ai.model"):
+            apply_settings_payload(current, {}, str)
+
+    def test_task_manager_resolves_profiler_ai_model_credentials(self):
+        from profiler import AITagProcessor
+        from task_manager import setup_services
+
+        config_data = config.normalize_config({
+            "providers": {
+                "pixiv": {"type": "pixiv", "refresh_token": "token", "user_id": 1},
+                "danbooru": {"type": "danbooru"},
+                "gateway": {
+                    "type": "openai_compatible",
+                    "api_key": "profiler-runtime-key",
+                    "base_url": "https://profiler-runtime.example/v1",
+                },
+            },
+            "models": {
+                "profiler_llm": {
+                    "provider": "gateway",
+                    "model": "gpt-runtime",
+                    "capabilities": ["llm"],
+                },
+            },
+            "profiler": {"ai": {"enabled": True, "model": "profiler_llm", "concurrency": 3}},
+            "web": {"require_login_password": False, "password": ""},
+        })
+
+        class DummyClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            async def login(self):
+                return None
+
+        async def fake_setup_notifiers(*_args, **_kwargs):
+            return []
+
+        with patch("task_manager.init_db", return_value=None), \
+             patch("task_manager.PixivClient", DummyClient), \
+             patch("task_manager.setup_notifiers", side_effect=fake_setup_notifiers), \
+             patch("profiler.HAS_OPENAI", True), \
+             patch("profiler.AsyncOpenAI", return_value=object()) as openai_ctor:
+            result = __import__("asyncio").run(setup_services(config_data))
+
+        profiler = result[2]
+        self.assertIsInstance(profiler.ai_processor, AITagProcessor)
+        self.assertTrue(profiler.ai_processor.enabled)
+        self.assertEqual(profiler.ai_processor.model, "gpt-runtime")
+        openai_ctor.assert_called_once()
+        self.assertEqual(openai_ctor.call_args.kwargs["api_key"], "profiler-runtime-key")
+        self.assertEqual(openai_ctor.call_args.kwargs["base_url"], "https://profiler-runtime.example/v1")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -23,7 +23,7 @@ import aiohttp
 import yaml
 
 import database as db
-from config import load_config as shared_load_config
+from config import get_known_model_catalog, load_config as shared_load_config
 from proxy_utils import normalize_proxy_url
 from web.settings_editor import (
     apply_settings_payload,
@@ -333,7 +333,9 @@ async def settings_page(request: Request):
     config = build_settings_view_config(_redact_sensitive_config(load_config()))
     return render_template(request, "settings_v2.html", {
         "active_page": "settings",
-        "config": config
+        "config": config,
+        "known_llm_models": get_known_model_catalog("llm"),
+        "known_embedding_models": get_known_model_catalog("embedding"),
     })
 
 

@@ -12,6 +12,27 @@ logger = logging.getLogger(__name__)
 CONFIG_PATH = Path("config.yaml")
 SINGLETON_PROVIDER_TYPES = frozenset({"pixiv", "danbooru"})
 MODEL_CAPABILITIES = frozenset({"llm", "embedding"})
+KNOWN_MODEL_CATALOGS = {
+    "llm": [
+        "gpt-4o-mini",
+        "gpt-4.1-mini",
+        "deepseek-v4-flash",
+        "claude-3-5-haiku-latest",
+        "gemini-2.0-flash",
+    ],
+    "embedding": [
+        "text-embedding-3-small",
+        "text-embedding-3-large",
+        "text-embedding-ada-002",
+    ],
+}
+
+
+def get_known_model_catalog(capability: str) -> list[str]:
+    """Return the known model catalog for an LLM or Embedding capability."""
+    if capability not in KNOWN_MODEL_CATALOGS:
+        raise ValueError(f"不支持的 Model catalog capability: {capability}")
+    return list(KNOWN_MODEL_CATALOGS[capability])
 
 
 def _model_capabilities(model: dict) -> list[str]:
@@ -38,42 +59,80 @@ def validate_singleton_providers(providers: dict) -> None:
             raise ValueError(f"必须配置且只能配置一个 {labels[provider_type]} Provider")
 
 
+def _migrate_one_function_model(
+    function_cfg: dict,
+    *,
+    function_label: str,
+    capability: str,
+    providers: dict,
+    models: dict,
+    default_model: str,
+    provider_name: str,
+    model_ref: str,
+) -> None:
+    """Move one product function's inline provider credentials behind a shared Model."""
+    if not isinstance(function_cfg, dict):
+        return
+    selected = str(function_cfg.get("model") or "").strip()
+    if selected in models:
+        return
+
+    legacy_keys = ("provider", "api_key", "base_url")
+    has_legacy_settings = any(str(function_cfg.get(key) or "").strip() for key in legacy_keys)
+    if not has_legacy_settings and not function_cfg.get("enabled"):
+        return
+
+    providers.setdefault(provider_name, {
+        "type": str(function_cfg.get("provider") or "openai"),
+        "api_key": str(function_cfg.get("api_key") or ""),
+        "base_url": str(function_cfg.get("base_url") or ""),
+    })
+    models.setdefault(model_ref, {
+        "provider": provider_name,
+        "model": selected or default_model,
+        "capabilities": [capability],
+    })
+    function_cfg["model"] = model_ref
+    for key in legacy_keys:
+        function_cfg.pop(key, None)
+    logger.info("已将旧版 %s 配置迁移为 Provider 和 Model", function_label)
+
+
 def _migrate_legacy_function_models(normalized: dict, providers: dict, models: dict) -> None:
     """Move old inline Embedding/Scorer credentials behind shared Models."""
     ai = normalized.get("ai")
-    if not isinstance(ai, dict):
+    if isinstance(ai, dict):
+        for function_name, capability, default_model in (
+            ("embedding", "embedding", "text-embedding-3-small"),
+            ("scorer", "llm", "gpt-4o-mini"),
+        ):
+            _migrate_one_function_model(
+                ai.get(function_name),
+                function_label=f"ai.{function_name}",
+                capability=capability,
+                providers=providers,
+                models=models,
+                default_model=default_model,
+                provider_name=f"{function_name}_provider",
+                model_ref=f"{function_name}_default",
+            )
+
+
+def _migrate_legacy_profiler_ai(normalized: dict, providers: dict, models: dict) -> None:
+    """Move old inline profiler.ai credentials behind a shared LLM Model."""
+    profiler = normalized.get("profiler")
+    if not isinstance(profiler, dict):
         return
-
-    for function_name, capability in (("embedding", "embedding"), ("scorer", "llm")):
-        function_cfg = ai.get(function_name)
-        if not isinstance(function_cfg, dict):
-            continue
-        selected = str(function_cfg.get("model") or "").strip()
-        if selected in models:
-            continue
-
-        legacy_keys = ("provider", "api_key", "base_url")
-        has_legacy_settings = any(str(function_cfg.get(key) or "").strip() for key in legacy_keys)
-        if not has_legacy_settings and not function_cfg.get("enabled"):
-            continue
-
-        provider_name = f"{function_name}_provider"
-        model_ref = f"{function_name}_default"
-        suffix = "text-embedding-3-small" if capability == "embedding" else "gpt-4o-mini"
-        providers.setdefault(provider_name, {
-            "type": str(function_cfg.get("provider") or "openai"),
-            "api_key": str(function_cfg.get("api_key") or ""),
-            "base_url": str(function_cfg.get("base_url") or ""),
-        })
-        models.setdefault(model_ref, {
-            "provider": provider_name,
-            "model": selected or suffix,
-            "capabilities": [capability],
-        })
-        function_cfg["model"] = model_ref
-        for key in legacy_keys:
-            function_cfg.pop(key, None)
-        logger.info("已将旧版 ai.%s 配置迁移为 Provider 和 Model", function_name)
+    _migrate_one_function_model(
+        profiler.get("ai"),
+        function_label="profiler.ai",
+        capability="llm",
+        providers=providers,
+        models=models,
+        default_model="gpt-4o-mini",
+        provider_name="profiler_provider",
+        model_ref="profiler_default",
+    )
 
 
 def _coerce_int(value: Any, *, default: int, field_name: str) -> int:
@@ -205,6 +264,7 @@ def normalize_config(config: dict) -> dict:
 
     # Current single-model installs are migrated on load.  Inline multi-Judge
     # configs were never shipped and deliberately have no compatibility path.
+    # This runs before profiler.ai migration so shared profiler keys remain visible.
     legacy_classifier_key = str(tag_classifier_cfg.get("api_key") or "").strip()
     if not legacy_classifier_key:
         legacy_classifier_key = str(
@@ -221,6 +281,8 @@ def normalize_config(config: dict) -> dict:
         models[model_name] = {"provider": provider_name, "model": str(tag_classifier_cfg.get("model") or "deepseek-v4-flash")}
         tag_classifier_cfg["judges"] = [model_name]
         logger.info("已将单模型 tag_classifier 配置迁移为 Provider 和 Model")
+
+    _migrate_legacy_profiler_ai(normalized, providers, models)
 
     legacy_pixiv = normalized.get("pixiv")
     legacy_pixiv = legacy_pixiv if isinstance(legacy_pixiv, dict) else {}
@@ -395,22 +457,21 @@ def normalize_config(config: dict) -> dict:
     )
     telegram_cfg["proxy_url"] = normalize_proxy_url(telegram_cfg.get("proxy_url"))
 
-    # === 全局 API Key 继承：profiler.ai → scorer / tag_classifier ===
-    shared_key = (
-        normalized.get("profiler", {}).get("ai", {}).get("api_key", "").strip()
-    )
+    # Keep legacy empty-provider keys filled from the resolved profiler Model
+    # (or remaining profiler.ai inline key) so older scorer fallbacks still work.
+    profiler_ai = resolve_profiler_ai_config(normalized)
+    shared_key = str(profiler_ai.get("api_key") or "").strip()
     if shared_key:
-        # scorer
         scorer_cfg = normalized.get("ai", {}).get("scorer")
-        if isinstance(scorer_cfg, dict) and not scorer_cfg.get("api_key", "").strip():
+        if isinstance(scorer_cfg, dict) and not str(scorer_cfg.get("api_key") or "").strip():
             scorer_cfg["api_key"] = shared_key
-            logger.debug("ai.scorer.api_key 已从 profiler.ai 继承")
+            logger.debug("ai.scorer.api_key 已从 profiler Model 继承")
 
         for provider in normalized_providers.values():
             if (
                 provider.get("type") not in {"pixiv", "danbooru"}
                 and "api_key" in provider
-                and not provider["api_key"].strip()
+                and not str(provider.get("api_key") or "").strip()
             ):
                 provider["api_key"] = shared_key
 
@@ -485,6 +546,25 @@ def resolve_model(config: dict, model_ref: str, capability: str | None = None) -
         "api_key": provider.get("api_key", ""),
         "base_url": provider.get("base_url", ""),
     })
+    return resolved
+
+
+def resolve_profiler_ai_config(config: dict) -> dict:
+    """Resolve profiler.ai against its selected shared LLM Model when present."""
+    profiler = config.get("profiler") if isinstance(config, dict) else None
+    ai_cfg = profiler.get("ai") if isinstance(profiler, dict) else None
+    if not isinstance(ai_cfg, dict):
+        return {}
+    resolved = copy.deepcopy(ai_cfg)
+    model_ref = str(ai_cfg.get("model") or "").strip()
+    models = config.get("models") if isinstance(config, dict) else None
+    if (
+        model_ref
+        and isinstance(models, dict)
+        and model_ref in models
+        and model_ref in get_compatible_models(config, "llm")
+    ):
+        resolved.update(resolve_model(config, model_ref, "llm"))
     return resolved
 
 

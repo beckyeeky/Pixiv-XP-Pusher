@@ -530,27 +530,9 @@ textarea.form-control {
                         </label>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">AI Provider</label>
-                        <select class="form-control" id="profiler_ai_provider">
-                            <option value="openai" {% if config.profiler.ai.provider == 'openai' %}selected{% endif %}>OpenAI</option>
-                            <option value="gemini" {% if config.profiler.ai.provider == 'gemini' %}selected{% endif %}>Gemini</option>
-                            <option value="claude" {% if config.profiler.ai.provider == 'claude' %}selected{% endif %}>Claude</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">API Key</label>
-                        <input type="password" class="form-control" id="profiler_ai_api_key"
-                               value="{{ config.profiler.ai.api_key | default('') }}">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Base URL</label>
-                        <input type="text" class="form-control" id="profiler_ai_base_url"
-                               value="{{ config.profiler.ai.base_url | default('') }}">
-                    </div>
-                    <div class="form-group">
                         <label class="form-label">模型</label>
-                        <input type="text" class="form-control" id="profiler_ai_model"
-                               value="{{ config.profiler.ai.model | default('gpt-4o-mini') }}">
+                        <select class="form-control" id="profiler_ai_model"></select>
+                        <div class="help-text">从 Models 中选择 capabilities=llm 的 Model；凭据由 Provider 持有</div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">并发</label>
@@ -639,7 +621,9 @@ textarea.form-control {
             <div class="section-header"><h2>LLM Providers 与 Models</h2><p>Provider 保存凭据，Model 只引用一个 Provider；Judge 从 Model 中选择。</p></div>
             <div class="settings-card"><h3>Providers</h3><div id="provider_list"></div><button type="button" class="btn-secondary" onclick="addProvider()">添加 Provider</button></div>
             <div class="settings-card"><h3>Models 与 Judge 选择</h3><div id="model_list"></div><button type="button" class="btn-secondary" onclick="addModel()">添加 Model</button></div>
-            <datalist id="known_llm_models">{% for model in ['gpt-4o-mini', 'gpt-4.1-mini', 'deepseek-v4-flash', 'claude-3-5-haiku-latest', 'gemini-2.0-flash'] %}<option value="{{ model }}">{% endfor %}</datalist>
+            <datalist id="known_llm_models">{% for model in known_llm_models %}<option value="{{ model }}">{% endfor %}</datalist>
+            <datalist id="known_embedding_models">{% for model in known_embedding_models %}<option value="{{ model }}">{% endfor %}</datalist>
+            <datalist id="known_both_models">{% for model in known_llm_models %}<option value="{{ model }}">{% endfor %}{% for model in known_embedding_models %}<option value="{{ model }}">{% endfor %}</datalist>
         </div>
 
         <div id="section-ai" class="settings-section">
@@ -1123,7 +1107,8 @@ function ensureObject(parent, key) {
     return parent[key];
 }
 
-const KNOWN_LLM_MODELS = ['gpt-4o-mini', 'gpt-4.1-mini', 'deepseek-v4-flash', 'claude-3-5-haiku-latest', 'gemini-2.0-flash'];
+const KNOWN_LLM_MODELS = {{ known_llm_models | tojson }};
+const KNOWN_EMBEDDING_MODELS = {{ known_embedding_models | tojson }};
 let editingProviderCredential = null;
 
 function singletonProvider(type, defaults) {
@@ -1160,22 +1145,60 @@ function renderLLMSettings() {
         <div class="form-group"><label>类型</label><select class="form-control" onchange="initialConfig.providers['${escapeJs(name)}'].type=this.value"><option value="openai" ${provider.type === 'openai' ? 'selected' : ''}>OpenAI</option><option value="deepseek" ${provider.type === 'deepseek' ? 'selected' : ''}>DeepSeek</option><option value="anthropic" ${provider.type === 'anthropic' ? 'selected' : ''}>Anthropic</option><option value="google" ${provider.type === 'google' ? 'selected' : ''}>Google</option><option value="openai_compatible" ${provider.type === 'openai_compatible' ? 'selected' : ''}>自定义 OpenAI-compatible</option></select></div>
         ${provider.type === 'openai_compatible' ? `<div class="form-group"><label>Base URL（自定义必填）</label><input class="form-control" value="${escapeHtml(provider.base_url || '')}" onchange="initialConfig.providers['${escapeJs(name)}'].base_url=this.value"></div>` : ''}
         <button type="button" class="btn-secondary" onclick="openCredentialDialog('${escapeJs(name)}')">凭据 ${escapeHtml(provider.api_key || '未设置')}</button></div>`).join('') || '<p>尚未配置 Provider。</p>';
-    document.getElementById('model_list').innerHTML = Object.entries(models).map(([name, model]) => `
+    document.getElementById('model_list').innerHTML = Object.entries(models).map(([name, model]) => {
+        const catalog = modelCatalogForCapabilities(model.capabilities);
+        return `
         <div class="form-row"><div class="form-group"><label>名称</label><input class="form-control" value="${escapeHtml(name)}" onchange="renameModel('${escapeJs(name)}', this.value)"></div>
         <div class="form-group"><label>Provider</label><select class="form-control" onchange="initialConfig.models['${escapeJs(name)}'].provider=this.value">${Object.keys(llmProviders).map(provider => `<option value="${escapeHtml(provider)}" ${provider === model.provider ? 'selected' : ''}>${escapeHtml(provider)}</option>`).join('')}</select></div>
-        <div class="form-group"><label>能力</label><select class="form-control" onchange="setModelCapabilities('${escapeJs(name)}', this.value)"><option value="llm" ${model.capabilities?.includes('llm') ? 'selected' : ''}>LLM / Scorer</option><option value="embedding" ${model.capabilities?.includes('embedding') && !model.capabilities?.includes('llm') ? 'selected' : ''}>Embedding</option><option value="both" ${model.capabilities?.includes('llm') && model.capabilities?.includes('embedding') ? 'selected' : ''}>LLM + Embedding</option></select></div>
-        <div class="form-group"><label>模型目录 / 自定义模型</label><input list="known_llm_models" class="form-control" value="${escapeHtml(model.model || '')}" onchange="initialConfig.models['${escapeJs(name)}'].model=this.value"><label class="toggle-switch"><input type="checkbox" ${initialConfig.tag_classifier.judges.includes(name) ? 'checked' : ''} onchange="toggleJudge('${escapeJs(name)}', this.checked)"><span>用于 Judge</span></label></div></div>`).join('') || '<p>请先添加 Provider，再添加 Model。</p>';
+        <div class="form-group"><label>能力</label><select class="form-control" onchange="setModelCapabilities('${escapeJs(name)}', this.value)"><option value="llm" ${model.capabilities?.includes('llm') && !model.capabilities?.includes('embedding') ? 'selected' : ''}>LLM / Judge / Scorer / Profiler</option><option value="embedding" ${model.capabilities?.includes('embedding') && !model.capabilities?.includes('llm') ? 'selected' : ''}>Embedding</option><option value="both" ${model.capabilities?.includes('llm') && model.capabilities?.includes('embedding') ? 'selected' : ''}>LLM + Embedding</option></select></div>
+        <div class="form-group"><label>模型目录 / 自定义模型</label><input list="${catalog}" class="form-control" value="${escapeHtml(model.model || '')}" onchange="initialConfig.models['${escapeJs(name)}'].model=this.value"><label class="toggle-switch"><input type="checkbox" ${initialConfig.tag_classifier.judges.includes(name) ? 'checked' : ''} onchange="toggleJudge('${escapeJs(name)}', this.checked)"><span>用于 Judge</span></label></div></div>`;
+    }).join('') || '<p>请先添加 Provider，再添加 Model。</p>';
+    setFunctionModelOptions('profiler_ai_model', 'llm', ensureObject(ensureObject(initialConfig, 'profiler'), 'ai')?.model);
     setFunctionModelOptions('ai_embedding_model', 'embedding', ensureObject(initialConfig, 'ai').embedding?.model);
     setFunctionModelOptions('ai_scorer_model', 'llm', ensureObject(initialConfig, 'ai').scorer?.model);
 }
 function escapeHtml(value) { const node = document.createElement('span'); node.textContent = String(value); return node.innerHTML; }
 function escapeJs(value) { return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
+function modelCatalogForCapabilities(capabilities) {
+    const caps = Array.isArray(capabilities) ? capabilities : ['llm'];
+    if (caps.includes('llm') && caps.includes('embedding')) return 'known_both_models';
+    if (caps.includes('embedding') && !caps.includes('llm')) return 'known_embedding_models';
+    return 'known_llm_models';
+}
+function defaultModelForCapabilities(capabilities) {
+    const caps = Array.isArray(capabilities) ? capabilities : ['llm'];
+    if (caps.includes('embedding') && !caps.includes('llm')) return KNOWN_EMBEDDING_MODELS[0] || '';
+    return KNOWN_LLM_MODELS[0] || '';
+}
 function addProvider() { const name = `provider_${Object.keys(ensureObject(initialConfig, 'providers')).length + 1}`; initialConfig.providers[name] = {type: 'openai_compatible', base_url: '', api_key: ''}; renderLLMSettings(); }
 function addModel() { const providers = Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)).map(([name]) => name); if (!providers.length) return alert('请先添加 Provider'); const name = `model_${Object.keys(ensureObject(initialConfig, 'models')).length + 1}`; initialConfig.models[name] = {provider: providers[0], model: KNOWN_LLM_MODELS[0], capabilities: ['llm']}; renderLLMSettings(); }
-function setModelCapabilities(name, value) { initialConfig.models[name].capabilities = value === 'both' ? ['llm', 'embedding'] : [value]; setFunctionModelOptions('ai_embedding_model', 'embedding', ensureObject(initialConfig, 'ai').embedding?.model); setFunctionModelOptions('ai_scorer_model', 'llm', ensureObject(initialConfig, 'ai').scorer?.model); }
+function setModelCapabilities(name, value) {
+    const capabilities = value === 'both' ? ['llm', 'embedding'] : [value];
+    initialConfig.models[name].capabilities = capabilities;
+    if (!initialConfig.models[name].model) {
+        initialConfig.models[name].model = defaultModelForCapabilities(capabilities);
+    }
+    setFunctionModelOptions('profiler_ai_model', 'llm', ensureObject(ensureObject(initialConfig, 'profiler'), 'ai')?.model);
+    setFunctionModelOptions('ai_embedding_model', 'embedding', ensureObject(initialConfig, 'ai').embedding?.model);
+    setFunctionModelOptions('ai_scorer_model', 'llm', ensureObject(initialConfig, 'ai').scorer?.model);
+    renderLLMSettings();
+}
 function setFunctionModelOptions(id, capability, selected) { const select = document.getElementById(id); if (!select) return; const models = ensureObject(initialConfig, 'models'); const options = Object.entries(models).filter(([, model]) => Array.isArray(model?.capabilities) && model.capabilities.includes(capability)); select.innerHTML = options.map(([name, model]) => `<option value="${escapeHtml(name)}" ${name === selected ? 'selected' : ''}>${escapeHtml(name)} (${escapeHtml(model.provider || '')})</option>`).join('') || '<option value="">请先配置兼容 Model</option>'; }
 function renameProvider(oldName, newName) { newName = newName.trim(); if (!newName || newName === oldName || initialConfig.providers[newName]) return renderLLMSettings(); initialConfig.providers[newName] = initialConfig.providers[oldName]; delete initialConfig.providers[oldName]; Object.values(initialConfig.models || {}).forEach(model => { if (model.provider === oldName) model.provider = newName; }); renderLLMSettings(); }
-function renameModel(oldName, newName) { newName = newName.trim(); if (!newName || newName === oldName || initialConfig.models[newName]) return renderLLMSettings(); initialConfig.models[newName] = initialConfig.models[oldName]; delete initialConfig.models[oldName]; initialConfig.tag_classifier.judges = initialConfig.tag_classifier.judges.map(name => name === oldName ? newName : name); renderLLMSettings(); }
+function renameModel(oldName, newName) {
+    newName = newName.trim();
+    if (!newName || newName === oldName || initialConfig.models[newName]) return renderLLMSettings();
+    initialConfig.models[newName] = initialConfig.models[oldName];
+    delete initialConfig.models[oldName];
+    initialConfig.tag_classifier.judges = initialConfig.tag_classifier.judges.map(name => name === oldName ? newName : name);
+    const profilerAi = ensureObject(ensureObject(initialConfig, 'profiler'), 'ai');
+    if (profilerAi.model === oldName) profilerAi.model = newName;
+    const embedding = ensureObject(ensureObject(initialConfig, 'ai'), 'embedding');
+    if (embedding.model === oldName) embedding.model = newName;
+    const scorer = ensureObject(ensureObject(initialConfig, 'ai'), 'scorer');
+    if (scorer.model === oldName) scorer.model = newName;
+    renderLLMSettings();
+}
 function toggleJudge(name, enabled) { const judges = initialConfig.tag_classifier.judges; initialConfig.tag_classifier.judges = enabled ? [...new Set([...judges, name])] : judges.filter(item => item !== name); }
 function openCredentialDialog(name, field = 'api_key', label = '凭据') { editingProviderCredential = {name, field}; document.getElementById('credentialDialogTitle').textContent = `编辑 ${name} 的 ${label}`; document.getElementById('provider_credential_value').value = ''; document.getElementById('provider_credential_delete').checked = false; document.getElementById('providerCredentialDialog').showModal(); }
 function closeCredentialDialog() { document.getElementById('providerCredentialDialog').close(); }
@@ -1317,10 +1340,10 @@ function collectConfig() {
     tg.topic_tag_mapping = parseJsonField('tg_topic_tag_mapping', tg.topic_tag_mapping || {});
 
     profilerAi.enabled = document.getElementById('profiler_ai_enabled').checked;
-    profilerAi.provider = document.getElementById('profiler_ai_provider').value;
-    profilerAi.api_key = document.getElementById('profiler_ai_api_key').value;
-    profilerAi.base_url = document.getElementById('profiler_ai_base_url').value;
-    profilerAi.model = document.getElementById('profiler_ai_model').value || profilerAi.model || 'gpt-4o-mini';
+    profilerAi.model = document.getElementById('profiler_ai_model').value || profilerAi.model || '';
+    delete profilerAi.provider;
+    delete profilerAi.api_key;
+    delete profilerAi.base_url;
     profilerAi.concurrency = asInt(document.getElementById('profiler_ai_concurrency').value, profilerAi.concurrency || 10);
     profilerAi.batch_size = asInt(document.getElementById('profiler_ai_batch_size').value, profilerAi.batch_size || 200);
     profilerAi.filter_meaningless = document.getElementById('profiler_ai_filter_meaningless').checked;

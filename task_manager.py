@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from config import CONFIG_PATH, get_singleton_provider, load_config
+from config import CONFIG_PATH, get_singleton_provider, load_config, resolve_profiler_ai_config
 from database import init_db, cache_illust, get_cached_illust
 from pixiv_client import PixivClient
 from profiler import XPProfiler
@@ -560,7 +560,7 @@ async def setup_services(config: dict):
         stop_words=profiler_cfg.get("stop_words"),
         discovery_rate=profiler_cfg.get("discovery_rate", 0.1),
         time_decay_days=profiler_cfg.get("time_decay_days", 180),
-        ai_config=profiler_cfg.get("ai"),
+        ai_config=resolve_profiler_ai_config(config),
         saturation_threshold=profiler_cfg.get("saturation_threshold", 0.5),
         # Pass IP discount config
         ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),

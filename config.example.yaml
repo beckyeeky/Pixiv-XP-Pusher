@@ -12,14 +12,8 @@ profiler:
   # AI 标签分析配置
   ai:
     enabled: true
-    # AI 提供商: openai / gemini / claude (目前主要支持 openai 格式)
-    provider: "openai"
-    # API 密钥
-    api_key: "YOUR_OPENAI_API_KEY_HERE"
-    # API 基础地址 (如果使用中转服务)
-    base_url: "https://api.openai.com/v1"
-    # 模型名称
-    model: "gpt-4o-mini"
+    # 从 Models 中选择 capabilities=llm 的 Model；凭据与地址从 Provider 解析
+    model: deepseek_flash
     # 并发请求数 (建议 5-20)
     concurrency: 10
     # 批次大小

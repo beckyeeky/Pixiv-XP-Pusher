@@ -94,11 +94,8 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
         "danbooru_api_key": "",
         "stop_words": [],
         "ai": {
-            "enabled": True,
-            "provider": "openai",
-            "api_key": "",
-            "base_url": "",
-            "model": "gpt-4o-mini",
+            "enabled": False,
+            "model": "",
             "concurrency": 10,
             "batch_size": 200,
             "filter_meaningless": True,
@@ -108,20 +105,14 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
     "ai": {
         "embedding": {
             "enabled": False,
-            "provider": "openai",
-            "api_key": "",
-            "base_url": "",
-            "model": "text-embedding-3-small",
+            "model": "",
             "dimensions": 256,
             "semantic_weight": 0.3,
             "cache_ttl_days": 30,
         },
         "scorer": {
             "enabled": False,
-            "provider": "openai",
-            "api_key": "",
-            "base_url": "",
-            "model": "gpt-4o-mini",
+            "model": "",
             "max_candidates": 50,
             "score_weight": 0.3,
         },
@@ -411,15 +402,20 @@ def _validate_provider_model_config(config: dict) -> None:
         judges = classifier.get("judges", [])
         if not isinstance(judges, list) or any(name not in models for name in judges):
             raise ValueError("Judge 必须选择已配置的 Model")
-    ai = config.get("ai", {})
-    if isinstance(ai, dict):
-        for function_name, capability in (("embedding", "embedding"), ("scorer", "llm")):
-            function_cfg = ai.get(function_name, {})
-            model_ref = function_cfg.get("model") if isinstance(function_cfg, dict) else None
-            if not isinstance(function_cfg, dict) or not function_cfg.get("enabled"):
-                continue
-            if not model_ref or model_ref not in models:
-                raise ValueError(f"ai.{function_name}.model 必须选择 {capability} Model")
-            model_capabilities = models[model_ref].get("capabilities", ["llm"])
-            if capability not in model_capabilities:
-                raise ValueError(f"ai.{function_name}.model 必须选择 {capability} Model")
+    function_selections = [
+        ("ai", "embedding", "embedding"),
+        ("ai", "scorer", "llm"),
+        ("profiler", "ai", "llm"),
+    ]
+    for section_name, function_name, capability in function_selections:
+        section = config.get(section_name, {})
+        function_cfg = section.get(function_name, {}) if isinstance(section, dict) else None
+        model_ref = function_cfg.get("model") if isinstance(function_cfg, dict) else None
+        if not isinstance(function_cfg, dict) or not function_cfg.get("enabled"):
+            continue
+        label = f"{section_name}.{function_name}.model"
+        if not model_ref or model_ref not in models:
+            raise ValueError(f"{label} 必须选择 {capability} Model")
+        model_capabilities = models[model_ref].get("capabilities", ["llm"])
+        if capability not in model_capabilities:
+            raise ValueError(f"{label} 必须选择 {capability} Model")
