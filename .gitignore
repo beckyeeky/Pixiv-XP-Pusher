@@ -71,3 +71,6 @@ ops/state/
 .codex
 .codex/
 .hermes/
+
+# Backup
+backup/
