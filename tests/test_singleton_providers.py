@@ -1,10 +1,13 @@
 import asyncio
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import config
+import get_token
 import task_manager
+import yaml
 from tag_classifier import TagClassifier
 from web.settings_editor import apply_settings_payload, redact_sensitive_config
 
@@ -198,6 +201,19 @@ class SingletonProviderTests(unittest.TestCase):
 
         self.assertEqual(client_class.call_args_list[0].kwargs["refresh_token"], "main-token")
         self.assertEqual(client_class.call_args_list[1].kwargs["refresh_token"], "sync-token")
+
+    def test_token_script_migrates_legacy_pixiv_tokens_before_replacement(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text("pixiv:\n  refresh_token: old-main\n  sync_token: old-sync\n  user_id: 42\n", encoding="utf-8")
+            with patch.object(get_token, "__file__", str(Path(tmpdir) / "get_token.py")):
+                get_token.save_to_config(None, "new-main", "99", None, "refresh_token")
+
+            saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["providers"]["pixiv"]["refresh_token"], "new-main")
+        self.assertEqual(saved["providers"]["pixiv"]["sync_token"], "old-sync")
+        self.assertEqual(saved["providers"]["pixiv"]["user_id"], 42)
 
     def test_settings_template_keeps_singleton_providers_out_of_llm_configuration(self):
         template = (Path(__file__).resolve().parents[1] / "web" / "templates" / "settings_v2.html").read_text(encoding="utf-8")

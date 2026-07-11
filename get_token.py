@@ -51,11 +51,17 @@ def save_to_config(access_token, refresh_token, user_id, expires_in, target_key=
             config = {}
         
         providers = config.setdefault("providers", {})
+        legacy_pixiv = config.get("pixiv") if isinstance(config.get("pixiv"), dict) else {}
         pixiv_entries = [provider for provider in providers.values()
                          if isinstance(provider, dict) and provider.get("type") == "pixiv"]
         if len(pixiv_entries) > 1:
             raise ValueError("config.yaml 配置了多个 Pixiv Provider")
-        pixiv_provider = pixiv_entries[0] if pixiv_entries else providers.setdefault("pixiv", {"type": "pixiv"})
+        pixiv_provider = pixiv_entries[0] if pixiv_entries else providers.setdefault("pixiv", {
+            "type": "pixiv",
+            "refresh_token": legacy_pixiv.get("refresh_token", ""),
+            "sync_token": legacy_pixiv.get("sync_token", ""),
+            "user_id": legacy_pixiv.get("user_id", 0),
+        })
 
         if not pixiv_provider.get("user_id"):
             pixiv_provider["user_id"] = int(user_id) if user_id else 0
