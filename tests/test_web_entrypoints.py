@@ -233,10 +233,10 @@ class WebSecurityOptionTests(unittest.TestCase):
 
         asyncio.run(web_app_module.require_auth(self.make_request({"session_id": session_id})))
         payload = asyncio.run(get_config_section(section=None))
-        self.assertEqual(payload["web"]["password"], "ha…cret")
+        self.assertEqual(payload["web"]["password"], "••••")
         self.assertEqual(payload["pixiv"]["refresh_token"], "pi…resh")
-        self.assertEqual(payload["notifier"]["telegram"]["bot_token"], "te…oken")
-        self.assertEqual(payload["profiler"]["danbooru_api_key"], "db…-key")
+        self.assertEqual(payload["notifier"]["telegram"]["bot_token"], "••••")
+        self.assertEqual(payload["profiler"]["danbooru_api_key"], "••••")
         self.assertEqual(payload["profiler"]["boost_tags"]["cat"], 1.8)
 
     def test_settings_page_does_not_embed_a_provider_secret(self):
@@ -263,5 +263,5 @@ class WebSecurityOptionTests(unittest.TestCase):
         response = client.get("/settings")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Pixiv 认证", response.text)
+        self.assertIn("Pixiv Provider", response.text)
         self.assertIn('data-section="pixiv"', response.text)

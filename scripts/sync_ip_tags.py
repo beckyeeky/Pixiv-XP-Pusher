@@ -14,7 +14,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(PROJECT_ROOT))
 
-from config import load_config
+from config import get_singleton_provider, load_config
 
 # === Configuration ===
 MIN_POST_COUNT = 1000      # Minimum posts to include
@@ -30,6 +30,13 @@ def load_danbooru_credentials() -> tuple[str, str]:
         return env_login, env_api_key
 
     config = load_config(PROJECT_ROOT / "config.yaml")
+    provider = get_singleton_provider(config, "danbooru")
+    if provider:
+        return (
+            env_login or str(provider.get("login") or "").strip(),
+            env_api_key or str(provider.get("api_key") or "").strip(),
+        )
+
     profiler_cfg = config.get("profiler", {}) if isinstance(config, dict) else {}
     cfg_login = str(profiler_cfg.get("danbooru_login", "") or "").strip()
     cfg_api_key = str(profiler_cfg.get("danbooru_api_key", "") or "").strip()

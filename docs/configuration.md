@@ -2,10 +2,23 @@
 
 完整配置请以 `config.example.yaml` 为准。以下是常用字段分组。
 
-## pixiv
-- `refresh_token`：主账号 token
-- `sync_token`：可选，独立同步 token
-- `user_id`：用于画像分析的用户 ID
+配置模板升级后，可将现有值自动填入新版模板：
+
+```bash
+python scripts/refresh_config.py config.yaml --output config.new.yaml
+```
+
+新文件保留 `config.example.yaml` 中的注释、字段顺序与新增默认项，并覆盖同名的现有配置。因此生成文件本身就是新版字段的带说明写法。默认会移除模板中没有的旧字段，并在生成后以 YAML 输出这些字段及其原始值；如需原样保留它们，可加 `--keep-unknown`。
+
+旧版 `tag_classifier` 直接填写的 `provider`、`api_key`、`base_url`、`model` 会自动迁移到新版 `providers` 与第一个 `models` 条目，并在终端显示迁移路径。
+
+`profiler.boost_tags` 当前没有接入主任务的画像构建流程，因此不在模板中保留；脚本会将旧值报告为未匹配字段，避免生成看似有效但实际不生效的配置。
+
+## providers
+- `type: pixiv`：唯一的 Pixiv Provider，包含 `refresh_token`、可选 `sync_token` 与 `user_id`。
+- `type: danbooru`：唯一的 Danbooru Provider，包含可选 `login`、`api_key` 和 `base_url`；不会配置 Model。
+- LLM Provider 可配置多个；Model 只可引用 LLM Provider。
+- 旧版根级 `pixiv`、`profiler.danbooru_*` 与 `tag_classifier.danbooru` 凭据会在读取时迁移到 typed Provider，兼容字段仅供旧脚本读取。
 
 ## strategies
 可选策略：`xp_search` / `related` / `ranking` / `subscription`
@@ -25,11 +38,11 @@
 
 ## tag_classifier
 - `enabled`：启用后将标签区分为 Feature、Character、Copyright、Artist、Non-preference 与 Unresolved
-- `providers`：顶层 LLM Provider 配置，Provider 持有 `api_key` 和类型相关字段；自定义 OpenAI-compatible Provider 必须提供 `base_url`。
+- `providers`：顶层 typed Provider 配置；Pixiv 与 Danbooru 各只能有一个，LLM Provider 可配置多个。自定义 OpenAI-compatible Provider 必须提供 `base_url`。
 - `models`：顶层 Model 配置，每项只引用一个 Provider，并填写该 Provider 可用的模型名称。
 - `judges`：引用 `models` 的名称列表；每个不同 `Provider + Model` 身份只计一票。内嵌 Judge 对象不再支持。
 - `maintenance.max_tags_per_run`：每次只刷新高影响画像标签，Unresolved 可优先
-- `danbooru`：仅查询被选中的画像标签；证据会缓存，超时或错误时继续使用缓存和 Judge 投票。若 login/api_key 为空，会继承 `profiler.danbooru_login` / `profiler.danbooru_api_key`
+- `danbooru`：仅查询被选中的画像标签；证据会缓存，超时或错误时继续使用缓存和 Judge 投票。连接凭据与地址由 `type: danbooru` Provider 提供。
 - 机器 Tag Evidence 按 source 独立保鲜 60 天；缓存读取不会刷新时效，只有该 source 成功复核才会更新。人工审核永不过期。
 - `--once` 在成功推送 Daily Slate 后最多等待 90 秒完成有界 Classification Maintenance；维护失败或超时会独立记录，不会撤销推送结果。调度模式始终后台执行且不会重复启动活动维护。
 

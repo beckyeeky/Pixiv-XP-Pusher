@@ -10,6 +10,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Callable
 
+from config import validate_singleton_providers
+
 
 SENSITIVE_CONFIG_KEYS = {
     "password",
@@ -244,22 +246,40 @@ def _mask_secret(value: Any) -> str:
     text = str(value or "")
     if not text:
         return ""
+    if len(text) <= 6:
+        return "••••"
     return f"{text[:2]}…{text[-4:]}"
 
 
-def redact_sensitive_config(data: Any) -> Any:
+def _is_masked_secret(value: Any) -> bool:
+    return isinstance(value, str) and (value == "••••" or "…" in value)
+
+
+def _uses_secret_fingerprint(path: tuple[str, ...], key: str) -> bool:
+    if key in {"refresh_token", "sync_token"} and path == ("pixiv",):
+        return True
+    if path == ("profiler",) and key in {"danbooru_login", "danbooru_api_key"}:
+        return True
+    if path == ("tag_classifier", "danbooru") and key in {"login", "api_key"}:
+        return True
+    return len(path) >= 2 and path[0] == "providers" and key in {
+        "login", "api_key", "refresh_token", "sync_token",
+    }
+
+
+def redact_sensitive_config(data: Any, path: tuple[str, ...] = ()) -> Any:
     """Recursively redact credentials for API responses."""
     if isinstance(data, dict):
         redacted: dict[str, Any] = {}
         for key, value in data.items():
             key_lower = str(key).lower()
-            if any(sensitive in key_lower for sensitive in SENSITIVE_CONFIG_KEYS):
-                redacted[key] = _mask_secret(value)
+            if _uses_secret_fingerprint(path, key_lower) or any(sensitive in key_lower for sensitive in SENSITIVE_CONFIG_KEYS):
+                redacted[key] = _mask_secret(value) if _uses_secret_fingerprint(path, key_lower) else ("••••" if value else "")
             else:
-                redacted[key] = redact_sensitive_config(value)
+                redacted[key] = redact_sensitive_config(value, (*path, str(key)))
         return redacted
     if isinstance(data, list):
-        return [redact_sensitive_config(item) for item in data]
+        return [redact_sensitive_config(item, path) for item in data]
     return data
 
 
@@ -277,6 +297,9 @@ def apply_settings_payload(
     _preserve_masked_secrets(current, payload)
     _preserve_or_delete_provider_credentials(current, payload)
     merged = merge_config_replace_lists(current, payload)
+    from config import normalize_config
+
+    merged = normalize_config(merged)
     _validate_provider_model_config(merged)
     web_cfg = merged.setdefault("web", {})
     current_web_cfg = current.get("web", {}) if isinstance(current.get("web"), dict) else {}
@@ -316,13 +339,20 @@ def _preserve_or_delete_provider_credentials(current: dict, payload: dict) -> No
         if not isinstance(submitted, dict):
             continue
         old = existing.get(name) if isinstance(existing.get(name), dict) else {}
-        action = submitted.pop("credential_action", None)
-        value = submitted.get("api_key")
-        if action == "delete":
-            submitted["api_key"] = ""
-        elif value is None or value == "" or (isinstance(value, str) and "…" in value):
-            if "api_key" in old:
-                submitted["api_key"] = old["api_key"]
+        actions = submitted.pop("credential_actions", None)
+        legacy_action = submitted.pop("credential_action", None)
+        if not isinstance(actions, dict):
+            actions = {}
+        if legacy_action:
+            actions.setdefault("api_key", legacy_action)
+        for key in ("login", "api_key", "refresh_token", "sync_token"):
+            action = actions.get(key)
+            value = submitted.get(key)
+            if action == "delete":
+                submitted[key] = ""
+            elif value is None or value == "" or _is_masked_secret(value):
+                if key in old:
+                    submitted[key] = old[key]
 
 
 def _preserve_masked_secrets(current: Any, submitted: Any) -> None:
@@ -332,7 +362,7 @@ def _preserve_masked_secrets(current: Any, submitted: Any) -> None:
     for key, value in submitted.items():
         old = current.get(key)
         if any(token in str(key).lower() for token in SENSITIVE_CONFIG_KEYS):
-            if old is not None and (value == "" or (isinstance(value, str) and "…" in value)):
+            if old is not None and (value == "" or _is_masked_secret(value)):
                 submitted[key] = old
         elif isinstance(old, dict) and isinstance(value, dict):
             _preserve_masked_secrets(old, value)
@@ -343,20 +373,30 @@ def _validate_provider_model_config(config: dict) -> None:
     models = config.get("models", {})
     if not isinstance(providers, dict) or not isinstance(models, dict):
         raise ValueError("Providers 和 Models 必须是对象")
-    allowed_types = {"openai", "deepseek", "anthropic", "google", "openai_compatible"}
+    allowed_types = {"openai", "deepseek", "anthropic", "google", "openai_compatible", "pixiv", "danbooru"}
+    singleton_labels = {"pixiv": "Pixiv", "danbooru": "Danbooru"}
+    singleton_counts = {key: 0 for key in singleton_labels}
     for name, provider in providers.items():
         if not isinstance(name, str) or not name.strip() or not isinstance(provider, dict):
             raise ValueError("每个 Provider 都需要名称和配置")
         provider_type = provider.get("type")
         if provider_type not in allowed_types:
             raise ValueError(f"Provider {name} 的类型无效")
+        if provider_type in singleton_counts:
+            singleton_counts[provider_type] += 1
         if provider_type == "openai_compatible" and not str(provider.get("base_url") or "").strip():
             raise ValueError(f"自定义 Provider {name} 需要 Base URL")
+    for provider_type, count in singleton_counts.items():
+        if count > 1:
+            raise ValueError(f"只能配置一个 {singleton_labels[provider_type]} Provider")
+    validate_singleton_providers(providers)
     for name, model in models.items():
         if not isinstance(name, str) or not name.strip() or not isinstance(model, dict):
             raise ValueError("每个 Model 都需要名称和配置")
         if model.get("provider") not in providers:
             raise ValueError(f"Model {name} 必须引用一个已配置 Provider")
+        if providers[model["provider"]].get("type") in {"pixiv", "danbooru"}:
+            raise ValueError(f"Model {name} 必须引用 LLM Provider")
         if not str(model.get("model") or "").strip():
             raise ValueError(f"Model {name} 需要模型名称")
     classifier = config.get("tag_classifier", {})

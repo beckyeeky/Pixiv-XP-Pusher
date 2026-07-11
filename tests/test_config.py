@@ -25,7 +25,10 @@ class ConfigNormalizationTests(unittest.TestCase):
     def test_normalize_tag_classifier_defaults_and_ints(self):
         cfg = config.normalize_config({"tag_classifier": {"ttl_days": "14", "batch_size": "bad"}})
         self.assertFalse(cfg["tag_classifier"]["enabled"])
-        self.assertEqual(cfg["providers"], {})
+        self.assertEqual(
+            {provider["type"] for provider in cfg["providers"].values()},
+            {"pixiv", "danbooru"},
+        )
         self.assertEqual(cfg["models"], {})
         self.assertEqual(cfg["tag_classifier"]["ttl_days"], 14)
         self.assertEqual(cfg["tag_classifier"]["batch_size"], 50)
@@ -96,6 +99,15 @@ class ConfigNormalizationTests(unittest.TestCase):
         self.assertEqual(cfg["models"]["tag_classifier_default"]["provider"], "tag_classifier_provider")
         self.assertEqual(cfg["models"]["tag_classifier_default"]["model"], "existing-model")
         self.assertEqual(cfg["providers"]["tag_classifier_provider"]["api_key"], "existing-key")
+
+    def test_normalize_migrates_single_model_that_inherits_profiler_key(self):
+        cfg = config.normalize_config({
+            "profiler": {"ai": {"api_key": "shared-key"}},
+            "tag_classifier": {"base_url": "https://judge.example/v1", "model": "existing-model"},
+        })
+
+        self.assertEqual(cfg["tag_classifier"]["judges"], ["tag_classifier_default"])
+        self.assertEqual(cfg["providers"]["tag_classifier_provider"]["api_key"], "shared-key")
 
     def test_normalize_ip_diversity_defaults_and_invalid_values(self):
         cfg = config.normalize_config({"filter": {"ip_diversity": {"enabled": 1, "decay_factor": "bad", "floor": 2}}})

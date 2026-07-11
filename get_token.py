@@ -50,16 +50,20 @@ def save_to_config(access_token, refresh_token, user_id, expires_in, target_key=
         else:
             config = {}
         
-        if "pixiv" not in config:
-            config["pixiv"] = {}
-            
-        if "user_id" not in config["pixiv"] or not config["pixiv"]["user_id"]:
-             config["pixiv"]["user_id"] = int(user_id) if user_id else 0
-             print(f"[INFO] Auto-set user_id to {user_id}")
+        providers = config.setdefault("providers", {})
+        pixiv_entries = [provider for provider in providers.values()
+                         if isinstance(provider, dict) and provider.get("type") == "pixiv"]
+        if len(pixiv_entries) > 1:
+            raise ValueError("config.yaml 配置了多个 Pixiv Provider")
+        pixiv_provider = pixiv_entries[0] if pixiv_entries else providers.setdefault("pixiv", {"type": "pixiv"})
+
+        if not pixiv_provider.get("user_id"):
+            pixiv_provider["user_id"] = int(user_id) if user_id else 0
+            print(f"[INFO] Auto-set user_id to {user_id}")
         else:
-             print(f"[INFO] Preserving existing user_id in config: {config['pixiv']['user_id']} (Login User: {user_id})")
-        
-        config["pixiv"][target_key] = refresh_token
+            print(f"[INFO] Preserving existing user_id in config: {pixiv_provider['user_id']} (Login User: {user_id})")
+
+        pixiv_provider[target_key] = refresh_token
         # Optional: save access token if needed (only for main token usually, but simpler to skip)
         # config["pixiv"]["access_token"] = access_token 
         

@@ -46,6 +46,7 @@ TEMPLATES_DIR.mkdir(exist_ok=True)
 
 # 初始化模板引擎
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.policies["json.dumps_kwargs"] = {"ensure_ascii": False}
 
 # 会话存储（简易实现）
 sessions: dict[str, datetime] = {}
@@ -499,8 +500,8 @@ async def get_sync_status(_=Depends(require_auth)):
     return {"exists": False}
 
 class SyncRequest(BaseModel):
-    danbooru_login: str
-    danbooru_api_key: str
+    danbooru_login: str = ""
+    danbooru_api_key: str = ""
 
 @app.post("/api/sync-ip")
 async def sync_ip_list(req: SyncRequest, _=Depends(require_auth)):
@@ -931,7 +932,7 @@ async def import_export_page(request: Request):
 async def export_config(_=Depends(require_auth)):
     """导出配置为带注释的 YAML"""
     try:
-        config = load_config()
+        config = _redact_sensitive_config(load_config())
         
         # 添加注释的 YAML 输出
         yaml_content = generate_commented_yaml(config)

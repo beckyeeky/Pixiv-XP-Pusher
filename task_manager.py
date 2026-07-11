@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from config import load_config, CONFIG_PATH
+from config import CONFIG_PATH, get_singleton_provider, load_config
 from database import init_db, cache_illust, get_cached_illust
 from pixiv_client import PixivClient
 from profiler import XPProfiler
@@ -523,7 +523,7 @@ async def setup_services(config: dict):
     
     # 公共网络配置
     network_cfg = config.get("network", {})
-    pixiv_cfg = config.get("pixiv", {})
+    pixiv_cfg = get_singleton_provider(config, "pixiv") or config.get("pixiv", {})
     proxy_url = config.get("notifier", {}).get("telegram", {}).get("proxy_url")
     
     client_kwargs = {

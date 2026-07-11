@@ -10,6 +10,19 @@ from telegram_rich import normalize_rich_message_config
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path("config.yaml")
+SINGLETON_PROVIDER_TYPES = frozenset({"pixiv", "danbooru"})
+
+
+def validate_singleton_providers(providers: dict) -> None:
+    """Reject malformed typed Provider configuration before it reaches runtime."""
+    counts = {provider_type: 0 for provider_type in SINGLETON_PROVIDER_TYPES}
+    for provider in providers.values() if isinstance(providers, dict) else ():
+        if isinstance(provider, dict) and provider.get("type") in counts:
+            counts[provider["type"]] += 1
+    labels = {"pixiv": "Pixiv", "danbooru": "Danbooru"}
+    for provider_type, count in counts.items():
+        if count != 1:
+            raise ValueError(f"必须配置且只能配置一个 {labels[provider_type]} Provider")
 
 
 def _coerce_int(value: Any, *, default: int, field_name: str) -> int:
@@ -140,28 +153,76 @@ def normalize_config(config: dict) -> dict:
 
     # Current single-model installs are migrated on load.  Inline multi-Judge
     # configs were never shipped and deliberately have no compatibility path.
-    if not models and not tag_classifier_cfg.get("judges") and str(tag_classifier_cfg.get("api_key", "")).strip():
+    legacy_classifier_key = str(tag_classifier_cfg.get("api_key") or "").strip()
+    if not legacy_classifier_key:
+        legacy_classifier_key = str(
+            normalized.get("profiler", {}).get("ai", {}).get("api_key") or ""
+        ).strip()
+    if not models and not tag_classifier_cfg.get("judges") and legacy_classifier_key:
         provider_name = "tag_classifier_provider"
         model_name = "tag_classifier_default"
         providers[provider_name] = {
             "type": str(tag_classifier_cfg.get("provider") or "openai_compatible"),
-            "api_key": str(tag_classifier_cfg.get("api_key") or ""),
+            "api_key": legacy_classifier_key,
             "base_url": str(tag_classifier_cfg.get("base_url") or "https://api.deepseek.com/v1"),
         }
         models[model_name] = {"provider": provider_name, "model": str(tag_classifier_cfg.get("model") or "deepseek-v4-flash")}
         tag_classifier_cfg["judges"] = [model_name]
         logger.info("已将单模型 tag_classifier 配置迁移为 Provider 和 Model")
 
+    legacy_pixiv = normalized.get("pixiv")
+    legacy_pixiv = legacy_pixiv if isinstance(legacy_pixiv, dict) else {}
+    if not any(
+        isinstance(provider, dict) and provider.get("type") == "pixiv"
+        for provider in providers.values()
+    ):
+        providers.setdefault("pixiv", {
+            "type": "pixiv",
+            "refresh_token": legacy_pixiv.get("refresh_token", ""),
+            "sync_token": legacy_pixiv.get("sync_token", ""),
+            "user_id": legacy_pixiv.get("user_id", 0),
+        })
+
+    legacy_profiler = normalized.get("profiler")
+    legacy_profiler = legacy_profiler if isinstance(legacy_profiler, dict) else {}
+    legacy_danbooru = tag_classifier_cfg.get("danbooru")
+    legacy_danbooru = legacy_danbooru if isinstance(legacy_danbooru, dict) else {}
+    if not any(
+        isinstance(provider, dict) and provider.get("type") == "danbooru"
+        for provider in providers.values()
+    ):
+        providers.setdefault("danbooru", {
+            "type": "danbooru",
+            "login": legacy_danbooru.get("login") or legacy_profiler.get("danbooru_login", ""),
+            "api_key": legacy_danbooru.get("api_key") or legacy_profiler.get("danbooru_api_key", ""),
+            "base_url": legacy_danbooru.get("base_url") or "https://danbooru.donmai.us",
+        })
+
     normalized_providers = {}
     for name, provider in providers.items():
         if not isinstance(name, str) or not name.strip() or not isinstance(provider, dict):
             logger.warning("providers 中存在无效 Provider，已跳过")
             continue
-        normalized_providers[name.strip()] = {
-            "type": str(provider.get("type") or "openai_compatible"),
-            "api_key": str(provider.get("api_key") or ""),
-            "base_url": str(provider.get("base_url") or ""),
-        }
+        provider_type = str(provider.get("type") or "openai_compatible")
+        normalized_provider = {"type": provider_type}
+        if provider_type == "pixiv":
+            normalized_provider.update({
+                "refresh_token": str(provider.get("refresh_token") or ""),
+                "sync_token": str(provider.get("sync_token") or ""),
+                "user_id": provider.get("user_id", 0),
+            })
+        elif provider_type == "danbooru":
+            normalized_provider.update({
+                "login": str(provider.get("login") or ""),
+                "api_key": str(provider.get("api_key") or ""),
+                "base_url": str(provider.get("base_url") or "https://danbooru.donmai.us"),
+            })
+        else:
+            normalized_provider.update({
+                "api_key": str(provider.get("api_key") or ""),
+                "base_url": str(provider.get("base_url") or ""),
+            })
+        normalized_providers[name.strip()] = normalized_provider
     normalized_models = {}
     for name, model in models.items():
         if not isinstance(name, str) or not name.strip() or not isinstance(model, dict):
@@ -169,12 +230,17 @@ def normalize_config(config: dict) -> dict:
             continue
         provider_name = str(model.get("provider") or "").strip()
         model_name = str(model.get("model") or "").strip()
-        if provider_name not in normalized_providers or not model_name:
+        if (
+            provider_name not in normalized_providers
+            or normalized_providers[provider_name].get("type") in {"pixiv", "danbooru"}
+            or not model_name
+        ):
             logger.warning("Model %s 引用了不存在 Provider 或缺少模型名称，已跳过", name)
             continue
         normalized_models[name.strip()] = {"provider": provider_name, "model": model_name}
     normalized["providers"] = normalized_providers
     normalized["models"] = normalized_models
+    validate_singleton_providers(normalized_providers)
     for legacy_key in ("api_key", "base_url", "model", "provider"):
         tag_classifier_cfg.pop(legacy_key, None)
     tag_classifier_cfg["ttl_days"] = max(1, _coerce_int(
@@ -285,7 +351,11 @@ def normalize_config(config: dict) -> dict:
             logger.debug("ai.scorer.api_key 已从 profiler.ai 继承")
 
         for provider in normalized_providers.values():
-            if not provider["api_key"].strip():
+            if (
+                provider.get("type") not in {"pixiv", "danbooru"}
+                and "api_key" in provider
+                and not provider["api_key"].strip()
+            ):
                 provider["api_key"] = shared_key
 
     profiler_cfg = normalized.get("profiler", {})
@@ -295,7 +365,34 @@ def normalize_config(config: dict) -> dict:
         if not str(danbooru_cfg.get("api_key", "")).strip():
             danbooru_cfg["api_key"] = profiler_cfg.get("danbooru_api_key", "")
 
+    pixiv_provider = get_singleton_provider(normalized, "pixiv")
+    if pixiv_provider:
+        normalized["pixiv"] = {
+            "refresh_token": pixiv_provider.get("refresh_token", ""),
+            "sync_token": pixiv_provider.get("sync_token", ""),
+            "user_id": pixiv_provider.get("user_id", 0),
+        }
+    danbooru_provider = get_singleton_provider(normalized, "danbooru")
+    if danbooru_provider:
+        for key in ("login", "api_key", "base_url"):
+            danbooru_cfg[key] = danbooru_provider.get(key, "")
+        if isinstance(profiler_cfg, dict):
+            profiler_cfg["danbooru_login"] = danbooru_provider.get("login", "")
+            profiler_cfg["danbooru_api_key"] = danbooru_provider.get("api_key", "")
+
     return normalized
+
+
+def get_singleton_provider(config: dict, provider_type: str) -> dict:
+    """Return the single provider of a capability type, if configured."""
+    providers = config.get("providers") if isinstance(config, dict) else None
+    if not isinstance(providers, dict):
+        return {}
+    matches = [
+        provider for provider in providers.values()
+        if isinstance(provider, dict) and provider.get("type") == provider_type
+    ]
+    return copy.deepcopy(matches[0]) if len(matches) == 1 else {}
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:

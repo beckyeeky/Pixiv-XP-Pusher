@@ -1,19 +1,6 @@
 # Pixiv XP Pusher 配置文件示例
 # 请复制此文件为 config.yaml 并填入您的真实信息
 
-pixiv:
-  # Pixiv 刷新令牌 (通过 get_token.py 获取，或手动填入)
-  # 此 Token 用于搜索、排行榜等操作
-  refresh_token: "YOUR_REFRESH_TOKEN_HERE"
-
-  # 可选：同步专用 Token (仅用于获取收藏和关注动态)
-  # 使用独立 Token 可降低主号因搜索等操作被封禁的风险
-  # 留空或删除此行则使用主 Token
-  sync_token: ""
-
-  # 您的 Pixiv 用户ID (自动获取，或手动指定)
-  user_id: 0
-
 # 启用的功能策略
 strategies:
   - xp_search # 基于 XP 画像的每日搜索推荐
@@ -53,6 +40,11 @@ profiler:
   # 是否包含私密收藏用于分析
   include_private: true
 
+  # 可选：本地 IP 标签表。未设置时不会对 IP 标签做额外处理
+  ip_tags_file: ""
+  # IP 标签在画像中的权重折扣 (0-1，1 表示不降权)
+  ip_weight_discount: 1.0
+
   # 停用词 (手动指定)
   stop_words:
     - original
@@ -85,7 +77,19 @@ ai:
     score_weight: 0.3 # AI 分数权重 (用于与基础分数混合)
 
 providers:
-  # Provider 持有凭据。custom OpenAI-compatible 可用于私有网关或目录外服务。
+  # Pixiv 与 Danbooru 是各自唯一的 typed Provider；凭据只能在本机配置中保存。
+  pixiv:
+    type: pixiv
+    refresh_token: "YOUR_REFRESH_TOKEN_HERE"
+    sync_token: ""
+    user_id: 0
+  danbooru:
+    type: danbooru
+    login: ""
+    api_key: ""
+    base_url: "https://danbooru.donmai.us"
+
+  # LLM Provider 持有凭据。custom OpenAI-compatible 可用于私有网关或目录外服务。
   deepseek:
     type: openai_compatible
     api_key: ""
@@ -110,13 +114,10 @@ tag_classifier:
     max_tags_per_run: 40 # 每次仅刷新高影响画像标签，避免全量重跑
     min_profile_weight: 0.0
     prefer_unresolved_first: true
-  # 每个不同 provider+base_url+model 身份各投一票。
+  # Judge 从已配置的 Model 中选择；每个不同 Provider+Model 身份各投一票。
   judges: [deepseek_flash]
   danbooru:
     enabled: false # 只查询画像中出现的标签；无需镜像完整标签库
-    login: "" # 可选，使用 Danbooru 账号可提高请求额度
-    api_key: ""
-    base_url: "https://danbooru.donmai.us"
     timeout_seconds: 15 # 不可用时会继续使用缓存证据与 Judge 投票
 
 scheduler:
@@ -201,6 +202,7 @@ fetcher:
   bookmark_threshold:
     search: 1000 # 搜索结果的最低收藏数要求
     subscription: 0
+    related: 0 # 关联推荐的最低收藏数要求
 
   subscribed_artists: [] # 额外关注的画师 ID 列表
 
@@ -267,13 +269,16 @@ notifier:
       enabled: false
       fallback_to_photo: true # Rich Message 发送失败时回退到普通图片消息
       image_mode: photo # photo=可点击放大; rich_card=Rich 卡片; hybrid=Photo + Rich
+
+    # 批量推送格式: single / telegraph
+    batch_mode: single
+    batch_show_title: true
+    batch_show_artist: true
+    batch_show_tags: true
     # Topic 智能分流 (可选，用于 Supergroup 话题自动分类)
-    # topic_rules:
-    #   default: null           # 默认 topic_id (null = 不使用 topic)
-    #   r18: 12345              # R18 作品自动发送到此 topic
-    #   wallpaper: 12346        # 风景作品发送到此 topic
-    # topic_tag_mapping:        # 标签到分类的映射
-    #   wallpaper: ["風景", "背景", "landscape", "scenery"]
+    topic_rules: {}
+    # 例如：{"wallpaper": ["風景", "背景", "landscape", "scenery"]}
+    topic_tag_mapping: {}
 
   # OneBot / QQ
   onebot:

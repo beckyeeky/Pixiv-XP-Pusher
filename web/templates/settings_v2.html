@@ -372,29 +372,8 @@ textarea.form-control {
         
         <!-- Pixiv 认证 -->
         <div id="section-pixiv" class="settings-section active">
-            <h3 class="section-title">🔑 Pixiv 认证</h3>
-            <div class="form-grid">
-                <div>
-                    <div class="form-group">
-                        <label class="form-label">Refresh Token *</label>
-                        <input type="password" class="form-control" id="pixiv_refresh_token" 
-                               value="{{ config.pixiv.refresh_token | default('') }}">
-                        <div class="help-text">用于搜索、排行榜等操作。通过 get_token.py 获取</div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Sync Token (可选)</label>
-                        <input type="password" class="form-control" id="pixiv_sync_token"
-                               value="{{ config.pixiv.sync_token | default('') }}">
-                        <div class="help-text">仅用于获取收藏和关注动态，降低主号风险</div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">User ID</label>
-                        <input type="number" class="form-control" id="pixiv_user_id"
-                               value="{{ config.pixiv.user_id | default('') }}">
-                        <div class="help-text">你的 Pixiv 用户ID</div>
-                    </div>
-                </div>
-            </div>
+            <h3 class="section-title">🔑 Pixiv Provider</h3>
+            <div id="pixivProviderSettings" class="form-grid"></div>
         </div>
 
         <!-- 推送策略 -->
@@ -623,24 +602,8 @@ textarea.form-control {
                         </div>
                         <div class="help-text">0.1=降权90%, 1.0=不降权</div>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">
-                            Danbooru 用户名
-                            <span id="ipStatus" class="status-badge" style="margin-left: 0.6rem;">检查中...</span>
-                        </label>
-                        <input type="text" class="form-control" id="profiler_danbooru_login"
-                               value="{{ config.profiler.danbooru_login | default('') }}"
-                               placeholder="选填">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Danbooru API Key</label>
-                        <input type="password" class="form-control" id="profiler_danbooru_api_key"
-                               value="{{ config.profiler.danbooru_api_key | default('') }}"
-                               placeholder="选填">
-                        <div class="help-text">
-                            <a href="https://danbooru.donmai.us/profile/api_key" target="_blank">获取 API Key →</a>
-                        </div>
-                    </div>
+                    <div id="danbooruProviderSettings"></div>
+                    <div class="form-group"><span id="ipStatus" class="status-badge">检查中...</span></div>
                     <div class="form-group">
                         <button type="button" class="btn-secondary" onclick="syncIPTags(this)">🔄 同步 IP 标签列表</button>
                         <div class="sync-log" id="syncLog"></div>
@@ -1193,31 +1156,55 @@ function ensureObject(parent, key) {
 const KNOWN_LLM_MODELS = ['gpt-4o-mini', 'gpt-4.1-mini', 'deepseek-v4-flash', 'claude-3-5-haiku-latest', 'gemini-2.0-flash'];
 let editingProviderCredential = null;
 
+function singletonProvider(type, defaults) {
+    const providers = ensureObject(initialConfig, 'providers');
+    const matches = Object.entries(providers).filter(([, provider]) => provider && provider.type === type);
+    if (matches.length) return matches[0];
+    const name = type;
+    providers[name] = {type, ...defaults};
+    return [name, providers[name]];
+}
+
+function renderSingletonProviderSettings() {
+    const [pixivName, pixiv] = singletonProvider('pixiv', {refresh_token: '', sync_token: '', user_id: 0});
+    document.getElementById('pixivProviderSettings').innerHTML = `<div>
+        <div class="form-group"><label class="form-label">Refresh Token *</label><button type="button" class="btn-secondary" onclick="openCredentialDialog('${escapeJs(pixivName)}', 'refresh_token', 'Refresh Token')">更新凭据 ${escapeHtml(pixiv.refresh_token || '未设置')}</button><div class="help-text">用于搜索、排行榜等操作。通过 get_token.py 获取</div></div>
+        <div class="form-group"><label class="form-label">Sync Token（可选）</label><button type="button" class="btn-secondary" onclick="openCredentialDialog('${escapeJs(pixivName)}', 'sync_token', 'Sync Token')">更新凭据 ${escapeHtml(pixiv.sync_token || '未设置')}</button><div class="help-text">仅用于获取收藏和关注动态，降低主号风险</div></div>
+        <div class="form-group"><label class="form-label">User ID</label><input type="number" class="form-control" id="pixiv_provider_user_id" value="${escapeHtml(pixiv.user_id || 0)}"><div class="help-text">你的 Pixiv 用户 ID</div></div>
+    </div>`;
+
+    const [danbooruName, danbooru] = singletonProvider('danbooru', {login: '', api_key: '', base_url: 'https://danbooru.donmai.us'});
+    document.getElementById('danbooruProviderSettings').innerHTML = `<h4>Danbooru Provider</h4><div class="form-group"><label class="form-label">Danbooru Login</label><button type="button" class="btn-secondary" onclick="openCredentialDialog('${escapeJs(danbooruName)}', 'login', 'Danbooru Login')">更新凭据 ${escapeHtml(danbooru.login || '未设置')}</button></div>
+        <div class="form-group"><label class="form-label">Base URL</label><input type="url" class="form-control" id="danbooru_provider_base_url" value="${escapeHtml(danbooru.base_url || 'https://danbooru.donmai.us')}"></div>
+        <div class="form-group"><label class="form-label">API Key</label><button type="button" class="btn-secondary" onclick="openCredentialDialog('${escapeJs(danbooruName)}', 'api_key', 'Danbooru API Key')">更新凭据 ${escapeHtml(danbooru.api_key || '未设置')}</button><div class="help-text"><a href="https://danbooru.donmai.us/profile/api_key" target="_blank">获取 API Key →</a></div></div>`;
+}
+
 function renderLLMSettings() {
     const providers = ensureObject(initialConfig, 'providers');
+    const llmProviders = Object.fromEntries(Object.entries(providers).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)));
     const models = ensureObject(initialConfig, 'models');
     const judges = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'judges');
     if (!Array.isArray(judges)) initialConfig.tag_classifier.judges = [];
-    document.getElementById('provider_list').innerHTML = Object.entries(providers).map(([name, provider]) => `
+    document.getElementById('provider_list').innerHTML = Object.entries(llmProviders).map(([name, provider]) => `
         <div class="form-row"><div class="form-group"><label>名称</label><input class="form-control" value="${escapeHtml(name)}" onchange="renameProvider('${escapeJs(name)}', this.value)"></div>
         <div class="form-group"><label>类型</label><select class="form-control" onchange="initialConfig.providers['${escapeJs(name)}'].type=this.value"><option value="openai" ${provider.type === 'openai' ? 'selected' : ''}>OpenAI</option><option value="deepseek" ${provider.type === 'deepseek' ? 'selected' : ''}>DeepSeek</option><option value="anthropic" ${provider.type === 'anthropic' ? 'selected' : ''}>Anthropic</option><option value="google" ${provider.type === 'google' ? 'selected' : ''}>Google</option><option value="openai_compatible" ${provider.type === 'openai_compatible' ? 'selected' : ''}>自定义 OpenAI-compatible</option></select></div>
-        <div class="form-group"><label>Base URL（自定义必填）</label><input class="form-control" value="${escapeHtml(provider.base_url || '')}" onchange="initialConfig.providers['${escapeJs(name)}'].base_url=this.value"></div>
+        ${provider.type === 'openai_compatible' ? `<div class="form-group"><label>Base URL（自定义必填）</label><input class="form-control" value="${escapeHtml(provider.base_url || '')}" onchange="initialConfig.providers['${escapeJs(name)}'].base_url=this.value"></div>` : ''}
         <button type="button" class="btn-secondary" onclick="openCredentialDialog('${escapeJs(name)}')">凭据 ${escapeHtml(provider.api_key || '未设置')}</button></div>`).join('') || '<p>尚未配置 Provider。</p>';
     document.getElementById('model_list').innerHTML = Object.entries(models).map(([name, model]) => `
         <div class="form-row"><div class="form-group"><label>名称</label><input class="form-control" value="${escapeHtml(name)}" onchange="renameModel('${escapeJs(name)}', this.value)"></div>
-        <div class="form-group"><label>Provider</label><select class="form-control" onchange="initialConfig.models['${escapeJs(name)}'].provider=this.value">${Object.keys(providers).map(provider => `<option value="${escapeHtml(provider)}" ${provider === model.provider ? 'selected' : ''}>${escapeHtml(provider)}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Provider</label><select class="form-control" onchange="initialConfig.models['${escapeJs(name)}'].provider=this.value">${Object.keys(llmProviders).map(provider => `<option value="${escapeHtml(provider)}" ${provider === model.provider ? 'selected' : ''}>${escapeHtml(provider)}</option>`).join('')}</select></div>
         <div class="form-group"><label>模型目录 / 自定义模型</label><input list="known_llm_models" class="form-control" value="${escapeHtml(model.model || '')}" onchange="initialConfig.models['${escapeJs(name)}'].model=this.value"><label class="toggle-switch"><input type="checkbox" ${initialConfig.tag_classifier.judges.includes(name) ? 'checked' : ''} onchange="toggleJudge('${escapeJs(name)}', this.checked)"><span>用于 Judge</span></label></div></div>`).join('') || '<p>请先添加 Provider，再添加 Model。</p>';
 }
 function escapeHtml(value) { const node = document.createElement('span'); node.textContent = String(value); return node.innerHTML; }
 function escapeJs(value) { return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
 function addProvider() { const name = `provider_${Object.keys(ensureObject(initialConfig, 'providers')).length + 1}`; initialConfig.providers[name] = {type: 'openai_compatible', base_url: '', api_key: ''}; renderLLMSettings(); }
-function addModel() { const providers = Object.keys(ensureObject(initialConfig, 'providers')); if (!providers.length) return alert('请先添加 Provider'); const name = `model_${Object.keys(ensureObject(initialConfig, 'models')).length + 1}`; initialConfig.models[name] = {provider: providers[0], model: KNOWN_LLM_MODELS[0]}; renderLLMSettings(); }
+function addModel() { const providers = Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)).map(([name]) => name); if (!providers.length) return alert('请先添加 LLM Provider'); const name = `model_${Object.keys(ensureObject(initialConfig, 'models')).length + 1}`; initialConfig.models[name] = {provider: providers[0], model: KNOWN_LLM_MODELS[0]}; renderLLMSettings(); }
 function renameProvider(oldName, newName) { newName = newName.trim(); if (!newName || newName === oldName || initialConfig.providers[newName]) return renderLLMSettings(); initialConfig.providers[newName] = initialConfig.providers[oldName]; delete initialConfig.providers[oldName]; Object.values(initialConfig.models || {}).forEach(model => { if (model.provider === oldName) model.provider = newName; }); renderLLMSettings(); }
 function renameModel(oldName, newName) { newName = newName.trim(); if (!newName || newName === oldName || initialConfig.models[newName]) return renderLLMSettings(); initialConfig.models[newName] = initialConfig.models[oldName]; delete initialConfig.models[oldName]; initialConfig.tag_classifier.judges = initialConfig.tag_classifier.judges.map(name => name === oldName ? newName : name); renderLLMSettings(); }
 function toggleJudge(name, enabled) { const judges = initialConfig.tag_classifier.judges; initialConfig.tag_classifier.judges = enabled ? [...new Set([...judges, name])] : judges.filter(item => item !== name); }
-function openCredentialDialog(name) { editingProviderCredential = name; document.getElementById('credentialDialogTitle').textContent = `编辑 ${name} 的凭据`; document.getElementById('provider_credential_value').value = ''; document.getElementById('provider_credential_delete').checked = false; document.getElementById('providerCredentialDialog').showModal(); }
+function openCredentialDialog(name, field = 'api_key', label = '凭据') { editingProviderCredential = {name, field}; document.getElementById('credentialDialogTitle').textContent = `编辑 ${name} 的 ${label}`; document.getElementById('provider_credential_value').value = ''; document.getElementById('provider_credential_delete').checked = false; document.getElementById('providerCredentialDialog').showModal(); }
 function closeCredentialDialog() { document.getElementById('providerCredentialDialog').close(); }
-function saveProviderCredential() { const provider = initialConfig.providers[editingProviderCredential]; const deleting = document.getElementById('provider_credential_delete').checked; if (deleting && !confirm('确定删除此 Provider 的凭据吗？')) return; provider.credential_action = deleting ? 'delete' : 'replace'; provider.api_key = document.getElementById('provider_credential_value').value; closeCredentialDialog(); renderLLMSettings(); }
+function saveProviderCredential() { const {name, field} = editingProviderCredential; const provider = initialConfig.providers[name]; const deleting = document.getElementById('provider_credential_delete').checked; if (deleting && !confirm('确定删除此 Provider 的凭据吗？')) return; provider.credential_actions = provider.credential_actions || {}; provider.credential_actions[field] = deleting ? 'delete' : 'replace'; provider[field] = document.getElementById('provider_credential_value').value; closeCredentialDialog(); renderSingletonProviderSettings(); renderLLMSettings(); }
 
 function asInt(value, fallback) {
     const n = parseInt(value, 10);
@@ -1276,7 +1263,7 @@ function setSaveStatus(message, kind = 'neutral') {
 function collectConfig() {
     const cfg = deepClone(initialConfig);
 
-    const pixiv = ensureObject(cfg, 'pixiv');
+    const providers = ensureObject(cfg, 'providers');
     const web = ensureObject(cfg, 'web');
     const scheduler = ensureObject(cfg, 'scheduler');
     const network = ensureObject(cfg, 'network');
@@ -1305,9 +1292,12 @@ function collectConfig() {
     if (document.getElementById('strategy_subscription').checked) strategies.push('subscription');
     cfg.strategies = strategies;
 
-    pixiv.refresh_token = document.getElementById('pixiv_refresh_token').value;
-    pixiv.sync_token = document.getElementById('pixiv_sync_token').value;
-    pixiv.user_id = asInt(document.getElementById('pixiv_user_id').value, pixiv.user_id || 0);
+    const [pixivName, pixiv] = singletonProvider('pixiv', {refresh_token: '', sync_token: '', user_id: 0});
+    const [danbooruName, danbooru] = singletonProvider('danbooru', {login: '', api_key: '', base_url: 'https://danbooru.donmai.us'});
+    providers[pixivName] = pixiv;
+    providers[danbooruName] = danbooru;
+    pixiv.user_id = asInt(document.getElementById('pixiv_provider_user_id').value, pixiv.user_id || 0);
+    danbooru.base_url = document.getElementById('danbooru_provider_base_url').value.trim();
 
     web.enabled = document.getElementById('web_enabled').checked;
     web.port = asInt(document.getElementById('web_port').value, web.port || 8000);
@@ -1364,8 +1354,6 @@ function collectConfig() {
     profiler.scan_limit = asInt(document.getElementById('profiler_scan_limit').value, profiler.scan_limit || 1000);
     profiler.discovery_rate = asFloat(document.getElementById('profiler_discovery_rate').value, profiler.discovery_rate || 0.1);
     profiler.ip_weight_discount = asFloat(document.getElementById('profiler_ip_discount').value, profiler.ip_weight_discount || 1.0);
-    profiler.danbooru_login = document.getElementById('profiler_danbooru_login').value;
-    profiler.danbooru_api_key = document.getElementById('profiler_danbooru_api_key').value;
     profiler.time_decay_days = asInt(document.getElementById('profiler_time_decay_days').value, profiler.time_decay_days || 180);
     profiler.saturation_threshold = asFloat(document.getElementById('profiler_saturation_threshold').value, profiler.saturation_threshold || 0.5);
     profiler.top_n = asInt(document.getElementById('profiler_top_n').value, profiler.top_n || 20);
@@ -1529,10 +1517,7 @@ async function syncIPTags(button) {
         const resp = await fetch('/api/sync-ip', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                danbooru_login: document.getElementById('profiler_danbooru_login').value,
-                danbooru_api_key: document.getElementById('profiler_danbooru_api_key').value
-            })
+            body: JSON.stringify({})
         });
         const data = await resp.json();
         log.textContent += data.output || '';
@@ -1553,6 +1538,7 @@ async function syncIPTags(button) {
 }
 
 refreshIPSyncStatus();
+renderSingletonProviderSettings();
 renderLLMSettings();
 </script>
 {% endblock %}

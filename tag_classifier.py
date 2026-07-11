@@ -22,6 +22,7 @@ from tag_categories import (
 )
 from tag_evidence import resolve_tag_evidence
 from danbooru_evidence import DanbooruEvidenceLookup
+from config import get_singleton_provider
 from utils import normalize_tag
 
 try:
@@ -64,7 +65,7 @@ class TagClassifier:
             self.base_url = primary_judge["base_url"]
             self.model = primary_judge["model"]
         self.manual_ip_tags = self._load_manual_ip_tags(ip_tags)
-        self.danbooru_lookup = DanbooruEvidenceLookup(cfg.get("danbooru"))
+        self.danbooru_lookup = DanbooruEvidenceLookup(self._danbooru_config(cfg))
 
         requested_enabled = cfg.get("enabled", False)
         self.enabled = bool(requested_enabled and HAS_OPENAI and self.api_key)
@@ -89,6 +90,16 @@ class TagClassifier:
                         )
                     except Exception as exc:
                         logger.warning("Judge %s client unavailable: %s", judge["name"], exc)
+
+    def _danbooru_config(self, cfg: dict) -> dict:
+        danbooru_cfg = cfg.get("danbooru") if isinstance(cfg.get("danbooru"), dict) else {}
+        provider_cfg = get_singleton_provider({"providers": self.providers}, "danbooru")
+        if not provider_cfg:
+            return danbooru_cfg
+        merged = dict(danbooru_cfg)
+        for key in ("login", "api_key", "base_url"):
+            merged[key] = provider_cfg.get(key, "")
+        return merged
 
     async def classify_tags(self, tags: list[str]) -> dict[str, TagClassification]:
         """批量分类标签，优先使用未过期缓存。"""
