@@ -101,6 +101,14 @@ _Avoid_: Request, retry, provider account
 Information from Pixiv context, external tag systems, or prior human decisions that supports classification without itself being the accepted Tag Category.
 _Avoid_: Classification, source of truth
 
+**Evidence Freshness**:
+The age of a machine-provided Tag Evidence item since it was last verified by its own source. Human decisions do not expire.
+_Avoid_: Cache read time, classification age
+
+**Evidence Provenance**:
+The original observation time and most recent successful verification time carried by a Tag Evidence item. Reusing evidence does not alter either time.
+_Avoid_: Last accessed time, cache timestamp
+
 **Seed Tag**:
 A resolved, preference-bearing tag permitted to initiate personalized retrieval. Unresolved and Non-preference Tags are never Seed Tags.
 _Avoid_: Any profile tag, matched tag
@@ -109,3 +117,22 @@ _Avoid_: Any profile tag, matched tag
 The periodic process that gathers Tag Evidence and Judge Model votes for important profile tags, accepting classifications with consensus and leaving the rest unresolved. Daily recommendation delivery consumes its latest accepted results without waiting for it.
 _Avoid_: Daily recommendation run, profile rebuild
 
+**Maintenance Completion**:
+The settled outcome of a bounded Classification Maintenance attempt after a Daily Slate has been delivered. It is recorded independently of delivery success.
+_Avoid_: Daily Slate completion, delivery rollback
+
+**Provider**:
+A configured external service instance, such as a named LLM account, Pixiv, or Danbooru, whose Capability Type determines its credential fields.
+_Avoid_: Connection, client, API key
+
+**Capability Type**:
+The declared kind of a Provider that determines its valid credentials and available uses, such as LLM, Embedding, Pixiv, or Danbooru.
+_Avoid_: Provider name, model
+
+**Model**:
+A configured selection of one LLM or Embedding model from a Provider. Product functions reference a Model rather than carrying endpoint or credential details.
+_Avoid_: Judge Profile, connection, API model string
+
+**Credential**:
+A secret belonging to a Provider, such as an API key or Pixiv token. It is writable through authenticated settings but is never returned in full after storage.
+_Avoid_: Provider, endpoint, model

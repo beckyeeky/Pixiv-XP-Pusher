@@ -1,0 +1,3 @@
+# Refresh machine Tag Evidence per source after sixty days
+
+Machine-provided Tag Evidence expires sixty days after its own most recent successful verification, while human evidence remains permanent. Classification Maintenance refreshes only expired sources for a selected high-impact Normalized Tag and recomputes only that selected tag; cached evidence reuse preserves its original observation and verification times. A failed source verification is recorded in runtime status and logs without updating evidence freshness or overwriting prior evidence, so the next selected maintenance attempt can retry without treating failure or cache access as a successful observation.

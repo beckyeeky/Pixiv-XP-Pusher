@@ -20,3 +20,20 @@
 - [x] ISSUE-008：为 notifier 增加 capability 声明，并补文档说明能力边界。
 - [x] ISSUE-009：新增数据库维护脚本，支持 overview / backup / cleanup。
 - [x] ISSUE-010：新增推荐质量基线脚本，先基于 `strategy_stats` 导出可读统计。
+
+## Active GitHub slices
+
+> 下面跟 GitHub Issues 对齐；详细说明见 `docs/issues/`。
+
+### Done (parent tracks closed)
+
+- [x] [#31](https://github.com/beckyeeky/Pixiv-XP-Pusher/issues/31) Classification Maintenance 父 issue
+- [x] [#33](https://github.com/beckyeeky/Pixiv-XP-Pusher/issues/33) / [#40](https://github.com/beckyeeky/Pixiv-XP-Pusher/issues/40) Unresolved Tag Review Queue
+- [x] [#34](https://github.com/beckyeeky/Pixiv-XP-Pusher/issues/34) 多 Judge 投票 + Danbooru evidence
+  本地文档：[`docs/issues/0034-multi-judge-danbooru-evidence.md`](./0034-multi-judge-danbooru-evidence.md)
+- [x] [#38](https://github.com/beckyeeky/Pixiv-XP-Pusher/issues/38) Provider / Model / Credential / Tag-review 管理面（由 #39–#43 交付）
+
+### Open residuals from #38
+
+- [ ] [#44](https://github.com/beckyeeky/Pixiv-XP-Pusher/issues/44) Settings 暴露 Classification Maintenance 运维字段
+- [ ] [#45](https://github.com/beckyeeky/Pixiv-XP-Pusher/issues/45) Provider / Model 删除控件 + 引用检查
