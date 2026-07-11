@@ -78,8 +78,8 @@ class SettingsEditorTests(unittest.TestCase):
             "profiler": {"boost_tags": {"cat": 1.8}},
         })
 
-        self.assertEqual(redacted["pixiv"]["refresh_token"], "se…cret")
-        self.assertEqual(redacted["notifier"]["telegram"]["bot_token"], "to…oken")
+        self.assertEqual(redacted["pixiv"]["refresh_token"], "••••")
+        self.assertEqual(redacted["notifier"]["telegram"]["bot_token"], "••••")
         self.assertEqual(redacted["profiler"]["boost_tags"]["cat"], 1.8)
 
     def test_provider_credentials_are_masked_replaced_or_explicitly_deleted(self):
