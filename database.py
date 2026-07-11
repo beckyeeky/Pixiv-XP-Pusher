@@ -568,6 +568,70 @@ async def review_tag_classification(normalized_tag: str, classification: str) ->
         )
         await db.commit()
 
+
+async def review_tag_classifications_batch(items: list[tuple[str, str]]) -> list[str]:
+    """Apply manual decisions atomically, returning unresolved tags that became stale.
+
+    Callers must validate the CSV format before calling this function.  A stale
+    tag is one that is no longer in the unresolved review queue; in that case
+    the whole batch is left untouched so an exported spreadsheet cannot
+    silently overwrite a newer decision.
+    """
+    if not items:
+        return []
+
+    normalized_items: list[tuple[str, str]] = []
+    for tag, classification in items:
+        normalized_tag = normalize_tag(tag)
+        category = normalize_tag_category(classification)
+        if not normalized_tag:
+            raise ValueError("人工审核必须提供有效标签")
+        if category == TAG_CATEGORY_UNRESOLVED:
+            raise ValueError("人工审核必须选择一个已解析的 Tag Category")
+        normalized_items.append((normalized_tag, category))
+
+    tags = [tag for tag, _ in normalized_items]
+    placeholders = ",".join("?" * len(tags))
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        cursor = await db.execute(
+            f"""
+            SELECT normalized_tag FROM tag_classification_cache
+            WHERE normalized_tag IN ({placeholders}) AND classification = ?
+            """,
+            [*tags, TAG_CATEGORY_UNRESOLVED],
+        )
+        unresolved_tags = {row[0] for row in await cursor.fetchall()}
+        await cursor.close()
+        stale_tags = [tag for tag in tags if tag not in unresolved_tags]
+        if stale_tags:
+            await db.rollback()
+            return stale_tags
+
+        await db.executemany(
+            """
+            INSERT INTO tag_classification_evidence (normalized_tag, source, classification, confidence, updated_at)
+            VALUES (?, 'manual', ?, 1.0, CURRENT_TIMESTAMP)
+            ON CONFLICT(normalized_tag, source) DO UPDATE SET
+                classification = excluded.classification, confidence = excluded.confidence,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            normalized_items,
+        )
+        await db.executemany(
+            """
+            INSERT INTO tag_classification_cache (normalized_tag, classification, source, updated_at)
+            VALUES (?, ?, 'manual', CURRENT_TIMESTAMP)
+            ON CONFLICT(normalized_tag) DO UPDATE SET
+                classification = excluded.classification, source = excluded.source,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            normalized_items,
+        )
+        await db.commit()
+    return []
+
+
 async def update_tag_mapping_stats(mappings: dict[str, str]):
     """
     更新标签映射统计

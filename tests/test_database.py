@@ -114,6 +114,33 @@ class DatabaseInitTests(unittest.TestCase):
         self.assertIsNotNone(manual["observed_at"])
         self.assertIsNotNone(manual["verified_at"])
 
+    def test_batch_manual_reviews_are_atomic_and_reject_stale_tags(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                await database.save_tag_classifications([
+                    ("first", "unresolved", "ai"),
+                    ("second", "unresolved", "ai"),
+                ])
+                stale = await database.review_tag_classifications_batch([
+                    ("first", "feature"), ("missing", "character"),
+                ])
+                queue_after_stale = await database.get_tag_review_queue()
+                applied = await database.review_tag_classifications_batch([
+                    ("first", "feature"), ("second", "copyright"),
+                ])
+                return stale, queue_after_stale, applied, await database.get_tag_review_queue(), await database.get_tag_evidence(["first", "second"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stale, queue_after_stale, applied, remaining, evidence = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
+
+        self.assertEqual(stale, ["missing"])
+        self.assertEqual({item["tag"] for item in queue_after_stale}, {"first", "second"})
+        self.assertEqual(applied, [])
+        self.assertEqual(remaining, [])
+        self.assertEqual(evidence["first"][0]["classification"], "feature")
+        self.assertEqual(evidence["second"][0]["classification"], "copyright")
+
     def test_init_db_creates_core_tables(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "pixiv_xp.db"
