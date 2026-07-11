@@ -12,9 +12,88 @@ sys.modules.setdefault(
 )
 
 import task_manager
+from push_stats import PushStats
+
+
+class _ClosableClient:
+    def __init__(self, maintenance_finished: asyncio.Event):
+        self._maintenance_finished = maintenance_finished
+        self.close = AsyncMock(side_effect=self._assert_maintenance_finished)
+
+    async def _assert_maintenance_finished(self):
+        if not self._maintenance_finished.is_set():
+            raise AssertionError("shared client closed before maintenance finished")
 
 
 class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_once_waits_for_maintenance_after_successful_delivery(self):
+        maintenance_finished = asyncio.Event()
+
+        async def maintain():
+            await asyncio.sleep(0)
+            maintenance_finished.set()
+
+        maintenance_task = asyncio.create_task(maintain())
+        client = _ClosableClient(maintenance_finished)
+        stats = PushStats()
+        stats.record_push_success("xp_search")
+
+        with patch.object(task_manager, "setup_services", new=AsyncMock(return_value=(client, client, AsyncMock(), []))), \
+             patch.object(task_manager, "main_task", new=AsyncMock(return_value=stats)), \
+             patch.object(task_manager, "get_latest_maintenance_task", return_value=maintenance_task), \
+             patch.object(task_manager.db_module, "set_state", new=AsyncMock()) as set_state:
+            result = await task_manager.run_once({})
+
+        self.assertIs(result, stats)
+        self.assertTrue(maintenance_task.done())
+        self.assertTrue(maintenance_finished.is_set())
+        client.close.assert_awaited_once()
+        self.assertIn(
+            "runtime.last_maintenance_completion",
+            [call.args[0] for call in set_state.await_args_list],
+        )
+
+    async def test_run_once_records_timeout_without_invalidating_successful_delivery(self):
+        maintenance_task = asyncio.create_task(asyncio.sleep(60))
+        client = AsyncMock()
+        stats = PushStats()
+        stats.record_push_success("xp_search")
+
+        with patch.object(task_manager, "setup_services", new=AsyncMock(return_value=(client, client, AsyncMock(), []))), \
+             patch.object(task_manager, "main_task", new=AsyncMock(return_value=stats)), \
+             patch.object(task_manager, "get_latest_maintenance_task", return_value=maintenance_task), \
+             patch.object(task_manager, "MAINTENANCE_WAIT_SECONDS", 0.01), \
+             patch.object(task_manager.db_module, "set_state", new=AsyncMock()) as set_state:
+            result = await task_manager.run_once({})
+
+        self.assertIs(result, stats)
+        self.assertTrue(maintenance_task.cancelled())
+        completion_values = [
+            json.loads(call.args[1])
+            for call in set_state.await_args_list
+            if call.args[0] == "runtime.last_maintenance_completion"
+        ]
+        self.assertIn("timeout", [value["status"] for value in completion_values])
+
+    async def test_run_once_records_already_settled_maintenance_after_delivery(self):
+        maintenance_task = asyncio.create_task(asyncio.sleep(0))
+        await maintenance_task
+        client = AsyncMock()
+        stats = PushStats()
+        stats.record_push_success("xp_search")
+
+        with patch.object(task_manager, "setup_services", new=AsyncMock(return_value=(client, client, AsyncMock(), []))), \
+             patch.object(task_manager, "main_task", new=AsyncMock(return_value=stats)), \
+             patch.object(task_manager, "get_latest_maintenance_task", return_value=maintenance_task), \
+             patch.object(task_manager.db_module, "set_state", new=AsyncMock()) as set_state:
+            await task_manager.run_once({})
+
+        completion_values = [
+            json.loads(call.args[1])
+            for call in set_state.await_args_list
+            if call.args[0] == "runtime.last_maintenance_completion"
+        ]
+        self.assertIn("succeeded", [value["status"] for value in completion_values])
     async def test_display_tags_max_ip_count_helper_handles_malformed_direct_config(self):
         self.assertEqual(task_manager._get_display_tags_max_ip_count({"display_tags": "bad"}), 2)
         self.assertEqual(task_manager._get_display_tags_max_ip_count({"display_tags": {"max_ip_count": "4"}}), "4")

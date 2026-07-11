@@ -11,10 +11,20 @@ from pixiv_client import PixivClient
 from profiler import XPProfiler
 from notifier.telegram import TelegramNotifier
 from notifier.onebot import OneBotNotifier
-from push_run import PushRun
+from push_run import (
+    MAINTENANCE_CANCELLED,
+    MAINTENANCE_FAILED,
+    MAINTENANCE_SUCCEEDED,
+    MAINTENANCE_TIMEOUT,
+    PushRun,
+    get_latest_maintenance_task,
+    record_maintenance_completion,
+)
 from push_stats import PushStats, create_stats
 from related_recommender import RelatedRecommender
 logger = logging.getLogger(__name__)
+
+MAINTENANCE_WAIT_SECONDS = 90
 
 
 def _get_display_tags_max_ip_count(filter_cfg: dict) -> int:
@@ -652,6 +662,8 @@ async def run_once(config: dict, force: bool = False) -> PushStats:
     
     try:
         stats = await main_task(config, main_client, profiler, notifiers, sync_client, force=force)
+        if stats.push_success_count > 0:
+            await _complete_once_maintenance()
         return stats
     finally:
         await main_client.close()
@@ -664,6 +676,31 @@ async def run_once(config: dict, force: bool = False) -> PushStats:
                     await n.close() 
                 except: 
                     pass
+
+
+async def _complete_once_maintenance() -> None:
+    """Bound one-shot maintenance so shared clients remain usable until it settles."""
+    task = get_latest_maintenance_task()
+    if task is None:
+        return
+
+    done, _ = await asyncio.wait({task}, timeout=MAINTENANCE_WAIT_SECONDS)
+    if not done:
+        logger.warning("Classification Maintenance 在 %s 秒内未完成，已停止本次尝试", MAINTENANCE_WAIT_SECONDS)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await record_maintenance_completion(MAINTENANCE_TIMEOUT)
+        return
+
+    if task.cancelled():
+        await record_maintenance_completion(MAINTENANCE_CANCELLED)
+        return
+    try:
+        task.result()
+    except Exception as exc:
+        await record_maintenance_completion(MAINTENANCE_FAILED, exc)
+    else:
+        await record_maintenance_completion(MAINTENANCE_SUCCEEDED)
 
 async def daily_report_task(config: dict, notifiers: list, profiler=None):
     """每日维护任务：生成日报 + 数据清理 + AI 标签刷新
@@ -901,5 +938,3 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
                     await n.close()
                 except:
                     pass
-
-

@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import types
 import unittest
@@ -10,7 +11,7 @@ sys.modules.setdefault(
 )
 
 from notifier.base import DELIVERY_DELIVERED, DELIVERY_QUEUED, DeliveryBatchResult, DeliveryItem
-from push_run import PushRun
+from push_run import PushRun, start_profile_maintenance
 from push_stats import PushStats
 
 
@@ -23,6 +24,31 @@ class DeliveryResultNotifier:
 
 
 class PushRunDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_active_maintenance_is_reused_instead_of_started_twice(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+        classifier = AsyncMock()
+
+        async def maintain(_profile):
+            started.set()
+            await release.wait()
+
+        classifier.maintain_profile_tags.side_effect = maintain
+        with patch("push_run.db_module.set_state", new=AsyncMock()) as set_state:
+            first_task = start_profile_maintenance(classifier, {"tag": 1.0})
+            await started.wait()
+            second_task = start_profile_maintenance(classifier, {"tag": 1.0})
+            release.set()
+            await first_task
+            await asyncio.sleep(0)
+
+        self.assertIs(second_task, first_task)
+        classifier.maintain_profile_tags.assert_awaited_once_with({"tag": 1.0})
+        self.assertIn(
+            "runtime.last_maintenance_background_status",
+            [call.args[0] for call in set_state.await_args_list],
+        )
+
     async def test_push_filtered_marks_only_delivered_items_as_pushed(self):
         stats = PushStats()
         runner = PushRun(

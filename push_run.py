@@ -1,5 +1,6 @@
 """Single push-run orchestration."""
 
+import asyncio
 import json
 import logging
 from collections import Counter
@@ -16,6 +17,80 @@ from push_stats import PushStats
 from tag_classifier import TagClassifier
 
 logger = logging.getLogger(__name__)
+
+MAINTENANCE_COMPLETION_STATE = "runtime.last_maintenance_completion"
+MAINTENANCE_BACKGROUND_STATUS_STATE = "runtime.last_maintenance_background_status"
+MAINTENANCE_SUCCEEDED = "succeeded"
+MAINTENANCE_FAILED = "failed"
+MAINTENANCE_TIMEOUT = "timeout"
+MAINTENANCE_CANCELLED = "cancelled"
+_active_maintenance_task: asyncio.Task | None = None
+_latest_maintenance_task: asyncio.Task | None = None
+
+
+async def _record_maintenance_status(
+    state_key: str, status: str, error: Exception | None = None
+) -> None:
+    payload = {"status": status, "completed_at": datetime.now().isoformat()}
+    if error is not None:
+        payload["error"] = str(error)
+    try:
+        await db_module.set_state(state_key, json.dumps(payload, ensure_ascii=False))
+    except Exception as exc:
+        logger.warning("无法记录 Classification Maintenance 状态: %s", exc)
+
+
+async def record_maintenance_completion(status: str, error: Exception | None = None) -> None:
+    """Persist settled Maintenance Completion after a delivered Daily Slate."""
+    await _record_maintenance_status(MAINTENANCE_COMPLETION_STATE, status, error)
+
+
+async def record_maintenance_background_status(status: str, error: Exception | None = None) -> None:
+    """Persist background maintenance status without claiming delivery completion."""
+    await _record_maintenance_status(MAINTENANCE_BACKGROUND_STATUS_STATE, status, error)
+
+
+def get_active_maintenance_task() -> asyncio.Task | None:
+    """Return the one background Classification Maintenance task, if active."""
+    if _active_maintenance_task is not None and not _active_maintenance_task.done():
+        return _active_maintenance_task
+    return None
+
+
+def get_latest_maintenance_task() -> asyncio.Task | None:
+    """Return the most recently started maintenance attempt, even if settled."""
+    return _latest_maintenance_task
+
+
+def start_profile_maintenance(classifier: TagClassifier, profile: dict) -> asyncio.Task:
+    """Start one maintenance attempt, reusing an active attempt across deliveries."""
+    global _active_maintenance_task, _latest_maintenance_task
+    active_task = get_active_maintenance_task()
+    if active_task is not None:
+        logger.info("Classification Maintenance 已在后台运行，复用当前任务")
+        return active_task
+
+    task = asyncio.create_task(classifier.maintain_profile_tags(profile))
+    _active_maintenance_task = task
+    _latest_maintenance_task = task
+
+    def _on_done(completed_task: asyncio.Task) -> None:
+        global _active_maintenance_task
+        if _active_maintenance_task is completed_task:
+            _active_maintenance_task = None
+        if completed_task.cancelled():
+            return
+        try:
+            completed_task.result()
+        except Exception as exc:
+            logger.warning("标签分类维护失败，将在下次运行重试: %s", exc)
+            asyncio.create_task(record_maintenance_background_status(MAINTENANCE_FAILED, exc))
+        else:
+            logger.info("Classification Maintenance 已完成")
+            asyncio.create_task(record_maintenance_background_status(MAINTENANCE_SUCCEEDED))
+
+    task.add_done_callback(_on_done)
+    return task
 
 
 def _get_display_tags_max_ip_count(filter_cfg: dict) -> int:
@@ -98,10 +173,7 @@ class PushRun:
 
             tag_classifier = self._build_tag_classifier(profiler_cfg)
             if tag_classifier and xp_profile:
-                maintenance_task = asyncio.create_task(
-                    tag_classifier.maintain_profile_tags(xp_profile)
-                )
-                maintenance_task.add_done_callback(self._log_profile_maintenance_result)
+                self.maintenance_task = start_profile_maintenance(tag_classifier, xp_profile)
 
             fetcher = ContentFetcher(
                 client=self.client,
@@ -244,16 +316,6 @@ class PushRun:
             logger.warning(f"TagClassifier 初始化失败，将仅使用 XP 排序: {e}")
             return None
 
-    @staticmethod
-    def _log_profile_maintenance_result(task):
-        """Maintenance is best-effort and must not turn a delivery into a failure."""
-        if task.cancelled():
-            return
-        try:
-            task.result()
-        except Exception as e:
-            logger.warning(f"标签分类维护失败，将在下次运行重试: {e}")
-
     async def _push_filtered(self, filtered: list) -> None:
         if self.notifiers and filtered:
             try:
@@ -368,5 +430,3 @@ class PushRun:
                         break
             except Exception as e:
                 logger.warning(f"发送运行摘要失败: {e}")
-
-
