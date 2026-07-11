@@ -124,11 +124,10 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
             "score_weight": 0.3,
         },
     },
+    "judge_profiles": {},
     "tag_classifier": {
         "enabled": False,
-        "api_key": "",
-        "base_url": "https://api.deepseek.com/v1",
-        "model": "deepseek-v4-flash",
+        "judges": [],
         "ttl_days": 30,
         "batch_size": 50,
         "concurrency": 5,

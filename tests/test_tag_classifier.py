@@ -24,6 +24,25 @@ from tag_categories import is_seed_category
 
 
 class TagClassifierTests(unittest.TestCase):
+    def test_resolves_judge_profile_references(self):
+        classifier = TagClassifier({
+            "enabled": False,
+            "judge_profiles": {
+                "fast": {
+                    "provider": "openai",
+                    "api_key": "profile-key",
+                    "base_url": "https://judge.example/v1",
+                    "model": "judge-model",
+                },
+            },
+            "judges": ["fast"],
+        })
+
+        self.assertEqual(len(classifier.judges), 1)
+        self.assertEqual(classifier.judges[0]["name"], "fast")
+        self.assertEqual(classifier.judges[0]["model"], "judge-model")
+        self.assertEqual(classifier.api_key, "profile-key")
+
     def test_maintenance_reuses_fresh_machine_evidence_without_rechecking_its_sources(self):
         async def _run():
             classifier = TagClassifier({"enabled": False, "api_key": "legacy", "model": "legacy-model"})

@@ -51,7 +51,13 @@ class TagClassifier:
         self.maintenance_max_tags = self._positive_int(maintenance_cfg.get("max_tags_per_run", 40), 40)
         self.maintenance_min_weight = float(maintenance_cfg.get("min_profile_weight", 0.0) or 0.0)
         self.prefer_unresolved_first = bool(maintenance_cfg.get("prefer_unresolved_first", True))
+        self.judge_profiles = cfg.get("judge_profiles") if isinstance(cfg.get("judge_profiles"), dict) else {}
         self.judges = self._build_judges(cfg.get("judges"))
+        if self.judges:
+            primary_judge = self.judges[0]
+            self.api_key = self.api_key or primary_judge["api_key"]
+            self.base_url = primary_judge["base_url"]
+            self.model = primary_judge["model"]
         self.manual_ip_tags = self._load_manual_ip_tags(ip_tags)
         self.danbooru_lookup = DanbooruEvidenceLookup(cfg.get("danbooru"))
 
@@ -281,6 +287,14 @@ class TagClassifier:
             raw = [{"name": "legacy", "provider": "openai", "api_key": self.api_key, "base_url": self.base_url, "model": self.model}]
         unique, identities = [], set()
         for index, item in enumerate(raw):
+            if isinstance(item, str):
+                profile_name = item
+                profile = self.judge_profiles.get(profile_name)
+                if not isinstance(profile, dict):
+                    logger.warning("Judge Profile %s 不存在，已跳过", profile_name)
+                    continue
+                item = dict(profile)
+                item.setdefault("name", profile_name)
             if not isinstance(item, dict):
                 continue
             judge = {

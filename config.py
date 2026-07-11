@@ -113,6 +113,30 @@ def normalize_config(config: dict) -> dict:
     tag_classifier_cfg.setdefault("api_key", "")
     tag_classifier_cfg.setdefault("base_url", "https://api.deepseek.com/v1")
     tag_classifier_cfg.setdefault("model", "deepseek-v4-flash")
+
+    judge_profiles = normalized.get("judge_profiles")
+    if judge_profiles is None:
+        judge_profiles = {}
+        normalized["judge_profiles"] = judge_profiles
+    elif not isinstance(judge_profiles, dict):
+        logger.warning("配置项 judge_profiles 必须是对象，已回退为空配置")
+        judge_profiles = {}
+        normalized["judge_profiles"] = judge_profiles
+
+    normalized_profiles = {}
+    for name, profile in judge_profiles.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(profile, dict):
+            logger.warning("judge_profiles 中存在无效的 Judge Profile，已跳过")
+            continue
+        profile_name = name.strip()
+        normalized_profiles[profile_name] = {
+            "name": profile_name,
+            "provider": str(profile.get("provider") or "openai"),
+            "api_key": str(profile.get("api_key") or ""),
+            "base_url": str(profile.get("base_url") or "https://api.deepseek.com/v1"),
+            "model": str(profile.get("model") or "deepseek-v4-flash"),
+        }
+    normalized["judge_profiles"] = normalized_profiles
     tag_classifier_cfg["ttl_days"] = max(1, _coerce_int(
         tag_classifier_cfg.get("ttl_days", 30),
         default=30,
@@ -158,19 +182,29 @@ def normalize_config(config: dict) -> dict:
 
     judges = tag_classifier_cfg.get("judges", [])
     if not isinstance(judges, list):
-        logger.warning("配置项 tag_classifier.judges 必须是列表，已回退为单模型")
+        logger.warning("配置项 tag_classifier.judges 必须是 Judge Profile 名称列表，已回退为空列表")
         judges = []
+    if not normalized_profiles and not judges and str(tag_classifier_cfg.get("api_key", "")).strip():
+        legacy_profile_name = "tag_classifier_default"
+        normalized_profiles[legacy_profile_name] = {
+            "name": legacy_profile_name,
+            "provider": "openai",
+            "api_key": str(tag_classifier_cfg["api_key"]),
+            "base_url": str(tag_classifier_cfg["base_url"]),
+            "model": str(tag_classifier_cfg["model"]),
+        }
+        judges = [legacy_profile_name]
+        logger.info("已将单模型 tag_classifier 配置规范化为 Judge Profile %s", legacy_profile_name)
     normalized_judges = []
-    for index, judge in enumerate(judges):
-        if not isinstance(judge, dict):
+    for judge_name in judges:
+        if not isinstance(judge_name, str):
+            logger.warning("内嵌 Judge 配置已不支持，请改用 judge_profiles 名称引用")
             continue
-        item = dict(judge)
-        item.setdefault("name", f"judge_{index + 1}")
-        item.setdefault("provider", "openai")
-        item.setdefault("api_key", "")
-        item.setdefault("base_url", tag_classifier_cfg["base_url"])
-        item.setdefault("model", tag_classifier_cfg["model"])
-        normalized_judges.append(item)
+        name = judge_name.strip()
+        if name not in normalized_profiles:
+            logger.warning("tag_classifier.judges 引用了不存在的 Judge Profile %s，已跳过", name)
+            continue
+        normalized_judges.append(name)
     tag_classifier_cfg["judges"] = normalized_judges
 
     daily_slate_cfg = filter_cfg.setdefault("daily_slate", {})
@@ -225,9 +259,9 @@ def normalize_config(config: dict) -> dict:
         if not tag_classifier_cfg.get("api_key", "").strip():
             tag_classifier_cfg["api_key"] = shared_key
             logger.debug("tag_classifier.api_key 已从 profiler.ai 继承")
-        for judge in tag_classifier_cfg["judges"]:
-            if not str(judge.get("api_key", "")).strip():
-                judge["api_key"] = shared_key
+        for profile in normalized_profiles.values():
+            if not profile["api_key"].strip():
+                profile["api_key"] = shared_key
 
     profiler_cfg = normalized.get("profiler", {})
     if isinstance(profiler_cfg, dict):

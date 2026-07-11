@@ -60,23 +60,53 @@ class ConfigNormalizationTests(unittest.TestCase):
         })
         self.assertEqual(cfg["tag_classifier"]["api_key"], "sk-own")
 
-    def test_normalize_multi_judges_and_inherits_danbooru_credentials(self):
+    def test_normalize_judge_profiles_and_resolves_references(self):
         cfg = config.normalize_config({
-            "profiler": {"danbooru_login": "profile-login", "danbooru_api_key": "profile-key"},
+            "profiler": {
+                "ai": {"api_key": "shared-key"},
+                "danbooru_login": "profile-login",
+                "danbooru_api_key": "profile-key",
+            },
+            "judge_profiles": {
+                "fast": {
+                    "base_url": "https://a.example/v1",
+                    "model": "model-a",
+                },
+            },
             "tag_classifier": {
                 "maintenance": {"max_tags_per_run": "3"},
-                "judges": [
-                    {"name": "first", "api_key": "key-1", "base_url": "https://a.example/v1", "model": "model-a"},
-                    {"name": "duplicate", "api_key": "key-2", "base_url": "https://a.example/v1", "model": "model-a"},
-                ],
+                "judges": ["fast", "missing"],
                 "danbooru": {"enabled": True},
             },
         })
 
         self.assertEqual(cfg["tag_classifier"]["maintenance"]["max_tags_per_run"], 3)
-        self.assertEqual(len(cfg["tag_classifier"]["judges"]), 2)
+        self.assertEqual(cfg["tag_classifier"]["judges"], ["fast"])
+        self.assertEqual(cfg["judge_profiles"]["fast"]["api_key"], "shared-key")
+        self.assertEqual(cfg["judge_profiles"]["fast"]["name"], "fast")
         self.assertEqual(cfg["tag_classifier"]["danbooru"]["login"], "profile-login")
         self.assertEqual(cfg["tag_classifier"]["danbooru"]["api_key"], "profile-key")
+
+    def test_normalize_drops_legacy_inline_judge_objects(self):
+        cfg = config.normalize_config({
+            "judge_profiles": {"fast": {"api_key": "key"}},
+            "tag_classifier": {"judges": [{"name": "old", "api_key": "key"}, "fast"]},
+        })
+
+        self.assertEqual(cfg["tag_classifier"]["judges"], ["fast"])
+
+    def test_normalize_migrates_current_single_model_classifier_to_a_profile(self):
+        cfg = config.normalize_config({
+            "tag_classifier": {
+                "api_key": "existing-key",
+                "base_url": "https://judge.example/v1",
+                "model": "existing-model",
+            },
+        })
+
+        self.assertEqual(cfg["tag_classifier"]["judges"], ["tag_classifier_default"])
+        self.assertEqual(cfg["judge_profiles"]["tag_classifier_default"]["api_key"], "existing-key")
+        self.assertEqual(cfg["judge_profiles"]["tag_classifier_default"]["model"], "existing-model")
 
     def test_normalize_ip_diversity_defaults_and_invalid_values(self):
         cfg = config.normalize_config({"filter": {"ip_diversity": {"enabled": 1, "decay_factor": "bad", "floor": 2}}})

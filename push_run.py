@@ -308,8 +308,10 @@ class PushRun:
 
     def _build_tag_classifier(self, profiler_cfg: dict):
         try:
+            classifier_config = dict(self.config.get("tag_classifier", {}))
+            classifier_config["judge_profiles"] = self.config.get("judge_profiles", {})
             return TagClassifier(
-                self.config.get("tag_classifier", {}),
+                classifier_config,
                 ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),
             )
         except Exception as e:
