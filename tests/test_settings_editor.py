@@ -97,6 +97,162 @@ class SettingsEditorTests(unittest.TestCase):
         self.assertEqual(deleted["providers"]["gateway"]["api_key"], "")
         self.assertNotIn("credential_action", deleted["providers"]["gateway"])
 
+    def test_snapshot_includes_classification_maintenance_operational_defaults(self):
+        snapshot = build_settings_snapshot({"web": {"password": "hash"}})
+
+        classifier = snapshot["tag_classifier"]
+        self.assertFalse(classifier["enabled"])
+        self.assertEqual(classifier["ttl_days"], 30)
+        self.assertEqual(classifier["batch_size"], 50)
+        self.assertEqual(classifier["concurrency"], 5)
+        self.assertEqual(classifier["maintenance"]["max_tags_per_run"], 40)
+
+    def test_apply_settings_saves_classification_maintenance_operational_fields(self):
+        current = {
+            "web": {"require_login_password": False, "password": ""},
+            "providers": {
+                "pixiv": {"type": "pixiv", "refresh_token": "t", "user_id": 1},
+                "danbooru": {"type": "danbooru"},
+                "gateway": {"type": "openai_compatible", "base_url": "https://gateway.example/v1", "api_key": "k"},
+            },
+            "models": {"judge": {"provider": "gateway", "model": "gpt", "capabilities": ["llm"]}},
+            "tag_classifier": {
+                "enabled": False,
+                "judges": ["judge"],
+                "ttl_days": 30,
+                "batch_size": 50,
+                "concurrency": 5,
+                "maintenance": {"max_tags_per_run": 40, "prefer_unresolved_first": True},
+            },
+        }
+        merged = apply_settings_payload(current, {
+            "tag_classifier": {
+                "enabled": True,
+                "judges": ["judge"],
+                "ttl_days": 14,
+                "batch_size": 20,
+                "concurrency": 3,
+                "maintenance": {"max_tags_per_run": 12},
+            },
+        }, str)
+
+        self.assertTrue(merged["tag_classifier"]["enabled"])
+        self.assertEqual(merged["tag_classifier"]["ttl_days"], 14)
+        self.assertEqual(merged["tag_classifier"]["batch_size"], 20)
+        self.assertEqual(merged["tag_classifier"]["concurrency"], 3)
+        self.assertEqual(merged["tag_classifier"]["maintenance"]["max_tags_per_run"], 12)
+        self.assertTrue(merged["tag_classifier"]["maintenance"]["prefer_unresolved_first"])
+
+    def test_apply_settings_rejects_invalid_classification_maintenance_ranges(self):
+        current = {
+            "web": {"require_login_password": False, "password": ""},
+            "providers": {
+                "pixiv": {"type": "pixiv", "refresh_token": "t", "user_id": 1},
+                "danbooru": {"type": "danbooru"},
+            },
+            "models": {},
+            "tag_classifier": {"enabled": True, "ttl_days": 30, "batch_size": 50, "concurrency": 5},
+        }
+        with self.assertRaisesRegex(ValueError, "tag_classifier.ttl_days"):
+            apply_settings_payload(current, {"tag_classifier": {"enabled": True, "ttl_days": 0}}, str)
+        with self.assertRaisesRegex(ValueError, "tag_classifier.batch_size"):
+            apply_settings_payload(current, {"tag_classifier": {"enabled": True, "batch_size": 0}}, str)
+        with self.assertRaisesRegex(ValueError, "tag_classifier.concurrency"):
+            apply_settings_payload(current, {"tag_classifier": {"enabled": True, "concurrency": 0}}, str)
+        with self.assertRaisesRegex(ValueError, "tag_classifier.maintenance.max_tags_per_run"):
+            apply_settings_payload(
+                current,
+                {"tag_classifier": {"enabled": True, "maintenance": {"max_tags_per_run": 0}}},
+                str,
+            )
+
+    def test_apply_settings_rejects_deleting_model_still_referenced(self):
+        current = {
+            "web": {"require_login_password": False, "password": ""},
+            "providers": {
+                "pixiv": {"type": "pixiv", "refresh_token": "t", "user_id": 1},
+                "danbooru": {"type": "danbooru"},
+                "gateway": {"type": "openai_compatible", "base_url": "https://gateway.example/v1", "api_key": "k"},
+            },
+            "models": {
+                "judge": {"provider": "gateway", "model": "gpt", "capabilities": ["llm"]},
+                "spare": {"provider": "gateway", "model": "gpt-2", "capabilities": ["llm"]},
+            },
+            "tag_classifier": {"judges": ["judge"]},
+            "profiler": {"ai": {"enabled": False, "model": ""}},
+            "ai": {"embedding": {"enabled": False, "model": ""}, "scorer": {"enabled": False, "model": ""}},
+        }
+        with self.assertRaisesRegex(ValueError, "Model judge"):
+            apply_settings_payload(current, {
+                "models": {"spare": current["models"]["spare"]},
+                "tag_classifier": {"judges": ["judge"]},
+            }, str)
+
+    def test_apply_settings_allows_deleting_unreferenced_model_and_provider(self):
+        current = {
+            "web": {"require_login_password": False, "password": ""},
+            "providers": {
+                "pixiv": {"type": "pixiv", "refresh_token": "t", "user_id": 1},
+                "danbooru": {"type": "danbooru"},
+                "gateway": {"type": "openai_compatible", "base_url": "https://gateway.example/v1", "api_key": "k"},
+                "extra": {"type": "openai_compatible", "base_url": "https://extra.example/v1", "api_key": "x"},
+            },
+            "models": {
+                "judge": {"provider": "gateway", "model": "gpt", "capabilities": ["llm"]},
+                "spare": {"provider": "extra", "model": "gpt-2", "capabilities": ["llm"]},
+            },
+            "tag_classifier": {"judges": ["judge"]},
+            "profiler": {"ai": {"enabled": False, "model": ""}},
+            "ai": {"embedding": {"enabled": False, "model": ""}, "scorer": {"enabled": False, "model": ""}},
+        }
+        without_spare = apply_settings_payload(current, {
+            "models": {"judge": current["models"]["judge"]},
+            "providers": {
+                "pixiv": current["providers"]["pixiv"],
+                "danbooru": current["providers"]["danbooru"],
+                "gateway": current["providers"]["gateway"],
+                "extra": current["providers"]["extra"],
+            },
+            "tag_classifier": {"judges": ["judge"]},
+        }, str)
+        self.assertNotIn("spare", without_spare["models"])
+        self.assertIn("extra", without_spare["providers"])
+
+        without_extra = apply_settings_payload(without_spare, {
+            "models": {"judge": without_spare["models"]["judge"]},
+            "providers": {
+                "pixiv": without_spare["providers"]["pixiv"],
+                "danbooru": without_spare["providers"]["danbooru"],
+                "gateway": without_spare["providers"]["gateway"],
+            },
+            "tag_classifier": {"judges": ["judge"]},
+        }, str)
+        self.assertNotIn("extra", without_extra["providers"])
+        self.assertIn("gateway", without_extra["providers"])
+
+    def test_apply_settings_rejects_deleting_provider_that_still_owns_models(self):
+        current = {
+            "web": {"require_login_password": False, "password": ""},
+            "providers": {
+                "pixiv": {"type": "pixiv", "refresh_token": "t", "user_id": 1},
+                "danbooru": {"type": "danbooru"},
+                "gateway": {"type": "openai_compatible", "base_url": "https://gateway.example/v1", "api_key": "k"},
+            },
+            "models": {
+                "judge": {"provider": "gateway", "model": "gpt", "capabilities": ["llm"]},
+            },
+            "tag_classifier": {"judges": []},
+        }
+        with self.assertRaisesRegex(ValueError, "Provider gateway"):
+            apply_settings_payload(current, {
+                "providers": {
+                    "pixiv": current["providers"]["pixiv"],
+                    "danbooru": current["providers"]["danbooru"],
+                },
+                "models": current["models"],
+                "tag_classifier": {"judges": []},
+            }, str)
+
 
 if __name__ == "__main__":
     unittest.main()

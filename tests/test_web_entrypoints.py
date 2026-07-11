@@ -269,3 +269,8 @@ class WebSecurityOptionTests(unittest.TestCase):
         self.assertIn("text-embedding-3-small", response.text)
         self.assertIn("profiler_ai_model", response.text)
         self.assertNotIn("profiler_ai_api_key", response.text)
+        self.assertIn("tag_classifier_enabled", response.text)
+        self.assertIn("tag_classifier_ttl_days", response.text)
+        self.assertIn("tag_classifier_max_tags_per_run", response.text)
+        self.assertIn("removeProvider(", response.text)
+        self.assertIn("removeModel(", response.text)

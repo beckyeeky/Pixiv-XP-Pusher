@@ -125,6 +125,11 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
         "ttl_days": 30,
         "batch_size": 50,
         "concurrency": 5,
+        "maintenance": {
+            "max_tags_per_run": 40,
+            "min_profile_weight": 0.0,
+            "prefer_unresolved_first": True,
+        },
     },
     "filter": {
         "match_score": {
@@ -288,8 +293,26 @@ def apply_settings_payload(
     _preserve_masked_secrets(current, payload)
     _preserve_or_delete_provider_credentials(current, payload)
     merged = merge_config_replace_lists(current, payload)
+    # Providers/Models are whole maps in Settings: omitting an entry deletes it,
+    # but each retained entry still deep-merges with the previous value.
+    if isinstance(payload.get("providers"), dict):
+        current_providers = current.get("providers") if isinstance(current.get("providers"), dict) else {}
+        merged["providers"] = {
+            name: merge_config_replace_lists(current_providers.get(name, {}), value)
+            if isinstance(value, dict) else deepcopy(value)
+            for name, value in payload["providers"].items()
+        }
+    if isinstance(payload.get("models"), dict):
+        current_models = current.get("models") if isinstance(current.get("models"), dict) else {}
+        merged["models"] = {
+            name: merge_config_replace_lists(current_models.get(name, {}), value)
+            if isinstance(value, dict) else deepcopy(value)
+            for name, value in payload["models"].items()
+        }
     from config import normalize_config
 
+    _validate_classification_maintenance_fields(merged)
+    _validate_provider_model_deletions(merged)
     merged = normalize_config(merged)
     _validate_provider_model_config(merged)
     web_cfg = merged.setdefault("web", {})
@@ -419,3 +442,64 @@ def _validate_provider_model_config(config: dict) -> None:
         model_capabilities = models[model_ref].get("capabilities", ["llm"])
         if capability not in model_capabilities:
             raise ValueError(f"{label} 必须选择 {capability} Model")
+
+
+def _validate_provider_model_deletions(config: dict) -> None:
+    """Reject Settings maps that delete Providers/Models still in use."""
+    providers = config.get("providers", {})
+    models = config.get("models", {})
+    if not isinstance(providers, dict) or not isinstance(models, dict):
+        return
+    classifier = config.get("tag_classifier", {})
+    judges = classifier.get("judges", []) if isinstance(classifier, dict) else []
+    if isinstance(judges, list):
+        for judge_name in judges:
+            if judge_name not in models:
+                raise ValueError(f"Model {judge_name} 仍被 Judge 引用，无法删除")
+    for section_name, function_name in (
+        ("ai", "embedding"),
+        ("ai", "scorer"),
+        ("profiler", "ai"),
+    ):
+        section = config.get(section_name, {})
+        function_cfg = section.get(function_name, {}) if isinstance(section, dict) else None
+        if not isinstance(function_cfg, dict):
+            continue
+        model_ref = str(function_cfg.get("model") or "").strip()
+        if model_ref and model_ref not in models:
+            raise ValueError(
+                f"Model {model_ref} 仍被 {section_name}.{function_name}.model 引用，无法删除"
+            )
+    for model_name, model in models.items():
+        if not isinstance(model, dict):
+            continue
+        provider_name = model.get("provider")
+        if provider_name not in providers:
+            raise ValueError(f"Provider {provider_name} 仍被 Model {model_name} 引用，无法删除")
+
+
+def _positive_int_field(value: Any, field_name: str) -> None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} 必须是正整数") from None
+    if number < 1:
+        raise ValueError(f"{field_name} 必须是正整数")
+
+
+def _validate_classification_maintenance_fields(config: dict) -> None:
+    classifier = config.get("tag_classifier")
+    if not isinstance(classifier, dict):
+        return
+    if "ttl_days" in classifier:
+        _positive_int_field(classifier.get("ttl_days"), "tag_classifier.ttl_days")
+    if "batch_size" in classifier:
+        _positive_int_field(classifier.get("batch_size"), "tag_classifier.batch_size")
+    if "concurrency" in classifier:
+        _positive_int_field(classifier.get("concurrency"), "tag_classifier.concurrency")
+    maintenance = classifier.get("maintenance")
+    if isinstance(maintenance, dict) and "max_tags_per_run" in maintenance:
+        _positive_int_field(
+            maintenance.get("max_tags_per_run"),
+            "tag_classifier.maintenance.max_tags_per_run",
+        )
