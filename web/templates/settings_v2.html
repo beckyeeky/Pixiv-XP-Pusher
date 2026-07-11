@@ -181,6 +181,70 @@ textarea.form-control {
     margin-top: 0.3rem;
 }
 
+/* AI connections deliberately mirror config.yaml: Provider -> Model -> feature. */
+.ai-relationship {
+    margin: 0 0 1.25rem;
+    padding: 1rem 1.1rem;
+    background: var(--accent-soft);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-secondary);
+    line-height: 1.55;
+}
+
+.ai-relationship strong { color: var(--text-primary); }
+
+.provider-stack { display: grid; gap: 1rem; }
+
+.provider-card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--bg-secondary);
+}
+
+.provider-card-header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1.1rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.provider-card-title { margin: 0; font-size: 1.05rem; color: var(--text-primary); }
+.provider-card-meta { margin: 0.25rem 0 0; font-size: 0.82rem; color: var(--text-secondary); }
+.provider-card-body { padding: 1rem 1.1rem; }
+.provider-fields { display: grid; grid-template-columns: minmax(150px, 0.75fr) minmax(220px, 1.5fr); gap: 0.8rem; align-items: end; }
+.credential-control { display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem; }
+.credential-state, .reference-badge, .capability-badge {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.78rem;
+    line-height: 1.3;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+.credential-state.is-set { color: #4caf50; border-color: #4caf50; }
+.credential-state.is-missing { color: #ff9800; border-color: #ff9800; }
+.model-stack { display: grid; gap: 0.75rem; margin-top: 1rem; }
+.model-card { padding: 0.9rem; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; }
+.model-card-header { display: flex; gap: 0.75rem; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+.model-card-header h4 { margin: 0; font-size: 0.95rem; }
+.model-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.8rem; align-items: end; }
+.reference-list { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.65rem; }
+.reference-badge { color: var(--accent); }
+.empty-models { margin: 0.8rem 0 0; color: var(--text-secondary); font-size: 0.9rem; }
+.provider-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+@media (max-width: 760px) {
+    .provider-card-header, .model-card-header { flex-direction: column; }
+    .provider-fields, .model-fields { grid-template-columns: 1fr; }
+}
+
 .save-bar {
     position: fixed;
     bottom: 0;
@@ -355,7 +419,7 @@ textarea.form-control {
         <button class="settings-nav-item" data-section="strategies" aria-controls="section-strategies" aria-selected="false" onclick="showSection('strategies', event)">🎯 推送策略</button>
         <button class="settings-nav-item" data-section="notifier" aria-controls="section-notifier" aria-selected="false" onclick="showSection('notifier', event)">📢 推送通道</button>
         <button class="settings-nav-item" data-section="profiler" aria-controls="section-profiler" aria-selected="false" onclick="showSection('profiler', event)">👤 画像分析</button>
-        <button class="settings-nav-item" data-section="llm" aria-controls="section-llm" aria-selected="false" onclick="showSection('llm', event)">🧠 LLM Providers</button>
+        <button class="settings-nav-item" data-section="llm" aria-controls="section-llm" aria-selected="false" onclick="showSection('llm', event)">🧠 AI 凭据与模型</button>
         <button class="settings-nav-item" data-section="ai" aria-controls="section-ai" aria-selected="false" onclick="showSection('ai', event)">🤖 AI 增强</button>
         <button class="settings-nav-item" data-section="filter" aria-controls="section-filter" aria-selected="false" onclick="showSection('filter', event)">🛡️ 内容过滤</button>
         <button class="settings-nav-item" data-section="fetcher" aria-controls="section-fetcher" aria-selected="false" onclick="showSection('fetcher', event)">📥 内容获取</button>
@@ -618,9 +682,9 @@ textarea.form-control {
 
         <!-- AI 增强 -->
         <div id="section-llm" class="settings-section">
-            <div class="section-header"><h2>LLM Providers 与 Models</h2><p>Provider 保存凭据，Model 只引用一个 Provider；Judge 从 Model 中选择。</p></div>
-            <div class="settings-card"><h3>Providers</h3><div id="provider_list"></div><button type="button" class="btn-secondary" onclick="addProvider()">添加 Provider</button></div>
-            <div class="settings-card"><h3>Models 与 Judge 选择</h3><div id="model_list"></div><button type="button" class="btn-secondary" onclick="addModel()">添加 Model</button></div>
+            <div class="section-header"><h2>AI 凭据、模型与用途</h2><p>在这里按配置文件的关系管理 AI：凭据只保存在 Provider，多个 Model 和功能可以安全地复用它。</p></div>
+            <div class="ai-relationship"><strong>配置关系</strong>：Provider（服务地址 + 凭据） → Model（具体模型 + 能力） → 功能（画像分析、语义嵌入、AI 评分、标签审查）。修改 Provider 凭据会影响其下所有 Model，但不会把凭据复制到功能配置。</div>
+            <div class="settings-card"><div class="section-header"><div><h3>AI Providers</h3><p>每个 Provider 只保存一份 API 凭据。展开其下 Model 可查看和编辑所有复用关系。</p></div><button type="button" class="btn-secondary" onclick="addProvider()">添加 Provider</button></div><div id="provider_list" class="provider-stack"></div></div>
             <div class="settings-card">
                 <h3>Classification Maintenance</h3>
                 <div class="form-grid">
@@ -1172,24 +1236,40 @@ function renderLLMSettings() {
     const models = ensureObject(initialConfig, 'models');
     const judges = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'judges');
     if (!Array.isArray(judges)) initialConfig.tag_classifier.judges = [];
-    document.getElementById('provider_list').innerHTML = Object.entries(llmProviders).map(([name, provider]) => `
-        <div class="form-row"><div class="form-group"><label>名称</label><input class="form-control" value="${escapeHtml(name)}" onchange="renameProvider('${escapeJs(name)}', this.value)"></div>
-        <div class="form-group"><label>类型</label><select class="form-control" onchange="initialConfig.providers['${escapeJs(name)}'].type=this.value; renderLLMSettings()"><option value="openai" ${provider.type === 'openai' ? 'selected' : ''}>OpenAI</option><option value="deepseek" ${provider.type === 'deepseek' ? 'selected' : ''}>DeepSeek</option><option value="anthropic" ${provider.type === 'anthropic' ? 'selected' : ''}>Anthropic</option><option value="google" ${provider.type === 'google' ? 'selected' : ''}>Google</option><option value="openai_compatible" ${provider.type === 'openai_compatible' ? 'selected' : ''}>自定义 OpenAI-compatible</option></select></div>
-        ${provider.type === 'openai_compatible' ? `<div class="form-group"><label>Base URL（自定义必填）</label><input class="form-control" value="${escapeHtml(provider.base_url || '')}" onchange="initialConfig.providers['${escapeJs(name)}'].base_url=this.value"></div>` : ''}
-        <button type="button" class="btn-secondary" onclick="openCredentialDialog('${escapeJs(name)}')">凭据 ${escapeHtml(provider.api_key || '未设置')}</button>
-        <button type="button" class="btn-secondary" onclick="removeProvider('${escapeJs(name)}')">删除</button></div>`).join('') || '<p>尚未配置 Provider。</p>';
-    document.getElementById('model_list').innerHTML = Object.entries(models).map(([name, model]) => {
-        const catalog = modelCatalogForCapabilities(model.capabilities);
-        return `
-        <div class="form-row"><div class="form-group"><label>名称</label><input class="form-control" value="${escapeHtml(name)}" onchange="renameModel('${escapeJs(name)}', this.value)"></div>
-        <div class="form-group"><label>Provider</label><select class="form-control" onchange="initialConfig.models['${escapeJs(name)}'].provider=this.value">${Object.keys(llmProviders).map(provider => `<option value="${escapeHtml(provider)}" ${provider === model.provider ? 'selected' : ''}>${escapeHtml(provider)}</option>`).join('')}</select></div>
-        <div class="form-group"><label>能力</label><select class="form-control" onchange="setModelCapabilities('${escapeJs(name)}', this.value)"><option value="llm" ${model.capabilities?.includes('llm') && !model.capabilities?.includes('embedding') ? 'selected' : ''}>LLM / Judge / Scorer / Profiler</option><option value="embedding" ${model.capabilities?.includes('embedding') && !model.capabilities?.includes('llm') ? 'selected' : ''}>Embedding</option><option value="both" ${model.capabilities?.includes('llm') && model.capabilities?.includes('embedding') ? 'selected' : ''}>LLM + Embedding</option></select></div>
-        <div class="form-group"><label>模型目录 / 自定义模型</label><input list="${catalog}" class="form-control" value="${escapeHtml(model.model || '')}" onchange="initialConfig.models['${escapeJs(name)}'].model=this.value"><label class="toggle-switch"><input type="checkbox" ${initialConfig.tag_classifier.judges.includes(name) ? 'checked' : ''} onchange="toggleJudge('${escapeJs(name)}', this.checked)"><span>用于 Judge</span></label></div>
-        <button type="button" class="btn-secondary" onclick="removeModel('${escapeJs(name)}')">删除</button></div>`;
-    }).join('') || '<p>请先添加 Provider，再添加 Model。</p>';
+    const providerCards = Object.entries(llmProviders).map(([name, provider]) => renderProviderCard(name, provider, models));
+    const orphanModels = Object.entries(models).filter(([, model]) => !llmProviders[model?.provider]);
+    if (orphanModels.length) {
+        providerCards.push(`<div class="provider-card"><div class="provider-card-header"><div><h3 class="provider-card-title">未关联的 Model</h3><p class="provider-card-meta">这些 Model 指向不存在的 Provider；请选择或恢复对应 Provider 后才能正常使用。</p></div></div><div class="provider-card-body"><div class="model-stack">${orphanModels.map(([name, model]) => renderModelCard(name, model, model.provider || '未知 Provider')).join('')}</div></div></div>`);
+    }
+    document.getElementById('provider_list').innerHTML = providerCards.join('') || '<p class="empty-models">尚未配置 AI Provider。先添加 Provider，再设置凭据和 Model。</p>';
     setFunctionModelOptions('profiler_ai_model', 'llm', ensureObject(ensureObject(initialConfig, 'profiler'), 'ai')?.model);
     setFunctionModelOptions('ai_embedding_model', 'embedding', ensureObject(initialConfig, 'ai').embedding?.model);
     setFunctionModelOptions('ai_scorer_model', 'llm', ensureObject(initialConfig, 'ai').scorer?.model);
+}
+
+function renderProviderCard(name, provider, models) {
+    const ownedModels = Object.entries(models).filter(([, model]) => model && model.provider === name);
+    const credentialSet = Boolean(provider.api_key) && provider.api_key !== '••••';
+    const credentialState = credentialSet ? '已设置' : '未设置';
+    return `<section class="provider-card">
+        <div class="provider-card-header"><div><h3 class="provider-card-title">${escapeHtml(name)}</h3><p class="provider-card-meta">此 Provider 的凭据由 ${ownedModels.length} 个 Model 复用</p></div><div class="provider-actions"><button type="button" class="btn-secondary" onclick="openCredentialDialog('${escapeJs(name)}', 'api_key', 'API Key')">管理 API Key</button><button type="button" class="btn-secondary" onclick="removeProvider('${escapeJs(name)}')">删除 Provider</button></div></div>
+        <div class="provider-card-body"><div class="provider-fields">
+            <div class="form-group"><label class="form-label">Provider 名称</label><input class="form-control" value="${escapeHtml(name)}" onchange="renameProvider('${escapeJs(name)}', this.value)"></div>
+            <div class="form-group"><label class="form-label">服务类型</label><select class="form-control" onchange="initialConfig.providers['${escapeJs(name)}'].type=this.value; renderLLMSettings()"><option value="openai" ${provider.type === 'openai' ? 'selected' : ''}>OpenAI</option><option value="deepseek" ${provider.type === 'deepseek' ? 'selected' : ''}>DeepSeek</option><option value="anthropic" ${provider.type === 'anthropic' ? 'selected' : ''}>Anthropic</option><option value="google" ${provider.type === 'google' ? 'selected' : ''}>Google</option><option value="local" ${provider.type === 'local' ? 'selected' : ''}>本地服务</option><option value="openai_compatible" ${provider.type === 'openai_compatible' ? 'selected' : ''}>自定义 OpenAI-compatible</option></select></div>
+            ${provider.type === 'openai_compatible' || provider.type === 'local' ? `<div class="form-group"><label class="form-label">Base URL</label><input type="url" class="form-control" value="${escapeHtml(provider.base_url || '')}" placeholder="https://gateway.example/v1" onchange="initialConfig.providers['${escapeJs(name)}'].base_url=this.value"></div>` : ''}
+        </div><div class="credential-control"><span class="credential-state ${credentialSet ? 'is-set' : 'is-missing'}">API Key：${credentialState}</span><span class="help-text">凭据不会显示在页面或复制到 Model 中。</span></div>
+        <div class="model-stack">${ownedModels.map(([modelName, model]) => renderModelCard(modelName, model, name)).join('')}</div>${ownedModels.length ? '' : '<p class="empty-models">尚未创建 Model。Model 会引用此 Provider 的凭据。</p>'}<button type="button" class="btn-secondary" style="margin-top: 1rem;" onclick="addModel('${escapeJs(name)}')">添加使用此 Provider 的 Model</button></div>
+    </section>`;
+}
+
+function renderModelCard(name, model, providerName) {
+    const catalog = modelCatalogForCapabilities(model.capabilities);
+    const capabilities = Array.isArray(model.capabilities) ? model.capabilities : ['llm'];
+    const capabilityValue = capabilities.includes('llm') && capabilities.includes('embedding') ? 'both' : capabilities.includes('embedding') ? 'embedding' : 'llm';
+    const references = modelReferenceLabels(name);
+    return `<article class="model-card"><div class="model-card-header"><h4>${escapeHtml(name)}</h4><div><span class="capability-badge">${capabilityValue === 'both' ? 'LLM + Embedding' : capabilityValue === 'embedding' ? 'Embedding' : 'LLM'}</span> <button type="button" class="btn-secondary" onclick="removeModel('${escapeJs(name)}')">删除</button></div></div>
+        <div class="model-fields"><div class="form-group"><label class="form-label">配置名称</label><input class="form-control" value="${escapeHtml(name)}" onchange="renameModel('${escapeJs(name)}', this.value)"></div><div class="form-group"><label class="form-label">连接 Provider</label><select class="form-control" onchange="initialConfig.models['${escapeJs(name)}'].provider=this.value; renderLLMSettings()">${Object.keys(Object.fromEntries(Object.entries(ensureObject(initialConfig, 'providers')).filter(([, item]) => item && !['pixiv', 'danbooru'].includes(item.type)))).map(provider => `<option value="${escapeHtml(provider)}" ${provider === model.provider ? 'selected' : ''}>${escapeHtml(provider)}</option>`).join('')}</select></div><div class="form-group"><label class="form-label">能力</label><select class="form-control" onchange="setModelCapabilities('${escapeJs(name)}', this.value)"><option value="llm" ${capabilityValue === 'llm' ? 'selected' : ''}>LLM</option><option value="embedding" ${capabilityValue === 'embedding' ? 'selected' : ''}>Embedding</option><option value="both" ${capabilityValue === 'both' ? 'selected' : ''}>LLM + Embedding</option></select></div><div class="form-group"><label class="form-label">实际模型 ID</label><input list="${catalog}" class="form-control" value="${escapeHtml(model.model || '')}" onchange="initialConfig.models['${escapeJs(name)}'].model=this.value"><label class="toggle-switch"><input type="checkbox" ${initialConfig.tag_classifier.judges.includes(name) ? 'checked' : ''} onchange="toggleJudge('${escapeJs(name)}', this.checked); renderLLMSettings()"><span>用于标签审查 Judge</span></label></div></div>
+        <div class="help-text">通过 Provider <strong>${escapeHtml(providerName)}</strong> 连接；它的 API Key 会被此 Model 自动复用。</div><div class="reference-list">${references.length ? references.map(reference => `<span class="reference-badge">${escapeHtml(reference)}</span>`).join('') : '<span class="help-text">暂未被功能引用</span>'}</div></article>`;
 }
 function escapeHtml(value) { const node = document.createElement('span'); node.textContent = String(value); return node.innerHTML; }
 function escapeJs(value) { return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
@@ -1205,7 +1285,7 @@ function defaultModelForCapabilities(capabilities) {
     return KNOWN_LLM_MODELS[0] || '';
 }
 function addProvider() { const name = `provider_${Object.keys(ensureObject(initialConfig, 'providers')).length + 1}`; initialConfig.providers[name] = {type: 'openai_compatible', base_url: '', api_key: ''}; renderLLMSettings(); }
-function addModel() { const providers = Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)).map(([name]) => name); if (!providers.length) return alert('请先添加 Provider'); const name = `model_${Object.keys(ensureObject(initialConfig, 'models')).length + 1}`; initialConfig.models[name] = {provider: providers[0], model: KNOWN_LLM_MODELS[0], capabilities: ['llm']}; renderLLMSettings(); }
+function addModel(providerName) { const providers = Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)).map(([name]) => name); if (!providers.length) return alert('请先添加 Provider'); const name = `model_${Object.keys(ensureObject(initialConfig, 'models')).length + 1}`; initialConfig.models[name] = {provider: providers.includes(providerName) ? providerName : providers[0], model: KNOWN_LLM_MODELS[0], capabilities: ['llm']}; renderLLMSettings(); }
 function setModelCapabilities(name, value) {
     const capabilities = value === 'both' ? ['llm', 'embedding'] : [value];
     initialConfig.models[name].capabilities = capabilities;
@@ -1236,10 +1316,10 @@ function renameModel(oldName, newName) {
 function modelReferenceLabels(name) {
     const refs = [];
     const judges = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'judges');
-    if (Array.isArray(judges) && judges.includes(name)) refs.push('Judge');
-    if (ensureObject(ensureObject(initialConfig, 'profiler'), 'ai').model === name) refs.push('profiler.ai');
-    if (ensureObject(ensureObject(initialConfig, 'ai'), 'embedding').model === name) refs.push('ai.embedding');
-    if (ensureObject(ensureObject(initialConfig, 'ai'), 'scorer').model === name) refs.push('ai.scorer');
+    if (Array.isArray(judges) && judges.includes(name)) refs.push('标签审查 Judge');
+    if (ensureObject(ensureObject(initialConfig, 'profiler'), 'ai').model === name) refs.push('画像分析');
+    if (ensureObject(ensureObject(initialConfig, 'ai'), 'embedding').model === name) refs.push('语义嵌入');
+    if (ensureObject(ensureObject(initialConfig, 'ai'), 'scorer').model === name) refs.push('AI 评分');
     return refs;
 }
 function removeModel(name) {
@@ -1272,7 +1352,26 @@ function removeProvider(name) {
 function toggleJudge(name, enabled) { const judges = initialConfig.tag_classifier.judges; initialConfig.tag_classifier.judges = enabled ? [...new Set([...judges, name])] : judges.filter(item => item !== name); }
 function openCredentialDialog(name, field = 'api_key', label = '凭据') { editingProviderCredential = {name, field}; document.getElementById('credentialDialogTitle').textContent = `编辑 ${name} 的 ${label}`; document.getElementById('provider_credential_value').value = ''; document.getElementById('provider_credential_delete').checked = false; document.getElementById('providerCredentialDialog').showModal(); }
 function closeCredentialDialog() { document.getElementById('providerCredentialDialog').close(); }
-function saveProviderCredential() { const {name, field} = editingProviderCredential; const provider = initialConfig.providers[name]; const deleting = document.getElementById('provider_credential_delete').checked; if (deleting && !confirm('确定删除此 Provider 的凭据吗？')) return; provider.credential_actions = provider.credential_actions || {}; provider.credential_actions[field] = deleting ? 'delete' : 'replace'; provider[field] = document.getElementById('provider_credential_value').value; closeCredentialDialog(); renderSingletonProviderSettings(); renderLLMSettings(); }
+function saveProviderCredential() {
+    const {name, field} = editingProviderCredential;
+    const provider = initialConfig.providers[name];
+    const deleting = document.getElementById('provider_credential_delete').checked;
+    const value = document.getElementById('provider_credential_value').value;
+    if (deleting && !confirm('确定删除此 Provider 的凭据吗？')) return;
+    provider.credential_actions = provider.credential_actions || {};
+    if (deleting) {
+        provider.credential_actions[field] = 'delete';
+        provider[field] = '';
+    } else if (value) {
+        provider.credential_actions[field] = 'replace';
+        provider[field] = value;
+    } else {
+        delete provider.credential_actions[field];
+    }
+    closeCredentialDialog();
+    renderSingletonProviderSettings();
+    renderLLMSettings();
+}
 
 function asInt(value, fallback) {
     const n = parseInt(value, 10);

@@ -226,6 +226,15 @@ class SingletonProviderTests(unittest.TestCase):
         self.assertIn("credential_actions[field]", template)
         self.assertIn("'login', 'Danbooru Login'", template)
 
+    def test_ai_settings_template_explains_provider_model_credential_reuse(self):
+        template = (Path(__file__).resolve().parents[1] / "web" / "templates" / "settings_v2.html").read_text(encoding="utf-8")
+
+        self.assertIn("Provider（服务地址 + 凭据） → Model", template)
+        self.assertIn("此 Provider 的凭据由", template)
+        self.assertIn("API Key 会被此 Model 自动复用", template)
+        self.assertIn("modelReferenceLabels", template)
+        self.assertIn("标签审查 Judge", template)
+
 
 if __name__ == "__main__":
     unittest.main()

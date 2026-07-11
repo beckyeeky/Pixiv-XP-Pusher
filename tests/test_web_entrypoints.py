@@ -330,3 +330,6 @@ class WebSecurityOptionTests(unittest.TestCase):
         self.assertIn("tag_classifier_max_tags_per_run", response.text)
         self.assertIn("removeProvider(", response.text)
         self.assertIn("removeModel(", response.text)
+        self.assertIn("AI 凭据、模型与用途", response.text)
+        self.assertIn("Provider（服务地址 + 凭据） → Model", response.text)
+        self.assertIn("API Key 会被此 Model 自动复用", response.text)
