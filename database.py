@@ -155,6 +155,14 @@ def _init_db_sync():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (normalized_tag, source)
             );
+
+            CREATE TABLE IF NOT EXISTS ai_tag_classification_records (
+                tag TEXT PRIMARY KEY,
+                classification TEXT NOT NULL,
+                explanation TEXT NOT NULL,
+                languages TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             
             -- MAB 策略统计表
             CREATE TABLE IF NOT EXISTS strategy_stats (
@@ -567,6 +575,44 @@ async def review_tag_classification(normalized_tag: str, classification: str) ->
             (normalized_tag, category),
         )
         await db.commit()
+
+
+async def activate_ai_tag_classification(tag: str, classification: str, explanation: str, languages: str) -> bool:
+    """Persist a complete AI Classification Record unless a human owns the tag."""
+    tag = normalize_tag(tag)
+    category = normalize_tag_category(classification)
+    if not tag or category == TAG_CATEGORY_UNRESOLVED or not explanation or not languages:
+        raise ValueError("AI Classification Record 无效")
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT classification, source FROM tag_classification_cache WHERE normalized_tag = ?", (tag,)
+        )
+        current = await cursor.fetchone()
+        if not current or current[0] != TAG_CATEGORY_UNRESOLVED or current[1] == "manual":
+            return False
+        await db.execute(
+            """INSERT INTO ai_tag_classification_records (tag, classification, explanation, languages, updated_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(tag) DO UPDATE SET classification=excluded.classification,
+               explanation=excluded.explanation, languages=excluded.languages, updated_at=CURRENT_TIMESTAMP""",
+            (tag, category, explanation, languages),
+        )
+        await db.execute(
+            "UPDATE tag_classification_cache SET classification = ?, source = 'ai', updated_at = CURRENT_TIMESTAMP WHERE normalized_tag = ?",
+            (category, tag),
+        )
+        await db.commit()
+        return True
+
+
+async def get_ai_tag_classification_record(tag: str) -> dict | None:
+    tag = normalize_tag(tag)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT tag, classification, explanation, languages FROM ai_tag_classification_records WHERE tag = ?", (tag,)
+        )
+        row = await cursor.fetchone()
+    return dict(zip(("tag", "classification", "explanation", "languages"), row)) if row else None
 
 
 async def review_tag_classifications_batch(items: list[tuple[str, str]]) -> list[str]:

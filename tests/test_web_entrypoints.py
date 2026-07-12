@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from inspect import signature
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import yaml
 from fastapi.testclient import TestClient
@@ -22,6 +22,72 @@ from web.app_v2 import app as compat_app
 
 
 class WebEntrypointTests(unittest.TestCase):
+    def test_authenticated_single_tag_grounded_judge_uses_translation_and_activates_valid_result(self):
+        async def authenticated():
+            return None
+
+        async def classify(tag, translation, config):
+            self.assertEqual(tag, "white_hair")
+            self.assertEqual(translation, "白髪")
+            return {
+                "tag": "white_hair", "classification": "feature",
+                "explanation": "A transferable visual trait.", "languages": "en",
+                "usage": {"input": 11, "output": 7, "thoughts": 0, "tool_use_prompt": 3, "total": 21, "search_queries": 1},
+            }
+
+        canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+        try:
+            with patch.object(web_app_module.db, "get_translated_tag", new=AsyncMock(return_value="白髪")), \
+                 patch.object(web_app_module.db, "activate_ai_tag_classification", new=AsyncMock(return_value=True)) as activate, \
+                 patch.object(web_app_module, "classify_single_tag", side_effect=classify):
+                    with TestClient(canonical_app) as client:
+                        response = client.post("/api/tag-reviews/white_hair/classify")
+        finally:
+            canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["classification"], "feature")
+        self.assertEqual(response.json()["usage"], {
+            "input": 11, "output": 7, "thoughts": 0, "tool_use_prompt": 3, "total": 21, "search_queries": 1,
+        })
+        activate.assert_awaited_once_with("white_hair", "feature", "A transferable visual trait.", "en")
+
+    def test_grounded_judge_invalid_result_leaves_tag_in_review_queue(self):
+        async def authenticated():
+            return None
+
+        canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+        try:
+            with patch.object(web_app_module.db, "get_translated_tag", new=AsyncMock(return_value=None)), \
+                 patch.object(web_app_module.db, "activate_ai_tag_classification", new=AsyncMock()) as activate, \
+                 patch.object(web_app_module, "classify_single_tag", return_value={
+                     "tag": "ambiguous", "classification": "unresolved", "explanation": "Insufficient evidence.", "languages": "en",
+                 }):
+                    with TestClient(canonical_app) as client:
+                        response = client.post("/api/tag-reviews/ambiguous/classify")
+        finally:
+            canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+
+        self.assertEqual(response.status_code, 422)
+        activate.assert_not_awaited()
+
+    def test_grounded_judge_does_not_replace_a_human_decision(self):
+        async def authenticated():
+            return None
+
+        result = {"tag": "reviewed", "classification": "feature", "explanation": "Trait.", "languages": "en"}
+        canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+        try:
+            with patch.object(web_app_module.db, "get_translated_tag", new=AsyncMock(return_value=None)), \
+                 patch.object(web_app_module.db, "activate_ai_tag_classification", new=AsyncMock(return_value=False)) as activate, \
+                 patch.object(web_app_module, "classify_single_tag", return_value=result):
+                with TestClient(canonical_app) as client:
+                    response = client.post("/api/tag-reviews/reviewed/classify")
+        finally:
+            canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+
+        self.assertEqual(response.status_code, 409)
+        activate.assert_awaited_once()
     def test_tag_review_apis_delegate_to_review_queue(self):
         with patch.object(web_app_module.db, "get_tag_review_queue", return_value=[{"tag": "needs_review"}]) as get_queue, \
              patch.object(web_app_module.db, "review_tag_classification") as review:

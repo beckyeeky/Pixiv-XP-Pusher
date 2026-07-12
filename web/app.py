@@ -3,6 +3,7 @@ Web UI - FastAPI 后端
 深色护眼主题，模板化设计
 """
 import hashlib
+import asyncio
 import csv
 import io
 import logging
@@ -28,6 +29,7 @@ import database as db
 from config import get_known_model_catalog, load_config as shared_load_config
 from proxy_utils import normalize_proxy_url
 from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
+from grounded_judge import classify_single_tag, validate_ai_classification_record
 from utils import normalize_tag
 from web.settings_editor import (
     apply_settings_payload,
@@ -830,6 +832,29 @@ async def submit_tag_review(req: TagReviewRequest, _=Depends(require_auth)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"success": True, "tag": req.tag, "classification": req.classification}
+
+
+@app.post("/api/tag-reviews/{tag}/classify")
+async def classify_tag_review(tag: str, _=Depends(require_auth)):
+    """Use the configured sole Gemini Grounded Judge for one unresolved tag."""
+    normalized_tag = normalize_tag(tag)
+    if not normalized_tag:
+        raise HTTPException(status_code=400, detail="必须提供有效标签")
+    translation = await db.get_translated_tag(normalized_tag)
+    try:
+        result = await classify_single_tag(normalized_tag, translation, load_config())
+        result = validate_ai_classification_record(result, normalized_tag)
+        activated = await db.activate_ai_tag_classification(
+            result["tag"], result["classification"], result["explanation"], result["languages"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        logger.warning("Grounded Judge request failed for %s: %s", normalized_tag, exc)
+        raise HTTPException(status_code=502, detail="Grounded Judge 请求失败，标签仍在审核队列") from exc
+    if not activated:
+        raise HTTPException(status_code=409, detail="标签已被人工审核或不再处于待审核状态")
+    return result
 
 
 def _format_review_evidence(item: dict) -> str:
