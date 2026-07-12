@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
+
 import classification_maintenance as maintenance
 import database
 import grounded_judge
@@ -126,3 +128,33 @@ class ScheduledClassificationMaintenanceTests(unittest.TestCase):
         self.assertEqual(settings.max_output_tokens, 512)
         self.assertEqual(settings.temperature, 1.0)
         self.assertEqual(settings.max_retries, 2)
+
+    def test_gemini_judge_uses_status_specific_retry_policy(self):
+        config = {
+            "tag_classifier": {
+                "judges": ["gemini"],
+                "grounded_judge": {"retry_by_status": {"503": {"max_retries": 5, "retry_delay_seconds": 5}}},
+            },
+            "models": {"gemini": {"provider": "google", "model": "gemini-flash-latest"}},
+            "providers": {"google": {"type": "google", "api_key": "test-key"}},
+        }
+
+        settings = grounded_judge._selected_gemini_judge(config)
+        error = aiohttp.ClientResponseError(None, (), status=503)
+
+        self.assertEqual(grounded_judge._retry_policy(error, settings), (5, 5.0))
+
+    def test_gemini_judge_uses_minimal_thinking_for_structured_classification(self):
+        config = {
+            "tag_classifier": {
+                "judges": ["gemini"],
+                "grounded_judge": {"max_output_tokens": 1024, "thinking_level": "minimal"},
+            },
+            "models": {"gemini": {"provider": "google", "model": "gemini-flash-latest"}},
+            "providers": {"google": {"type": "google", "api_key": "test-key"}},
+        }
+
+        settings = grounded_judge._selected_gemini_judge(config)
+
+        self.assertEqual(settings.max_output_tokens, 1024)
+        self.assertEqual(settings.thinking_level, "minimal")

@@ -224,6 +224,7 @@
     .review-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
     .review-actions button { border: 1px solid var(--border); border-radius: 5px; padding: 0.35rem 0.6rem; background: var(--bg-primary); color: var(--text-primary); cursor: pointer; }
     .review-actions button:hover { border-color: var(--accent); }
+    .review-actions button:disabled { cursor: wait; opacity: 0.6; }
     .review-feedback { min-height: 1.3rem; margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.85rem; }
     .review-csv-tools { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin: 0.8rem 0; }
     .review-csv-tools input[type="file"] { max-width: 260px; color: var(--text-secondary); }
@@ -358,11 +359,32 @@ function renderReviewQueue(items) {
         const actions = ['feature', 'character', 'copyright', 'artist', 'non_preference']
             .map(category => `<button type="button" onclick="submitManualDecision(decodeURIComponent('${encodedTag}'), '${category}')">标为${tagCategoryLabels[category]}</button>`)
             .join('');
-        return `<article class="review-item">
+        return `<article class="review-item" data-review-tag="${escapeHtml(item.tag)}">
             <div class="review-item-header"><div><div class="review-tag">${escapeHtml(item.tag)}</div><div class="review-meta">状态：未解决 · 影响权重：${escapeHtml(item.profile_weight)} · 当前来源：${escapeHtml(item.classification_source)}</div></div></div>
             <ul class="evidence-list">${evidence}</ul><div class="review-actions" aria-label="manual decision"><button type="button" onclick="classifyWithGroundedJudge(decodeURIComponent('${encodedTag}'))">Gemini 搜索分类</button>${actions}</div>
         </article>`;
     }).join('');
+}
+
+function setReviewItemPending(tag, pending) {
+    const item = Array.from(document.querySelectorAll('.review-item'))
+        .find(element => element.dataset.reviewTag === tag);
+    if (!item) return;
+    item.querySelectorAll('button').forEach(button => {
+        button.disabled = pending;
+    });
+}
+
+function removeReviewItem(tag) {
+    const item = Array.from(document.querySelectorAll('.review-item'))
+        .find(element => element.dataset.reviewTag === tag);
+    if (!item) return;
+
+    item.remove();
+    const queue = document.getElementById('reviewQueue');
+    if (!queue.querySelector('.review-item')) {
+        queue.innerHTML = '<p class="empty-state">没有待审核的未解决标签。</p>';
+    }
 }
 
 function renderMaintenanceStatus(status) {
@@ -396,15 +418,17 @@ async function loadReviewQueue() {
 async function submitManualDecision(tag, classification) {
     const feedback = document.getElementById('reviewFeedback');
     feedback.textContent = `正在保存 ${tag} 的人工决定…`;
+    setReviewItemPending(tag, true);
     try {
         const response = await fetch('/api/tag-reviews', {
             method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({tag, classification})
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || '保存失败');
-        await loadReviewQueue();
+        removeReviewItem(tag);
         feedback.textContent = `${tag} 已标为${tagCategoryLabels[classification]}，并已从队列移除。`;
     } catch (error) {
+        setReviewItemPending(tag, false);
         feedback.textContent = `无法保存人工决定：${error.message}`;
     }
 }
@@ -412,14 +436,16 @@ async function submitManualDecision(tag, classification) {
 async function classifyWithGroundedJudge(tag) {
     const feedback = document.getElementById('reviewFeedback');
     feedback.textContent = `正在使用 Gemini 搜索分类 ${tag}…`;
+    setReviewItemPending(tag, true);
     try {
         const response = await fetch(`/api/tag-reviews/${encodeURIComponent(tag)}/classify`, {method: 'POST'});
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || '分类失败');
-        await loadReviewQueue();
+        removeReviewItem(tag);
         const usage = payload.usage || {};
         feedback.textContent = `${tag} 已标为${tagCategoryLabels[payload.classification]}：${payload.explanation}（语言 ${payload.languages}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次）`;
     } catch (error) {
+        setReviewItemPending(tag, false);
         feedback.textContent = `Gemini 未能分类：${error.message}`;
     }
 }

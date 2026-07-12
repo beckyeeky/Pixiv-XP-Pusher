@@ -257,8 +257,9 @@ Telegram Bot 支持的主要命令：
 | `/mute`, `/unmute` | 静音或取消静音标签 |
 | `/block_artist`, `/unblock_artist` | 屏蔽或取消屏蔽画师 |
 | `/batch` | 批量模式设置 |
+| `/menu` → `🏷️ 标签审核` | 查看待人工决定标签数，并一键触发 Gemini 批量判定 |
 | `/rich` | Rich Message 模式设置 |
-| `/restart` | 通过 systemd 重启服务 |
+| `/restart` | 通过 systemd 同时重启推送服务与 WebUI |
 
 命令细节见 [docs/telegram_commands.md](docs/telegram_commands.md)。实际菜单和按钮文案以当前 Bot 的 `/help` 为准。
 

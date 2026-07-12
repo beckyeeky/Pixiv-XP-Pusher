@@ -428,6 +428,11 @@ def normalize_config(config: dict) -> dict:
     except (TypeError, ValueError):
         logger.warning("配置项 tag_classifier.grounded_judge.temperature 非法，已回退为默认值 1.0")
         grounded_judge_cfg["temperature"] = 1.0
+    thinking_level = str(grounded_judge_cfg.get("thinking_level", "medium") or "").strip().lower()
+    if thinking_level not in {"minimal", "low", "medium", "high"}:
+        logger.warning("配置项 tag_classifier.grounded_judge.thinking_level 非法，已回退为默认值 medium")
+        thinking_level = "medium"
+    grounded_judge_cfg["thinking_level"] = thinking_level
     grounded_judge_cfg["max_retries"] = max(0, _coerce_int(
         grounded_judge_cfg.get("max_retries", 2), default=2,
         field_name="tag_classifier.grounded_judge.max_retries",
@@ -439,6 +444,41 @@ def normalize_config(config: dict) -> dict:
     except (TypeError, ValueError):
         logger.warning("配置项 tag_classifier.grounded_judge.retry_delay_seconds 非法，已回退为默认值 1.0")
         grounded_judge_cfg["retry_delay_seconds"] = 1.0
+    retry_by_status = grounded_judge_cfg.setdefault("retry_by_status", {})
+    if not isinstance(retry_by_status, dict):
+        logger.warning("配置项 tag_classifier.grounded_judge.retry_by_status 必须是对象，已回退为空对象")
+        retry_by_status = {}
+    normalized_retry_by_status = {}
+    for raw_status, policy in retry_by_status.items():
+        try:
+            status = int(raw_status)
+        except (TypeError, ValueError):
+            logger.warning("retry_by_status 包含无效 HTTP 状态码 %r，已跳过", raw_status)
+            continue
+        if not 100 <= status <= 599 or not isinstance(policy, dict):
+            logger.warning("retry_by_status[%r] 必须是 HTTP 状态码对应的对象，已跳过", raw_status)
+            continue
+        try:
+            if isinstance(policy.get("retry_delay_seconds", grounded_judge_cfg["retry_delay_seconds"]), bool):
+                raise ValueError
+            retry_delay_seconds = max(0.0, float(
+                policy.get("retry_delay_seconds", grounded_judge_cfg["retry_delay_seconds"])
+            ))
+        except (TypeError, ValueError):
+            logger.warning(
+                "配置项 tag_classifier.grounded_judge.retry_by_status.%s.retry_delay_seconds 非法，已使用默认值",
+                status,
+            )
+            retry_delay_seconds = grounded_judge_cfg["retry_delay_seconds"]
+        normalized_retry_by_status[str(status)] = {
+            "max_retries": max(0, _coerce_int(
+                policy.get("max_retries", grounded_judge_cfg["max_retries"]),
+                default=grounded_judge_cfg["max_retries"],
+                field_name=f"tag_classifier.grounded_judge.retry_by_status.{status}.max_retries",
+            )),
+            "retry_delay_seconds": retry_delay_seconds,
+        }
+    grounded_judge_cfg["retry_by_status"] = normalized_retry_by_status
 
     judges = tag_classifier_cfg.get("judges", [])
     if not isinstance(judges, list):

@@ -270,8 +270,7 @@ async def dashboard(request: Request):
         return RedirectResponse("/", status_code=302)
     
     # 获取 XP 画像
-    xp_profile = await db.get_xp_profile()
-    top_tags = sorted(xp_profile.items(), key=lambda x: x[1], reverse=True)[:20]
+    xp_sections = await db.get_xp_profile_display_sections(feature_limit=20, identity_limit=10)
     
     # 获取推送统计
     stats = await db.get_push_stats(days=7)
@@ -284,7 +283,8 @@ async def dashboard(request: Request):
     
     return render_template(request, "dashboard.html", {
         "active_page": "dashboard",
-        "top_tags": top_tags,
+        "feature_tags": xp_sections["feature"],
+        "identity_tags": xp_sections["identity"],
         "stats": stats,
         "like_rate": like_rate
     })
@@ -815,7 +815,8 @@ async def api_feedback(req: FeedbackRequest, request: Request, _=Depends(require
 async def api_xp_profile(request: Request, _=Depends(require_auth)):
     """获取XP画像"""
     profile = await db.get_xp_profile()
-    return {"profile": profile}
+    sections = await db.get_xp_profile_display_sections(feature_limit=20, identity_limit=10)
+    return {"profile": profile, "sections": sections}
 
 
 @app.get("/api/tag-reviews")
