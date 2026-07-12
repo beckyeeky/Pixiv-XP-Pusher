@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from inspect import signature
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import yaml
 from fastapi.testclient import TestClient
@@ -22,6 +22,92 @@ from web.app_v2 import app as compat_app
 
 
 class WebEntrypointTests(unittest.TestCase):
+    def test_authenticated_single_tag_grounded_judge_uses_translation_and_activates_valid_result(self):
+        async def authenticated():
+            return None
+
+        async def classify(tag, config):
+            self.assertEqual(tag, "white_hair")
+            return {
+                "tag": "white_hair", "classification": "feature",
+                "explanation": "A transferable visual trait.", "languages": "en",
+                "usage": {"input": 11, "output": 7, "thoughts": 0, "tool_use_prompt": 3, "total": 21, "search_queries": 1},
+                "status": "accepted",
+            }
+
+        canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+        try:
+            with patch.object(web_app_module, "classify_and_activate_tag", side_effect=classify) as activate:
+                    with TestClient(canonical_app) as client:
+                        response = client.post("/api/tag-reviews/white_hair/classify")
+        finally:
+            canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["classification"], "feature")
+        self.assertEqual(response.json()["usage"], {
+            "input": 11, "output": 7, "thoughts": 0, "tool_use_prompt": 3, "total": 21, "search_queries": 1,
+        })
+        activate.assert_awaited_once()
+
+    def test_grounded_judge_invalid_result_leaves_tag_in_review_queue(self):
+        async def authenticated():
+            return None
+
+        canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+        try:
+            with patch.object(web_app_module, "classify_and_activate_tag", side_effect=ValueError("Grounded Judge 明确标为 unresolved")) as activate:
+                    with TestClient(canonical_app) as client:
+                        response = client.post("/api/tag-reviews/ambiguous/classify")
+        finally:
+            canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+
+        self.assertEqual(response.status_code, 422)
+        activate.assert_awaited_once()
+
+    def test_grounded_judge_does_not_replace_a_human_decision(self):
+        async def authenticated():
+            return None
+
+        result = {"tag": "reviewed", "classification": "feature", "explanation": "Trait.", "languages": "en", "status": "human_override"}
+        canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+        try:
+            with patch.object(web_app_module, "classify_and_activate_tag", return_value=result) as activate:
+                with TestClient(canonical_app) as client:
+                    response = client.post("/api/tag-reviews/reviewed/classify")
+        finally:
+            canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+
+        self.assertEqual(response.status_code, 409)
+        activate.assert_awaited_once()
+
+    def test_authenticated_bulk_grounded_judge_reports_mixed_outcomes(self):
+        async def authenticated():
+            return None
+
+        async def classify(tag, _):
+            if tag == "resolved":
+                return {"usage": {"input": 4, "output": 3, "thoughts": 2, "tool_use_prompt": 1, "total": 10, "search_queries": 2}}
+            if tag == "uncertain":
+                raise web_app_module.HTTPException(status_code=422, detail="Grounded Judge 明确标为 unresolved")
+            raise web_app_module.HTTPException(status_code=502, detail="offline")
+
+        canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+        try:
+            with patch.object(web_app_module.db, "get_tag_review_queue", new=AsyncMock(return_value=[
+                {"tag": "resolved"}, {"tag": "uncertain"}, {"tag": "offline"},
+            ])), patch.object(web_app_module, "classify_tag_review", side_effect=classify):
+                with TestClient(canonical_app) as client:
+                    response = client.post("/api/tag-reviews/ai-process-all")
+        finally:
+            canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["attempted"], 3)
+        self.assertEqual(response.json()["accepted"], 1)
+        self.assertEqual(response.json()["unresolved"], 1)
+        self.assertEqual(response.json()["failed"], 1)
+        self.assertEqual(response.json()["usage"], {"input": 4, "output": 3, "thoughts": 2, "tool_use_prompt": 1, "total": 10, "search_queries": 2})
     def test_tag_review_apis_delegate_to_review_queue(self):
         with patch.object(web_app_module.db, "get_tag_review_queue", return_value=[{"tag": "needs_review"}]) as get_queue, \
              patch.object(web_app_module.db, "review_tag_classification") as review:
@@ -36,16 +122,23 @@ class WebEntrypointTests(unittest.TestCase):
     def test_maintenance_status_api_exposes_settled_delivery_and_background_work(self):
         completion = '{"status": "succeeded", "completed_at": "2026-07-11T10:00:00"}'
         background = '{"status": "failed", "completed_at": "2026-07-11T10:01:00", "error": "offline"}'
-        with patch.object(web_app_module.db, "get_state", side_effect=[completion, background]) as get_state:
+        summary = '{"attempted": 2, "accepted": 1, "usage": {"total": 12, "search_queries": 1}}'
+        with patch.object(web_app_module.db, "get_state", side_effect=[completion, background, summary]) as get_state:
             payload = asyncio.run(get_classification_maintenance_status(_=None))
 
         self.assertEqual(payload["completion"]["status"], "succeeded")
         self.assertEqual(payload["background"]["status"], "failed")
         self.assertEqual(payload["background"]["error"], "offline")
+        self.assertEqual(payload["summary"]["usage"]["search_queries"], 1)
         self.assertEqual(
             [call.args[0] for call in get_state.await_args_list],
-            ["runtime.last_maintenance_completion", "runtime.last_maintenance_background_status"],
+            ["runtime.last_maintenance_completion", "runtime.last_maintenance_background_status", "runtime.last_classification_maintenance_summary"],
         )
+
+    def test_maintenance_status_tolerates_a_malformed_summary(self):
+        with patch.object(web_app_module.db, "get_state", side_effect=[None, None, "not json"]):
+            payload = asyncio.run(get_classification_maintenance_status(_=None))
+        self.assertEqual(payload["summary"]["status"], "unknown")
 
     def test_authenticated_tags_page_contains_the_review_queue_flow(self):
         session_id = "tag-review-session"

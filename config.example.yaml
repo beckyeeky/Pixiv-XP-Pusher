@@ -83,6 +83,22 @@ providers:
     api_key: ""
     base_url: "https://api.deepseek.com/v1"
 
+  openrouter:
+    type: openai_compatible
+    api_key: ""
+    base_url: "https://openrouter.ai/api/v1"
+
+  # Embedding 网关（OpenAI-compatible）。与 LLM Provider 分开配置，避免混用密钥与路由。
+  chatai:
+    type: openai_compatible
+    api_key: ""
+    base_url: "https://api.chatai.best/v1"
+
+  # Google Gemini：标签分类使用原生 Google Search Grounding 端点。
+  gemini:
+    type: google
+    api_key: ""
+
 models:
   # Model 只引用一个 Provider；多个 Judge 可选择不同的 Model。
   deepseek_flash:
@@ -90,8 +106,13 @@ models:
     model: "deepseek-v4-flash"
     capabilities: [llm]
 
+  gemini_flash:
+    provider: gemini
+    model: "gemini-2.0-flash"
+    capabilities: [llm]
+
   embedding_small:
-    provider: deepseek
+    provider: chatai
     model: "text-embedding-3-small"
     capabilities: [embedding]
 
@@ -108,11 +129,11 @@ tag_classifier:
     max_tags_per_run: 40 # 每次仅刷新高影响画像标签，避免全量重跑
     min_profile_weight: 0.0
     prefer_unresolved_first: true
-  # Judge 从已配置的 Model 中选择；每个不同 Provider+Model 身份各投一票。
-  judges: [deepseek_flash]
+  # Grounded Judge 必须恰好选择一个 Gemini Model。
+  judges: [gemini_flash]
   danbooru:
     enabled: false # 只查询画像中出现的标签；无需镜像完整标签库
-    timeout_seconds: 15 # 不可用时会继续使用缓存证据与 Judge 投票
+    timeout_seconds: 15 # 不可用时仅保留缓存证据，不替代 Grounded Judge
 
 scheduler:
   # 定时任务配置 (Cron 表达式: 分 时 日 月 周)

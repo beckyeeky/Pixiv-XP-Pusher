@@ -43,164 +43,6 @@ class TagClassifierTests(unittest.TestCase):
         self.assertEqual(classifier.judges[0]["model"], "judge-model")
         self.assertEqual(classifier.api_key, "profile-key")
 
-    def test_maintenance_reuses_fresh_machine_evidence_without_rechecking_its_sources(self):
-        async def _run():
-            classifier = TagClassifier({"enabled": False, "api_key": "legacy", "model": "legacy-model"})
-            judge_source = f"judge:{classifier.judges[0]['identity']}"
-            cached = {
-                "tag": [
-                    {"source": "danbooru", "classification": "character", "confidence": 1.0, "verified_at": datetime.now()},
-                    {"source": judge_source, "classification": "character", "confidence": 1.0, "verified_at": datetime.now()},
-                ]
-            }
-            classifier._collect_judge_evidence = AsyncMock(return_value={})
-            classifier.danbooru_lookup.lookup = AsyncMock(return_value={})
-            with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={})), \
-                patch.object(database, "get_tag_evidence", new=AsyncMock(return_value=cached)), \
-                patch.object(database, "save_tag_evidence", new=AsyncMock()) as save_evidence, \
-                patch.object(database, "save_tag_classifications", new=AsyncMock()):
-                result = await classifier.maintain_profile_tags({"tag": 1.0})
-            return result, judge_source, classifier._collect_judge_evidence, classifier.danbooru_lookup.lookup, save_evidence
-
-        result, judge_source, judges, danbooru, save_evidence = asyncio.run(_run())
-
-        self.assertEqual(result["tag"].classification, "character")
-        judges.assert_not_awaited()
-        danbooru.assert_not_awaited()
-        save_evidence.assert_not_awaited()
-
-    def test_maintenance_refreshes_only_the_expired_machine_source(self):
-        async def _run():
-            classifier = TagClassifier({"enabled": False, "api_key": "legacy", "model": "legacy-model"})
-            judge_source = f"judge:{classifier.judges[0]['identity']}"
-            cached = {
-                "tag": [
-                    {"source": "danbooru", "classification": "character", "confidence": 1.0, "verified_at": datetime.now()},
-                    {"source": judge_source, "classification": "character", "confidence": 1.0, "verified_at": datetime(2000, 1, 1)},
-                ]
-            }
-            classifier._collect_judge_evidence = AsyncMock(return_value={"tag": [(judge_source, "character", 1.0)]})
-            classifier.danbooru_lookup.lookup = AsyncMock(return_value={})
-            with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={})), \
-                patch.object(database, "get_tag_evidence", new=AsyncMock(return_value=cached)), \
-                patch.object(database, "save_tag_evidence", new=AsyncMock()) as save_evidence, \
-                patch.object(database, "save_tag_classifications", new=AsyncMock()):
-                result = await classifier.maintain_profile_tags({"tag": 1.0})
-            return result, judge_source, classifier._collect_judge_evidence, classifier.danbooru_lookup.lookup, save_evidence
-
-        result, judge_source, judges, danbooru, save_evidence = asyncio.run(_run())
-
-        self.assertEqual(result["tag"].classification, "character")
-        judges.assert_awaited_once()
-        self.assertEqual(judges.await_args.args[0], ["tag"])
-        danbooru.assert_not_awaited()
-        save_evidence.assert_awaited_once_with([("tag", judge_source, "character", 1.0)])
-
-    def test_maintenance_selects_high_impact_unresolved_tags_and_accepts_multi_judge_consensus(self):
-        async def _run():
-            classifier = TagClassifier({
-                "enabled": False,
-                "maintenance": {"max_tags_per_run": 2, "prefer_unresolved_first": True},
-                "judges": [
-                    {"name": "one", "api_key": "one"},
-                    {"name": "two", "api_key": "two"},
-                ],
-            })
-            with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={
-                "resolved_high": {"classification": "feature", "source": "manual"},
-                "unresolved_low": {"classification": "unresolved", "source": "ai"},
-                "unresolved_high": {"classification": "unresolved", "source": "ai"},
-            })), patch.object(database, "get_tag_evidence", new=AsyncMock(return_value={})), \
-                patch.object(database, "save_tag_evidence", new=AsyncMock()) as save_evidence, \
-                patch.object(database, "save_tag_classifications", new=AsyncMock()):
-                classifier._collect_judge_evidence = AsyncMock(return_value={
-                    "unresolved_high": [("judge:one", "character", 1.0), ("judge:two", "character", 1.0)],
-                    "unresolved_low": [("judge:one", "copyright", 1.0), ("judge:two", "copyright", 1.0)],
-                })
-                result = await classifier.maintain_profile_tags({
-                    "resolved_high": 10.0, "unresolved_low": 1.0, "unresolved_high": 5.0,
-                })
-            return result, classifier._collect_judge_evidence, save_evidence
-
-        result, judges, save_evidence = asyncio.run(_run())
-
-        self.assertEqual(set(result), {"unresolved_high", "unresolved_low"})
-        self.assertEqual(result["unresolved_high"].classification, "character")
-        judges.assert_awaited_once()
-        self.assertEqual(judges.await_args.args[0], ["unresolved_high", "unresolved_low"])
-        self.assertTrue(any(row[0] == "unresolved_high" for row in save_evidence.await_args.args[0]))
-
-    def test_maintenance_keeps_disagreement_unresolved_when_danbooru_is_unavailable(self):
-        async def _run():
-            classifier = TagClassifier({"enabled": False, "judges": [{"name": "one", "api_key": "one"}, {"name": "two", "api_key": "two"}]})
-            with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={})), \
-                patch.object(database, "get_tag_evidence", new=AsyncMock(return_value={"tag": [{"source": "danbooru", "classification": "feature", "confidence": 1.0}]})), \
-                patch.object(database, "save_tag_evidence", new=AsyncMock()), \
-                patch.object(database, "save_tag_classifications", new=AsyncMock()):
-                classifier._collect_judge_evidence = AsyncMock(return_value={
-                    "tag": [("judge:one", "character", 1.0), ("judge:two", "copyright", 1.0)]
-                })
-                result = await classifier.maintain_profile_tags({"tag": 1.0})
-            return result
-
-        result = asyncio.run(_run())
-        self.assertEqual(result["tag"].classification, "unresolved")
-
-    def test_legacy_single_model_is_one_judge_and_danbooru_errors_do_not_stop_maintenance(self):
-        async def _run():
-            classifier = TagClassifier({"enabled": False, "api_key": "legacy", "model": "legacy-model"})
-            with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={})), \
-                patch.object(database, "get_tag_evidence", new=AsyncMock(return_value={})), \
-                patch.object(database, "save_tag_evidence", new=AsyncMock()), \
-                patch.object(database, "save_tag_classifications", new=AsyncMock()):
-                classifier._collect_judge_evidence = AsyncMock(return_value={"tag": [("judge:legacy", "feature", 1.0)]})
-                classifier.danbooru_lookup.lookup = AsyncMock(side_effect=TimeoutError("offline"))
-                result = await classifier.maintain_profile_tags({"tag": 1.0})
-            return classifier, result
-
-        classifier, result = asyncio.run(_run())
-        self.assertEqual(len(classifier.judges), 1)
-        self.assertEqual(result["tag"].classification, "unresolved")
-    def test_profile_maintenance_keeps_conflicting_machine_evidence_unresolved(self):
-        async def _run():
-            classifier = TagClassifier({"enabled": False})
-            with patch.object(database, "get_tag_evidence", new=AsyncMock(return_value={})), \
-                 patch.object(database, "save_tag_evidence", new=AsyncMock()) as save_evidence, \
-                 patch.object(database, "save_tag_classifications", new=AsyncMock()) as save_classifications:
-                result = await classifier.maintain_profile_tags(
-                    ["ambiguous_tag"],
-                    evidence_lookup=AsyncMock(return_value={
-                        "ambiguous_tag": [("danbooru", "character", 1.0), ("ai:test-model", "copyright", 1.0)]
-                    }),
-                )
-            return result, save_evidence, save_classifications
-
-        result, save_evidence, save_classifications = asyncio.run(_run())
-
-        self.assertEqual(result["ambiguous_tag"].classification, "unresolved")
-        self.assertEqual(result["ambiguous_tag"].source, "evidence_unresolved")
-        save_evidence.assert_awaited_once()
-        save_classifications.assert_awaited_once_with(
-            [("ambiguous_tag", "unresolved", "evidence_unresolved")]
-        )
-
-    def test_profile_maintenance_manual_decision_overrides_machine_evidence(self):
-        async def _run():
-            classifier = TagClassifier({"enabled": False}, ip_tags=["blue_archive"])
-            with patch.object(database, "get_tag_evidence", new=AsyncMock(return_value={})), \
-                 patch.object(database, "save_tag_evidence", new=AsyncMock()), \
-                 patch.object(database, "save_tag_classifications", new=AsyncMock()):
-                return await classifier.maintain_profile_tags(
-                    ["blue_archive"],
-                    evidence_lookup=AsyncMock(return_value={
-                        "blue_archive": [("danbooru", "character", 1.0)]
-                    }),
-                )
-
-        result = asyncio.run(_run())
-
-        self.assertEqual(result["blue_archive"].classification, "copyright")
-        self.assertEqual(result["blue_archive"].source, "manual")
     def test_invalid_numeric_config_uses_defaults(self):
         classifier = TagClassifier(
             {"enabled": False, "ttl_days": "bad", "batch_size": 0, "concurrency": True}
@@ -250,19 +92,17 @@ class TagClassifierTests(unittest.TestCase):
         self.assertFalse(is_seed_category(result["platform_marker"]))
         save.assert_not_awaited()
 
-    def test_enabled_classifier_rechecks_fallback_cache(self):
+    def test_delivery_uses_manual_ip_rule_instead_of_an_ungrounded_fast_path(self):
         async def _run():
             classifier = TagClassifier(
                 {"enabled": True, "api_key": "test-key"},
                 ip_tags=["blue_archive"],
             )
             classifier.client = object()
-            classifier._classify_with_ai = AsyncMock(
-                return_value={"blue_archive": TagClassification("copyright", "ai")}
-            )
+            classifier._classify_with_ai = AsyncMock()
             result = await classifier.classify_tags(["blue_archive"])
             self.assertEqual(result["blue_archive"].classification, "copyright")
-            classifier._classify_with_ai.assert_awaited_once()
+            classifier._classify_with_ai.assert_not_awaited()
 
         with patch.object(
             database,
@@ -335,19 +175,18 @@ class TagClassifierTests(unittest.TestCase):
 
         self.assertEqual(result["blue_archive"].classification, "unresolved")
 
-    def test_enabled_classifier_marks_ai_omissions_unresolved(self):
+    def test_enabled_classifier_leaves_new_tags_unresolved_for_grounded_maintenance(self):
         async def _run():
             classifier = TagClassifier(
                 {"enabled": True, "api_key": "test-key"},
                 ip_tags=["blue_archive"],
             )
             classifier.client = object()
-            classifier._classify_with_ai = AsyncMock(
-                return_value={"pantyhose": TagClassification("feature", "ai")}
-            )
+            classifier._classify_with_ai = AsyncMock()
             result = await classifier.classify_tags(["pantyhose", "ambiguous_tag"])
-            self.assertEqual(result["pantyhose"].classification, "feature")
+            self.assertEqual(result["pantyhose"].classification, "unresolved")
             self.assertEqual(result["ambiguous_tag"].classification, "unresolved")
+            classifier._classify_with_ai.assert_not_awaited()
 
         with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={})), \
              patch.object(database, "save_tag_classifications", new=AsyncMock()), \

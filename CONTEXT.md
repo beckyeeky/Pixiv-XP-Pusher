@@ -83,38 +83,31 @@ A resolved tag that does not express a useful recommendation preference, such as
 _Avoid_: Meta tag, noise
 
 **Unresolved Tag**:
-A tag with no accepted Tag Category because available classifiers disagree, lack enough evidence, or fail. It waits for human review and does not act as a personalized retrieval seed.
+A tag for which the Grounded Judge failed or explicitly returned `unresolved`. It waits for human review and does not act as a personalized retrieval seed.
 _Avoid_: Unknown category, needs-review category
 
 **Review Queue**:
 Unresolved Tags awaiting a human Tag Category decision, ordered by their likely impact on recommendation outcomes.
 _Avoid_: Error log, all classified tags
 
-**Classification Consensus**:
-Sufficient independent agreement to accept a Tag Category without human review. A lack of consensus leaves the tag unresolved.
+**Grounded Judge**:
+The one configured AI model that uses live search to classify a Normalized Tag. Gemini with Google Search Grounding is the initial Grounded Judge; a successful result is accepted directly, while failed or explicitly uncertain results remain unresolved.
+_Avoid_: Multi-Judge vote, consensus classifier
 
-**Judge Model**:
-A uniquely configured language model that contributes one independent classification vote. Repeated calls to the same provider and model identity remain a single Judge Model.
-_Avoid_: Request, retry, provider account
+**AI Classification Record**:
+The complete persisted result from a Grounded Judge: `tag`, `classification`, `explanation`, and `languages`. `languages` stores one primary ISO language code; explanation is the full human-readable basis for review, not separately stored evidence or a second classification.
+_Avoid_: Tag Evidence, Judge vote, source record
 
-**Tag Evidence**:
-Information from Pixiv context, external tag systems, or prior human decisions that supports classification without itself being the accepted Tag Category.
-_Avoid_: Classification, source of truth
-
-**Evidence Freshness**:
-The age of a machine-provided Tag Evidence item since it was last verified by its own source. Human decisions do not expire.
-_Avoid_: Cache read time, classification age
-
-**Evidence Provenance**:
-The original observation time and most recent successful verification time carried by a Tag Evidence item. Reusing evidence does not alter either time.
-_Avoid_: Last accessed time, cache timestamp
+**Human Classification**:
+A Tag Category explicitly chosen by a human reviewer. It permanently overrides an AI Classification Record for that Normalized Tag.
+_Avoid_: Temporary override, machine refresh
 
 **Seed Tag**:
 A resolved, preference-bearing tag permitted to initiate personalized retrieval. Unresolved and Non-preference Tags are never Seed Tags.
 _Avoid_: Any profile tag, matched tag
 
 **Classification Maintenance**:
-The periodic process that gathers Tag Evidence and Judge Model votes for important profile tags, accepting classifications with consensus and leaving the rest unresolved. Daily recommendation delivery consumes its latest accepted results without waiting for it.
+The periodic process, also available as a manual bulk action from the Review Queue, that asks the Grounded Judge to classify important profile tags. Successful AI Classification Records are accepted directly; failures and explicit uncertainty remain unresolved for human review. Daily recommendation delivery consumes its latest accepted results without waiting for it.
 _Avoid_: Daily recommendation run, profile rebuild
 
 **Maintenance Completion**:

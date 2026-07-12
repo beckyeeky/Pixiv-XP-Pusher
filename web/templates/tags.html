@@ -310,6 +310,7 @@
     </div>
     <div id="maintenanceStatus" class="maintenance-status">正在读取分类维护状态…</div>
     <div class="review-csv-tools">
+         <button type="button" onclick="classifyAllWithGroundedJudge()">Gemini 分类全部未解决标签</button>
         <button type="button" onclick="downloadReviewCsv()">下载待审核 CSV</button>
         <input type="file" id="reviewCsvFile" accept=".csv,text/csv" aria-label="待审核标签 CSV 文件">
         <button type="button" onclick="uploadReviewCsv()">上传并应用</button>
@@ -359,7 +360,7 @@ function renderReviewQueue(items) {
             .join('');
         return `<article class="review-item">
             <div class="review-item-header"><div><div class="review-tag">${escapeHtml(item.tag)}</div><div class="review-meta">状态：未解决 · 影响权重：${escapeHtml(item.profile_weight)} · 当前来源：${escapeHtml(item.classification_source)}</div></div></div>
-            <ul class="evidence-list">${evidence}</ul><div class="review-actions" aria-label="manual decision">${actions}</div>
+            <ul class="evidence-list">${evidence}</ul><div class="review-actions" aria-label="manual decision"><button type="button" onclick="classifyWithGroundedJudge(decodeURIComponent('${encodedTag}'))">Gemini 搜索分类</button>${actions}</div>
         </article>`;
     }).join('');
 }
@@ -405,6 +406,36 @@ async function submitManualDecision(tag, classification) {
         feedback.textContent = `${tag} 已标为${tagCategoryLabels[classification]}，并已从队列移除。`;
     } catch (error) {
         feedback.textContent = `无法保存人工决定：${error.message}`;
+    }
+}
+
+async function classifyWithGroundedJudge(tag) {
+    const feedback = document.getElementById('reviewFeedback');
+    feedback.textContent = `正在使用 Gemini 搜索分类 ${tag}…`;
+    try {
+        const response = await fetch(`/api/tag-reviews/${encodeURIComponent(tag)}/classify`, {method: 'POST'});
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || '分类失败');
+        await loadReviewQueue();
+        const usage = payload.usage || {};
+        feedback.textContent = `${tag} 已标为${tagCategoryLabels[payload.classification]}：${payload.explanation}（语言 ${payload.languages}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次）`;
+    } catch (error) {
+        feedback.textContent = `Gemini 未能分类：${error.message}`;
+    }
+}
+
+async function classifyAllWithGroundedJudge() {
+    const feedback = document.getElementById('reviewFeedback');
+    feedback.textContent = '正在使用 Gemini 逐项分类当前审核队列…';
+    try {
+        const response = await fetch('/api/tag-reviews/ai-process-all', {method: 'POST'});
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || '批量分类失败');
+        await loadReviewQueue();
+        const usage = payload.usage || {};
+        feedback.textContent = `已尝试 ${payload.attempted} 项：接受 ${payload.accepted}，仍未解决 ${payload.unresolved}，失败 ${payload.failed}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次。`;
+    } catch (error) {
+        feedback.textContent = `Gemini 批量分类失败：${error.message}`;
     }
 }
 
