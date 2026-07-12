@@ -51,6 +51,7 @@ class TagClassifier:
         self.api_key = ""
         maintenance_cfg = cfg.get("maintenance") if isinstance(cfg.get("maintenance"), dict) else {}
         self.maintenance_max_tags = self._positive_int(maintenance_cfg.get("max_tags_per_run", 40), 40)
+        self.maintenance_concurrency = self._positive_int(maintenance_cfg.get("concurrency", 10), 10)
         self.maintenance_min_weight = float(maintenance_cfg.get("min_profile_weight", 0.0) or 0.0)
         self.prefer_unresolved_first = bool(maintenance_cfg.get("prefer_unresolved_first", True))
         self.providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
@@ -155,7 +156,9 @@ class TagClassifier:
     async def maintain_profile_tags(self, tags: list[str] | dict[str, float]) -> dict:
         """Run selected tags through the same one-tag Grounded Judge used by review."""
         selected_tags = await self._select_maintenance_tags(tags)
-        summary = await run_scheduled_maintenance(selected_tags, self.grounded_judge_config)
+        summary = await run_scheduled_maintenance(
+            selected_tags, self.grounded_judge_config, concurrency=self.maintenance_concurrency,
+        )
         await db.set_state(
             "runtime.last_classification_maintenance_summary",
             json.dumps(summary, ensure_ascii=False),

@@ -47,6 +47,8 @@ python scripts/refresh_config.py config.yaml --output config.new.yaml
 - `models`：顶层 Model 配置，每项只引用一个 Provider，并填写该 Provider 可用的模型名称。
 - `judges`：引用 `models` 的名称列表；每个不同 `Provider + Model` 身份只计一票。内嵌 Judge 对象不再支持。
 - `maintenance.max_tags_per_run`：每次只刷新高影响画像标签，Unresolved 可优先
+- `maintenance.concurrency`：后台 Gemini Grounded Judge 的最大并发请求数，默认 `10`
+- `grounded_judge`：Gemini Grounded Judge 的请求配置。默认总超时 `45` 秒、输出上限 `512` token、温度 `1`；超时、连接错误、限流（429）或服务端错误会按指数退避自动重试 2 次。
 - `danbooru`：仅查询被选中的画像标签；证据会缓存，超时或错误时继续使用缓存和 Judge 投票。连接凭据与地址由 `type: danbooru` Provider 提供。
 - 机器 Tag Evidence 按 source 独立保鲜 60 天；缓存读取不会刷新时效，只有该 source 成功复核才会更新。人工审核永不过期。
 - `--once` 在成功推送 Daily Slate 后最多等待 90 秒完成有界 Classification Maintenance；维护失败或超时会独立记录，不会撤销推送结果。调度模式始终后台执行且不会重复启动活动维护。

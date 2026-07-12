@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Awaitable, Callable
 
 import database as db
@@ -31,13 +32,29 @@ async def classify_and_activate_tag(tag: str, config: dict) -> dict:
 async def run_scheduled_maintenance(
     tags: list[str], config: dict,
     classify: Callable[[str, dict], Awaitable[dict]] = classify_and_activate_tag,
+    concurrency: int = 10,
 ) -> dict:
-    """Classify selected tags serially and retain a reviewable outcome for every tag."""
+    """Classify selected tags concurrently and retain a reviewable outcome for every tag."""
+    try:
+        concurrency = max(1, int(concurrency))
+    except (TypeError, ValueError):
+        concurrency = 10
     summary = {"attempted": len(tags), "accepted": 0, "unresolved": 0, "failed": 0,
                "human_override": 0, "usage": empty_usage(), "items": []}
-    for tag in tags:
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def classify_one(tag: str) -> dict:
+        async with semaphore:
+            return await classify(tag, config)
+
+    results = await asyncio.gather(
+        *(classify_one(tag) for tag in tags), return_exceptions=True
+    )
+    for tag, result in zip(tags, results):
         try:
-            item = await classify(tag, config)
+            if isinstance(result, Exception):
+                raise result
+            item = result
         except ValueError as exc:
             await db.mark_ai_tag_unresolved(tag)
             item = {"tag": tag, "status": "unresolved", "error": str(exc),

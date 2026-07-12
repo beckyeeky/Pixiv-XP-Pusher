@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import classification_maintenance as maintenance
 import database
+import grounded_judge
 import tag_classifier
 from tag_classifier import TagClassifier
 
@@ -87,4 +88,41 @@ class ScheduledClassificationMaintenanceTests(unittest.TestCase):
 
         self.assertIs(result, summary)
         self.assertEqual(run.await_args.args[0], ["unresolved_high", "unresolved_low"])
+        self.assertEqual(run.await_args.kwargs["concurrency"], 10)
         set_state.assert_awaited_once()
+
+    def test_scheduled_maintenance_respects_configured_concurrency(self):
+        async def run():
+            active = 0
+            maximum_active = 0
+
+            async def classify(tag, _config):
+                nonlocal active, maximum_active
+                active += 1
+                maximum_active = max(maximum_active, active)
+                await asyncio.sleep(0.01)
+                active -= 1
+                return {"tag": tag, "status": "accepted"}
+
+            summary = await maintenance.run_scheduled_maintenance(
+                ["one", "two", "three"], {}, classify, concurrency=2,
+            )
+            return summary, maximum_active
+
+        summary, maximum_active = asyncio.run(run())
+
+        self.assertEqual(summary["accepted"], 3)
+        self.assertEqual(maximum_active, 2)
+
+    def test_gemini_judge_settings_default_to_requested_values(self):
+        config = {
+            "tag_classifier": {"judges": ["gemini"]},
+            "models": {"gemini": {"provider": "google", "model": "gemini-flash-latest"}},
+            "providers": {"google": {"type": "google", "api_key": "test-key"}},
+        }
+
+        settings = grounded_judge._selected_gemini_judge(config)
+
+        self.assertEqual(settings.max_output_tokens, 512)
+        self.assertEqual(settings.temperature, 1.0)
+        self.assertEqual(settings.max_retries, 2)
