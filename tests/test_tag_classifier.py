@@ -50,6 +50,12 @@ class TagClassifierTests(unittest.TestCase):
         self.assertEqual(classifier.ttl_days, 30)
         self.assertEqual(classifier.batch_size, 1)
         self.assertEqual(classifier.concurrency, 5)
+        self.assertEqual(classifier.maintenance_concurrency, 10)
+
+    def test_maintenance_concurrency_is_configurable(self):
+        classifier = TagClassifier({"enabled": False, "maintenance": {"concurrency": 10}})
+
+        self.assertEqual(classifier.maintenance_concurrency, 10)
 
     def test_disabled_classifier_falls_back_to_manual_ip_list(self):
         async def _run():

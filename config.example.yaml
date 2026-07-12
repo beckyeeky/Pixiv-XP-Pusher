@@ -127,8 +127,15 @@ tag_classifier:
   concurrency: 5
   maintenance:
     max_tags_per_run: 40 # 每次仅刷新高影响画像标签，避免全量重跑
+    concurrency: 10 # Gemini Grounded Judge 的并发请求数
     min_profile_weight: 0.0
     prefer_unresolved_first: true
+  grounded_judge:
+    timeout_seconds: 45
+    max_output_tokens: 512
+    temperature: 1
+    max_retries: 2 # 首次请求失败后最多重试两次，仅重试超时、限流和服务端错误
+    retry_delay_seconds: 1 # 重试间隔按 1s、2s 指数退避
   # Grounded Judge 必须恰好选择一个 Gemini Model。
   judges: [gemini_flash]
   danbooru:
