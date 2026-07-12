@@ -1648,7 +1648,9 @@ class TelegramNotifier(BaseNotifier):
                 logger.debug(f"删除重启通知消息失败: {e}")
             
             try:
-                subprocess.Popen(["systemctl", "restart", "pixiv-pusher"],
+                subprocess.Popen([
+                    "systemctl", "restart", "pixiv-pusher.service", "pixiv-web.service"
+                ],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception as e:
                 logger.error(f"systemctl 重启失败: {e}")
