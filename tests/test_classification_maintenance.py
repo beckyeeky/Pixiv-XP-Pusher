@@ -126,3 +126,18 @@ class ScheduledClassificationMaintenanceTests(unittest.TestCase):
         self.assertEqual(settings.max_output_tokens, 512)
         self.assertEqual(settings.temperature, 1.0)
         self.assertEqual(settings.max_retries, 2)
+
+    def test_gemini_judge_uses_minimal_thinking_for_structured_classification(self):
+        config = {
+            "tag_classifier": {
+                "judges": ["gemini"],
+                "grounded_judge": {"max_output_tokens": 1024, "thinking_level": "minimal"},
+            },
+            "models": {"gemini": {"provider": "google", "model": "gemini-flash-latest"}},
+            "providers": {"google": {"type": "google", "api_key": "test-key"}},
+        }
+
+        settings = grounded_judge._selected_gemini_judge(config)
+
+        self.assertEqual(settings.max_output_tokens, 1024)
+        self.assertEqual(settings.thinking_level, "minimal")

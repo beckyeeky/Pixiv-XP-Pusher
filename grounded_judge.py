@@ -20,6 +20,7 @@ class GeminiJudgeConfig:
     timeout_seconds: int
     max_output_tokens: int
     temperature: float
+    thinking_level: str
     max_retries: int
     retry_delay_seconds: float
 
@@ -46,6 +47,7 @@ def _selected_gemini_judge(config: dict) -> GeminiJudgeConfig:
         timeout_seconds=_positive_int(settings.get("timeout_seconds"), 45),
         max_output_tokens=_positive_int(settings.get("max_output_tokens"), 512),
         temperature=_temperature(settings.get("temperature"), 1.0),
+        thinking_level=_thinking_level(settings.get("thinking_level"), "medium"),
         max_retries=_nonnegative_int(settings.get("max_retries"), 2),
         retry_delay_seconds=_nonnegative_float(settings.get("retry_delay_seconds"), 1.0),
     )
@@ -85,6 +87,11 @@ def _temperature(value, default: float) -> float:
         return min(2.0, max(0.0, float(value)))
     except (TypeError, ValueError):
         return default
+
+
+def _thinking_level(value, default: str) -> str:
+    level = str(value or "").strip().lower()
+    return level if level in {"minimal", "low", "medium", "high"} else default
 
 
 def _is_retryable_error(error: Exception) -> bool:
@@ -149,6 +156,7 @@ async def classify_single_tag(tag: str, translation: str | None, config: dict) -
             "temperature": judge.temperature,
             "maxOutputTokens": judge.max_output_tokens,
             "responseMimeType": "application/json",
+            "thinkingConfig": {"thinkingLevel": judge.thinking_level},
         },
     }
     for attempt in range(judge.max_retries + 1):

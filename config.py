@@ -428,6 +428,11 @@ def normalize_config(config: dict) -> dict:
     except (TypeError, ValueError):
         logger.warning("配置项 tag_classifier.grounded_judge.temperature 非法，已回退为默认值 1.0")
         grounded_judge_cfg["temperature"] = 1.0
+    thinking_level = str(grounded_judge_cfg.get("thinking_level", "medium") or "").strip().lower()
+    if thinking_level not in {"minimal", "low", "medium", "high"}:
+        logger.warning("配置项 tag_classifier.grounded_judge.thinking_level 非法，已回退为默认值 medium")
+        thinking_level = "medium"
+    grounded_judge_cfg["thinking_level"] = thinking_level
     grounded_judge_cfg["max_retries"] = max(0, _coerce_int(
         grounded_judge_cfg.get("max_retries", 2), default=2,
         field_name="tag_classifier.grounded_judge.max_retries",
