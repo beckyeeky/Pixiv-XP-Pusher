@@ -12,6 +12,8 @@ from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler
 
 from .base import BaseNotifier, DeliveryBatchResult
+from classification_maintenance import run_scheduled_maintenance
+from config import load_config
 from pixiv_client import Illust, PixivClient
 from proxy_utils import normalize_proxy_url
 from utils import format_xp_profile_lines, get_pixiv_cat_url
@@ -233,6 +235,7 @@ class TelegramNotifier(BaseNotifier):
         self.rich_message_image_mode = rich_cfg["image_mode"]
         self._telegraph = None  # Telegraph 客户端（延迟初始化）
         self._pending_input = None  # 等待用户输入的状态
+        self._tag_review_batch_running = False
 
         # 日志
         logger.info(f"Telegram 推送目标: {', '.join(self.chat_ids) or '无'}")
@@ -348,8 +351,19 @@ class TelegramNotifier(BaseNotifier):
                 InlineKeyboardButton("🔕 静音", callback_data="menu:mute"),
             ],
             [
+                InlineKeyboardButton("🏷️ 标签审核", callback_data="menu:tag_review"),
+            ],
+            [
                 InlineKeyboardButton("⚙️ 设置", callback_data="menu:settings"),
             ],
+        ])
+
+    def _build_tag_review_menu(self) -> InlineKeyboardMarkup:
+        """Build the tag-review menu without exposing Gemini credentials to Telegram."""
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 刷新待人工数", callback_data="menu:tag_review")],
+            [InlineKeyboardButton("🤖 Gemini 批量判定全部", callback_data="menu:tag_review:run")],
+            [InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")],
         ])
 
     def _build_batch_menu(self) -> InlineKeyboardMarkup:
@@ -554,6 +568,69 @@ class TelegramNotifier(BaseNotifier):
                 InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")
             ]])
             await query.edit_message_text("\n".join(lines), reply_markup=keyboard, parse_mode="Markdown")
+
+        # 标签审核 / Gemini Grounded Judge
+        elif action == "tag_review":
+            if not sub_action:
+                count = await db.get_tag_review_count()
+                text = (
+                    "🏷️ *标签审核*\n\n"
+                    f"当前待人工决定标签：*{count}* 个\n\n"
+                    "可一键使用 Gemini 搜索批量判定当前队列；失败或无法确定的标签会保留在队列中。"
+                )
+                await query.edit_message_text(
+                    text, reply_markup=self._build_tag_review_menu(), parse_mode="Markdown"
+                )
+            elif sub_action == "run":
+                if getattr(self, "_tag_review_batch_running", False):
+                    await query.answer("Gemini 批量判定正在执行，请稍候", show_alert=True)
+                    return
+
+                count = await db.get_tag_review_count()
+                if not count:
+                    await query.edit_message_text(
+                        "🏷️ 当前没有待人工决定的标签。",
+                        reply_markup=self._build_tag_review_menu(),
+                    )
+                    return
+
+                items = await db.get_tag_review_queue(limit=count)
+                tags = [item["tag"] for item in items]
+                config = load_config()
+                classifier_config = config.get("tag_classifier", {})
+                maintenance_config = classifier_config.get("maintenance", {}) if isinstance(classifier_config, dict) else {}
+                concurrency = maintenance_config.get("concurrency", 10) if isinstance(maintenance_config, dict) else 10
+                self._tag_review_batch_running = True
+                await query.edit_message_text(
+                    f"🤖 正在使用 Gemini 搜索批量判定 {len(tags)} 个待审核标签…",
+                )
+                try:
+                    summary = await run_scheduled_maintenance(
+                        tags, config, concurrency=concurrency,
+                    )
+                    usage = summary["usage"]
+                    remaining = await db.get_tag_review_count()
+                    text = (
+                        "🤖 *Gemini 批量判定完成*\n\n"
+                        f"已尝试：{summary['attempted']}\n"
+                        f"已接受：{summary['accepted']}\n"
+                        f"仍未解决：{summary['unresolved']}\n"
+                        f"失败：{summary['failed']}\n"
+                        f"人工决定优先跳过：{summary['human_override']}\n"
+                        f"当前待人工决定：*{remaining}*\n\n"
+                        f"API tokens：{usage.get('total', 0)}；搜索查询约：{usage.get('search_queries', 0)} 次"
+                    )
+                    await query.edit_message_text(
+                        text, reply_markup=self._build_tag_review_menu(), parse_mode="Markdown"
+                    )
+                except Exception as exc:
+                    logger.exception("Telegram Gemini tag-review batch failed")
+                    await query.edit_message_text(
+                        f"❌ Gemini 批量判定启动失败：{type(exc).__name__}",
+                        reply_markup=self._build_tag_review_menu(),
+                    )
+                finally:
+                    self._tag_review_batch_running = False
 
         # 批量设置
         elif action == "batch":
@@ -1536,7 +1613,7 @@ class TelegramNotifier(BaseNotifier):
             chat_id = update.message.chat_id
 
             # 发送重启消息并保存消息对象
-            restart_msg = await update.message.reply_text("🔄 正在通过 systemctl 重启服务...")
+            restart_msg = await update.message.reply_text("🔄 正在通过 systemctl 重启推送服务和 WebUI...")
             restart_msg_id = restart_msg.message_id
             logger.info(f"用户 {user_id} 触发 systemctl 重启")
 
