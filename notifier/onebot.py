@@ -395,13 +395,18 @@ class OneBotNotifier(BaseNotifier):
             # --- /xp ---
             elif cmd == "/xp":
                 try:
-                    from database import get_top_xp_tags
-                    top_tags = await get_top_xp_tags(15)
+                    from database import get_xp_profile_display_sections
+                    sections = await get_xp_profile_display_sections()
+                    top_tags = sections["feature"]
                     if not top_tags:
-                        await self._send_message("📊 暂无 XP 画像数据", "private", sender_id)
+                        await self._send_message("📊 暂无已分类的特征标签，请先在 WebUI 完成标签分类。", "private", sender_id)
                         return
 
-                    lines = format_xp_profile_lines(top_tags, "🎯 您的 XP 画像 Top 15")
+                    lines = format_xp_profile_lines(top_tags, "🎯 您的 XP 画像 · 特征 Top 15")
+                    if sections["identity"]:
+                        lines.extend([""] + format_xp_profile_lines(
+                            sections["identity"], "🧩 角色 / 作品偏好 Top 5"
+                        ))
                     await self._send_message("\n".join(lines), "private", sender_id)
                 except Exception as e:
                     await self._send_message(f"❌ 获取 XP 失败: {e}", "private", sender_id)

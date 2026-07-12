@@ -561,8 +561,21 @@ class TelegramNotifier(BaseNotifier):
 
         # XP画像
         elif action == "xp":
-            top_tags = await db.get_top_xp_tags(15)
-            lines = format_xp_profile_lines(top_tags, "🎯 *XP 画像 Top 15*", markdown=True)
+            sections = await db.get_xp_profile_display_sections()
+            if not sections["feature"]:
+                text = "📊 暂无已分类的特征标签，请先在 WebUI 完成标签分类。"
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")
+                ]])
+                await query.edit_message_text(text, reply_markup=keyboard)
+                return
+            lines = format_xp_profile_lines(
+                sections["feature"], "🎯 *XP 画像 · 特征 Top 15*", markdown=True
+            )
+            if sections["identity"]:
+                lines.extend([""] + format_xp_profile_lines(
+                    sections["identity"], "🧩 *角色 / 作品偏好 Top 5*", markdown=True
+                ))
 
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")
@@ -2652,14 +2665,19 @@ class TelegramNotifier(BaseNotifier):
                 logger.debug(f"删除 /xp 命令失败: {e}")
 
             try:
-                from database import get_top_xp_tags
-                top_tags = await get_top_xp_tags(15)
+                from database import get_xp_profile_display_sections
+                sections = await get_xp_profile_display_sections()
+                top_tags = sections["feature"]
 
                 if not top_tags:
-                    await update.message.reply_text("📊 暂无 XP 画像数据")
+                    await update.message.reply_text("📊 暂无已分类的特征标签，请先在 WebUI 完成标签分类。")
                     return
 
-                lines = format_xp_profile_lines(top_tags, "🎯 *您的 XP 画像 Top 15*", markdown=True)
+                lines = format_xp_profile_lines(top_tags, "🎯 *您的 XP 画像 · 特征 Top 15*", markdown=True)
+                if sections["identity"]:
+                    lines.extend([""] + format_xp_profile_lines(
+                        sections["identity"], "🧩 *角色 / 作品偏好 Top 5*", markdown=True
+                    ))
 
                 await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
             except Exception as e:
