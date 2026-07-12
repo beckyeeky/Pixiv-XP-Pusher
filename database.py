@@ -588,8 +588,13 @@ async def activate_ai_tag_classification(tag: str, classification: str, explanat
             "SELECT classification, source FROM tag_classification_cache WHERE normalized_tag = ?", (tag,)
         )
         current = await cursor.fetchone()
-        if not current or current[0] != TAG_CATEGORY_UNRESOLVED or current[1] == "manual":
+        if current and current[1] == "manual":
             return False
+        if not current:
+            await db.execute(
+                "INSERT INTO tag_classification_cache (normalized_tag, classification, source, updated_at) VALUES (?, ?, 'ai', CURRENT_TIMESTAMP)",
+                (tag, TAG_CATEGORY_UNRESOLVED),
+            )
         await db.execute(
             """INSERT INTO ai_tag_classification_records (tag, classification, explanation, languages, updated_at)
                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -603,6 +608,29 @@ async def activate_ai_tag_classification(tag: str, classification: str, explanat
         )
         await db.commit()
         return True
+
+
+async def mark_ai_tag_unresolved(tag: str) -> bool:
+    """Keep a failed Grounded Judge result in the human review queue."""
+    tag = normalize_tag(tag)
+    if not tag:
+        return False
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT source FROM tag_classification_cache WHERE normalized_tag = ?", (tag,)
+        )
+        current = await cursor.fetchone()
+        if current and current[0] == "manual":
+            return False
+        await db.execute(
+            """INSERT INTO tag_classification_cache (normalized_tag, classification, source, updated_at)
+               VALUES (?, ?, 'ai', CURRENT_TIMESTAMP)
+               ON CONFLICT(normalized_tag) DO UPDATE SET classification=excluded.classification,
+               source=excluded.source, updated_at=CURRENT_TIMESTAMP""",
+            (tag, TAG_CATEGORY_UNRESOLVED),
+        )
+        await db.commit()
+    return True
 
 
 async def get_ai_tag_classification_record(tag: str) -> dict | None:

@@ -1,0 +1,90 @@
+import asyncio
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import classification_maintenance as maintenance
+import database
+import tag_classifier
+from tag_classifier import TagClassifier
+
+
+class ScheduledClassificationMaintenanceTests(unittest.TestCase):
+    def test_uses_the_single_tag_path_and_aggregates_usage(self):
+        async def run():
+            classify = AsyncMock(side_effect=[
+                {"tag": "white_hair", "status": "accepted", "usage": {"total": 12, "search_queries": 1}},
+                {"tag": "ambiguous", "status": "unresolved"},
+            ])
+            return await maintenance.run_scheduled_maintenance(
+                ["white_hair", "ambiguous"], {"tag_classifier": {}}, classify,
+            ), classify
+
+        summary, classify = asyncio.run(run())
+
+        self.assertEqual(summary["accepted"], 1)
+        self.assertEqual(summary["unresolved"], 1)
+        self.assertEqual(summary["usage"]["total"], 12)
+        self.assertEqual(summary["usage"]["search_queries"], 1)
+        self.assertEqual(classify.await_args_list[0].args[0], "white_hair")
+
+    def test_human_override_is_preserved_by_the_shared_activation_path(self):
+        record = {
+            "tag": "reviewed", "classification": "feature", "explanation": "trait", "languages": "en",
+        }
+        with patch.object(maintenance.db, "get_translated_tag", new=AsyncMock(return_value=None)), \
+             patch.object(maintenance, "classify_single_tag", new=AsyncMock(return_value=record)), \
+             patch.object(maintenance.db, "activate_ai_tag_classification", new=AsyncMock(return_value=False)):
+            result = asyncio.run(maintenance.classify_and_activate_tag("reviewed", {"tag_classifier": {}}))
+
+        self.assertEqual(result["status"], "human_override")
+
+    def test_unresolved_result_stays_reviewable_and_keeps_its_usage(self):
+        error = ValueError("Grounded Judge 明确标为 unresolved")
+        error.usage = {"total": 9, "search_queries": 2}
+
+        async def classify(_tag, _config):
+            raise error
+
+        with patch.object(maintenance.db, "mark_ai_tag_unresolved", new=AsyncMock(return_value=True)) as mark:
+            summary = asyncio.run(maintenance.run_scheduled_maintenance(["ambiguous"], {}, classify))
+
+        self.assertEqual(summary["unresolved"], 1)
+        self.assertEqual(summary["usage"]["total"], 9)
+        self.assertEqual(summary["items"][0]["usage"]["search_queries"], 2)
+        mark.assert_awaited_once_with("ambiguous")
+
+    def test_fresh_tag_can_be_activated_without_overriding_a_human_decision(self):
+        async def run(path):
+            await database.init_db()
+            activated = await database.activate_ai_tag_classification("fresh", "feature", "trait", "en")
+            classifications = await database.get_tag_classifications(["fresh"], ttl_days=30)
+            return activated, classifications
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir, \
+             patch.object(database, "DB_PATH", Path(tmpdir) / "maintenance.db"):
+            activated, classifications = asyncio.run(run(tmpdir))
+
+        self.assertTrue(activated)
+        self.assertEqual(classifications["fresh"]["classification"], "feature")
+
+    def test_scheduled_maintenance_keeps_existing_priority_before_using_grounded_path(self):
+        summary = {"attempted": 2, "accepted": 1, "unresolved": 1, "failed": 0,
+                   "human_override": 0, "usage": {}, "items": []}
+        classifier = TagClassifier({
+            "maintenance": {"max_tags_per_run": 2, "prefer_unresolved_first": True},
+        })
+        with patch.object(tag_classifier.db, "get_tag_classifications", new=AsyncMock(return_value={
+            "resolved_high": {"classification": "feature"},
+            "unresolved_low": {"classification": "unresolved"},
+            "unresolved_high": {"classification": "unresolved"},
+        })), patch.object(tag_classifier, "run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run, \
+             patch.object(tag_classifier.db, "set_state", new=AsyncMock()) as set_state:
+            result = asyncio.run(classifier.maintain_profile_tags({
+                "resolved_high": 10.0, "unresolved_low": 1.0, "unresolved_high": 5.0,
+            }))
+
+        self.assertIs(result, summary)
+        self.assertEqual(run.await_args.args[0], ["unresolved_high", "unresolved_low"])
+        set_state.assert_awaited_once()

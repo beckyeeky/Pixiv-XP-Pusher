@@ -92,8 +92,15 @@ async def classify_single_tag(tag: str, translation: str | None, config: dict) -
         async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=45)) as response:
             response.raise_for_status()
             raw = await response.json()
+    usage = _extract_usage(raw)
     try:
         record = json.loads(_extract_response_text(raw))
     except (TypeError, json.JSONDecodeError) as exc:
+        exc.usage = usage
         raise ValueError("Grounded Judge 返回的 JSON 无效") from exc
-    return {**validate_ai_classification_record(record, tag), "usage": _extract_usage(raw)}
+    try:
+        record = validate_ai_classification_record(record, tag)
+    except ValueError as exc:
+        exc.usage = usage
+        raise
+    return {**record, "usage": usage}

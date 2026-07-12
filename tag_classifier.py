@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 import database as db
+from classification_maintenance import run_scheduled_maintenance
 from profiler import DEFAULT_IP_TAGS
 from tag_categories import (
     TAG_CATEGORY_ARTIST,
@@ -54,6 +55,11 @@ class TagClassifier:
         self.prefer_unresolved_first = bool(maintenance_cfg.get("prefer_unresolved_first", True))
         self.providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
         self.models = cfg.get("models") if isinstance(cfg.get("models"), dict) else {}
+        self.grounded_judge_config = {
+            "tag_classifier": cfg,
+            "providers": self.providers,
+            "models": self.models,
+        }
         self.legacy_api_key = cfg.get("api_key", "")
         self.legacy_base_url = cfg.get("base_url") or "https://api.deepseek.com/v1"
         self.legacy_model = cfg.get("model") or "deepseek-v4-flash"
@@ -128,18 +134,9 @@ class TagClassifier:
             )
 
         remaining = [tag for tag in unique_tags if tag not in results]
-        # Multi-Judge installs accept machine categories only through maintenance
-        # consensus; delivery must not turn one fast-path response into truth.
-        if remaining and self.enabled and self.client and len(self.judges) == 1:
-            ai_results = await self._classify_with_ai(remaining)
-            if ai_results:
-                await db.save_tag_classifications(
-                    [(tag, item.classification, item.source) for tag, item in ai_results.items()]
-                )
-                results.update(ai_results)
-                remaining = [tag for tag in remaining if tag not in ai_results]
-
         if remaining:
+            # Delivery consumes accepted maintenance classifications. It never
+            # establishes a second, ungrounded machine classification path.
             if self.enabled and self.client:
                 fallback_results = self._classify_unaccepted_ai_tags(remaining)
             elif len(self.judges) > 1:
@@ -155,57 +152,15 @@ class TagClassifier:
 
         return results
 
-    async def maintain_profile_tags(self, tags: list[str] | dict[str, float], evidence_lookup=None) -> dict[str, TagClassification]:
-        """Refresh observed profile-tag evidence; delivery never waits for this method."""
-        normalized_tags = await self._select_maintenance_tags(tags)
-        gathered = {
-            tag: list(items)
-            for tag, items in (await db.get_tag_evidence(normalized_tags, include_provenance=True)).items()
-        }
-        for tag in normalized_tags:
-            gathered.setdefault(tag, [])
-            if tag in self.manual_ip_tags:
-                gathered[tag].append({"source": "manual", "classification": TAG_CATEGORY_COPYRIGHT, "confidence": 1.0})
-        if evidence_lookup is None:
-            supplied = await self._collect_machine_evidence(normalized_tags, gathered)
-        elif evidence_lookup:
-            tags_to_refresh = [
-                tag for tag in normalized_tags
-                if any(
-                    self._source_requires_refresh(tag, source, gathered)
-                    for source in self._configured_machine_sources()
-                )
-            ]
-            try:
-                supplied = await evidence_lookup(tags_to_refresh)
-            except Exception as exc:
-                logger.warning("Injected evidence lookup unavailable; using cached evidence: %s", exc)
-                await self._record_evidence_refresh_failure("injected", exc)
-                supplied = {}
-            supplied = {
-                tag: [
-                    item for item in items
-                    if self._source_requires_refresh(tag, item[0], gathered)
-                ]
-                for tag, items in supplied.items()
-            }
-        else:
-            supplied = {}
-        for tag, items in supplied.items():
-            gathered.setdefault(tag, []).extend(
-                {"source": source, "classification": category, "confidence": confidence}
-                for source, category, confidence in items
-            )
-        refreshed_evidence = [
-            (tag, source, category, confidence)
-            for tag, items in supplied.items()
-            for source, category, confidence in items
-        ]
-        if refreshed_evidence:
-            await db.save_tag_evidence(refreshed_evidence)
-        results = {tag: resolve_tag_evidence(tag, items) for tag, items in gathered.items()}
-        await db.save_tag_classifications([(tag, item.classification, item.source) for tag, item in results.items()])
-        return results
+    async def maintain_profile_tags(self, tags: list[str] | dict[str, float]) -> dict:
+        """Run selected tags through the same one-tag Grounded Judge used by review."""
+        selected_tags = await self._select_maintenance_tags(tags)
+        summary = await run_scheduled_maintenance(selected_tags, self.grounded_judge_config)
+        await db.set_state(
+            "runtime.last_classification_maintenance_summary",
+            json.dumps(summary, ensure_ascii=False),
+        )
+        return summary
 
     async def _select_maintenance_tags(self, tags: list[str] | dict[str, float]) -> list[str]:
         if isinstance(tags, dict):

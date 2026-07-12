@@ -29,7 +29,7 @@ import database as db
 from config import get_known_model_catalog, load_config as shared_load_config
 from proxy_utils import normalize_proxy_url
 from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
-from grounded_judge import classify_single_tag, validate_ai_classification_record
+from classification_maintenance import classify_and_activate_tag
 from utils import normalize_tag
 from web.settings_editor import (
     apply_settings_payload,
@@ -840,19 +840,14 @@ async def classify_tag_review(tag: str, _=Depends(require_auth)):
     normalized_tag = normalize_tag(tag)
     if not normalized_tag:
         raise HTTPException(status_code=400, detail="必须提供有效标签")
-    translation = await db.get_translated_tag(normalized_tag)
     try:
-        result = await classify_single_tag(normalized_tag, translation, load_config())
-        result = validate_ai_classification_record(result, normalized_tag)
-        activated = await db.activate_ai_tag_classification(
-            result["tag"], result["classification"], result["explanation"], result["languages"],
-        )
+        result = await classify_and_activate_tag(normalized_tag, load_config())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         logger.warning("Grounded Judge request failed for %s: %s", normalized_tag, exc)
         raise HTTPException(status_code=502, detail="Grounded Judge 请求失败，标签仍在审核队列") from exc
-    if not activated:
+    if result["status"] == "human_override":
         raise HTTPException(status_code=409, detail="标签已被人工审核或不再处于待审核状态")
     return result
 
@@ -998,12 +993,15 @@ def _decode_maintenance_status(raw: str | None) -> dict | None:
 @app.get("/api/classification-maintenance-status")
 async def get_classification_maintenance_status(_=Depends(require_auth)):
     """Return the independently recorded delivery and background maintenance outcomes."""
-    completion, background = await db.get_state("runtime.last_maintenance_completion"), await db.get_state(
+    completion, background, summary = await db.get_state("runtime.last_maintenance_completion"), await db.get_state(
         "runtime.last_maintenance_background_status"
+    ), await db.get_state(
+        "runtime.last_classification_maintenance_summary"
     )
     return {
         "completion": _decode_maintenance_status(completion),
         "background": _decode_maintenance_status(background),
+        "summary": _decode_maintenance_status(summary),
     }
 
 
