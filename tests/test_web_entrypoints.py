@@ -88,6 +88,34 @@ class WebEntrypointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
         activate.assert_awaited_once()
+
+    def test_authenticated_bulk_grounded_judge_reports_mixed_outcomes(self):
+        async def authenticated():
+            return None
+
+        async def classify(tag, _):
+            if tag == "resolved":
+                return {"usage": {"input": 4, "output": 3, "thoughts": 2, "tool_use_prompt": 1, "total": 10, "search_queries": 2}}
+            if tag == "uncertain":
+                raise web_app_module.HTTPException(status_code=422, detail="Grounded Judge 明确标为 unresolved")
+            raise web_app_module.HTTPException(status_code=502, detail="offline")
+
+        canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+        try:
+            with patch.object(web_app_module.db, "get_tag_review_queue", new=AsyncMock(return_value=[
+                {"tag": "resolved"}, {"tag": "uncertain"}, {"tag": "offline"},
+            ])), patch.object(web_app_module, "classify_tag_review", side_effect=classify):
+                with TestClient(canonical_app) as client:
+                    response = client.post("/api/tag-reviews/ai-process-all")
+        finally:
+            canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["attempted"], 3)
+        self.assertEqual(response.json()["accepted"], 1)
+        self.assertEqual(response.json()["unresolved"], 1)
+        self.assertEqual(response.json()["failed"], 1)
+        self.assertEqual(response.json()["usage"], {"input": 4, "output": 3, "thoughts": 2, "tool_use_prompt": 1, "total": 10, "search_queries": 2})
     def test_tag_review_apis_delegate_to_review_queue(self):
         with patch.object(web_app_module.db, "get_tag_review_queue", return_value=[{"tag": "needs_review"}]) as get_queue, \
              patch.object(web_app_module.db, "review_tag_classification") as review:

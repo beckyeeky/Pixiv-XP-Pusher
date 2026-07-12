@@ -70,6 +70,8 @@ def validate_ai_classification_record(record: dict, tag: str) -> dict:
     if record["tag"] != tag:
         raise ValueError("Grounded Judge 返回了不同的标签")
     category = normalize_tag_category(record["classification"])
+    if str(record["classification"]).strip().lower() == TAG_CATEGORY_UNRESOLVED:
+        raise ValueError("Grounded Judge 明确标为 unresolved")
     if category == TAG_CATEGORY_UNRESOLVED or category != record["classification"]:
         raise ValueError("Grounded Judge 未给出有效的 Tag Category")
     if not _LANGUAGE.fullmatch(record["languages"]):

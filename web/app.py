@@ -857,6 +857,35 @@ async def classify_tag_review(tag: str, _=Depends(require_auth)):
     return result
 
 
+@app.post("/api/tag-reviews/ai-process-all")
+async def classify_all_tag_reviews(_=Depends(require_auth)):
+    """Run the protected single-tag Grounded Judge path for the current queue."""
+    items = await db.get_tag_review_queue(500)
+    outcomes, totals = [], {"input": 0, "output": 0, "thoughts": 0, "tool_use_prompt": 0, "total": 0, "search_queries": 0}
+    accepted = unresolved = failed = 0
+    for item in items:
+        tag = item["tag"]
+        try:
+            result = await classify_tag_review(tag, _=None)
+            usage = result.get("usage") or {}
+            for key in totals:
+                totals[key] += int(usage.get(key) or 0)
+            outcomes.append({"tag": tag, "status": "accepted", "usage": usage})
+            accepted += 1
+        except HTTPException as exc:
+            detail = str(exc.detail)
+            status = "unresolved" if exc.status_code == 422 and "明确标为 unresolved" in detail else "failed"
+            outcomes.append({"tag": tag, "status": status, "error": detail})
+            if status == "unresolved":
+                unresolved += 1
+            else:
+                failed += 1
+    return {
+        "attempted": len(items), "accepted": accepted, "unresolved": unresolved, "failed": failed,
+        "usage": totals, "items": outcomes,
+    }
+
+
 def _format_review_evidence(item: dict) -> str:
     evidence = item.get("evidence") or []
     if not evidence:
