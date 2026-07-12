@@ -1203,6 +1203,13 @@ function ensureObject(parent, key) {
     return parent[key];
 }
 
+function ensureArray(parent, key) {
+    if (!Array.isArray(parent[key])) {
+        parent[key] = [];
+    }
+    return parent[key];
+}
+
 const KNOWN_LLM_MODELS = {{ known_llm_models | tojson }};
 const KNOWN_EMBEDDING_MODELS = {{ known_embedding_models | tojson }};
 let editingProviderCredential = null;
@@ -1234,8 +1241,7 @@ function renderLLMSettings() {
     const providers = ensureObject(initialConfig, 'providers');
     const llmProviders = Object.fromEntries(Object.entries(providers).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)));
     const models = ensureObject(initialConfig, 'models');
-    const judges = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'judges');
-    if (!Array.isArray(judges)) initialConfig.tag_classifier.judges = [];
+    ensureArray(ensureObject(initialConfig, 'tag_classifier'), 'judges');
     const providerCards = Object.entries(llmProviders).map(([name, provider]) => renderProviderCard(name, provider, models));
     const orphanModels = Object.entries(models).filter(([, model]) => !llmProviders[model?.provider]);
     if (orphanModels.length) {
@@ -1315,8 +1321,8 @@ function renameModel(oldName, newName) {
 }
 function modelReferenceLabels(name) {
     const refs = [];
-    const judges = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'judges');
-    if (Array.isArray(judges) && judges.includes(name)) refs.push('标签审查 Judge');
+    const judges = ensureArray(ensureObject(initialConfig, 'tag_classifier'), 'judges');
+    if (judges.includes(name)) refs.push('标签审查 Judge');
     if (ensureObject(ensureObject(initialConfig, 'profiler'), 'ai').model === name) refs.push('画像分析');
     if (ensureObject(ensureObject(initialConfig, 'ai'), 'embedding').model === name) refs.push('语义嵌入');
     if (ensureObject(ensureObject(initialConfig, 'ai'), 'scorer').model === name) refs.push('AI 评分');
