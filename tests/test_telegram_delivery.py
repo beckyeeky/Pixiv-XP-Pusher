@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from types import MethodType, SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 try:
     from notifier.telegram import TelegramNotifier
@@ -60,10 +60,41 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
         notifier = TelegramNotifier.__new__(TelegramNotifier)
         query = SimpleNamespace(edit_message_text=AsyncMock(), answer=AsyncMock())
 
-        with patch("database.get_tag_review_count", new=AsyncMock(return_value=7)):
+        with patch("database.get_tag_review_count", new=AsyncMock(return_value=7)), \
+             patch("database.get_high_weight_unclassified_profile_tags", new=AsyncMock(return_value=[])):
             await notifier._handle_menu_callback(query, "menu:tag_review")
 
         self.assertIn("当前待人工决定标签：*7* 个", query.edit_message_text.await_args.args[0])
+
+    async def test_tag_review_menu_requires_candidate_preview_before_high_weight_classification(self):
+        notifier = TelegramNotifier.__new__(TelegramNotifier)
+        notifier._tag_review_batch_running = False
+        notifier._high_weight_tag_review_snapshots = {}
+        query = SimpleNamespace(
+            message=SimpleNamespace(chat_id=123),
+            edit_message_text=AsyncMock(),
+            answer=AsyncMock(),
+        )
+        candidates = [
+            {"tag": "high_weight", "profile_weight": 4.0, "classification": None},
+            {"tag": "unresolved", "profile_weight": 3.0, "classification": "unresolved"},
+        ]
+        summary = {"accepted": 1, "unresolved": 1, "failed": 0}
+
+        with patch("database.get_high_weight_unclassified_profile_tags", new=AsyncMock(side_effect=[candidates, candidates])) as select, \
+             patch("notifier.telegram.load_config", return_value={"tag_classifier": {"maintenance": {"concurrency": 3}}}), \
+             patch("notifier.telegram.run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run:
+            await notifier._handle_menu_callback(query, "menu:tag_review:high_weight")
+            await notifier._handle_menu_callback(query, "menu:tag_review:high_weight:confirm")
+
+        self.assertIn("高权重未分类候选", query.edit_message_text.await_args_list[0].args[0])
+        select.assert_has_awaits([
+            call(limit=40, min_profile_weight=1.0),
+            call(limit=40, min_profile_weight=1.0),
+        ])
+        run.assert_awaited_once_with(
+            ["high_weight", "unresolved"], {"tag_classifier": {"maintenance": {"concurrency": 3}}}, concurrency=3,
+        )
 
 
 if __name__ == "__main__":

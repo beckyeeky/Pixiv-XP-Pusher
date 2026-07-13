@@ -60,6 +60,16 @@ python scripts/review_tag_queue.py list
 python scripts/review_tag_queue.py review tag_name character
 ```
 
+高权重但尚未分类的 Preference Profile Tag 应先导出、审核，再显式执行 Grounded Judge；不要直接对整个画像批量分类：
+
+```bash
+python scripts/maintain_high_weight_tags.py --limit 40 --min-weight 1.0 --output /tmp/reviewed-tags.json
+# 审核 /tmp/reviewed-tags.json 后：
+python scripts/maintain_high_weight_tags.py --apply --reviewed-tags /tmp/reviewed-tags.json
+```
+
+Telegram 的 `🏷️ 标签审核` 菜单提供同一流程：先点 `📋 查看高权重候选`，确认列表后才会出现并执行分类按钮。候选快照会在确认前重新校验，避免分类已不再符合当前条件的 Tag。
+
 启用后会影响三处行为：
 - 匹配度计算里 `feature` 标签按 `1.3x` 加权，`ip` 标签不额外加成
 - 推送消息中的 `display_tags` 按 feature-first 排序

@@ -236,6 +236,7 @@ class TelegramNotifier(BaseNotifier):
         self._telegraph = None  # Telegraph 客户端（延迟初始化）
         self._pending_input = None  # 等待用户输入的状态
         self._tag_review_batch_running = False
+        self._high_weight_tag_review_snapshots: dict[int, list[dict]] = {}
 
         # 日志
         logger.info(f"Telegram 推送目标: {', '.join(self.chat_ids) or '无'}")
@@ -362,8 +363,15 @@ class TelegramNotifier(BaseNotifier):
         """Build the tag-review menu without exposing Gemini credentials to Telegram."""
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 刷新待人工数", callback_data="menu:tag_review")],
+            [InlineKeyboardButton("📋 查看高权重候选", callback_data="menu:tag_review:high_weight")],
             [InlineKeyboardButton("🤖 Gemini 批量判定全部", callback_data="menu:tag_review:run")],
             [InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")],
+        ])
+
+    def _build_high_weight_tag_confirmation_menu(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ 确认分类这批候选", callback_data="menu:tag_review:high_weight:confirm")],
+            [InlineKeyboardButton("⬅️ 返回标签审核", callback_data="menu:tag_review")],
         ])
 
     def _build_batch_menu(self) -> InlineKeyboardMarkup:
@@ -513,6 +521,7 @@ class TelegramNotifier(BaseNotifier):
         parts = data.split(":")
         action = parts[1] if len(parts) > 1 else ""
         sub_action = parts[2] if len(parts) > 2 else ""
+        detail_action = parts[3] if len(parts) > 3 else ""
 
         # 主菜单
         if action == "main":
@@ -586,14 +595,83 @@ class TelegramNotifier(BaseNotifier):
         elif action == "tag_review":
             if not sub_action:
                 count = await db.get_tag_review_count()
+                high_weight_candidates = await db.get_high_weight_unclassified_profile_tags(
+                    limit=40, min_profile_weight=1.0,
+                )
                 text = (
                     "🏷️ *标签审核*\n\n"
-                    f"当前待人工决定标签：*{count}* 个\n\n"
-                    "可一键使用 Gemini 搜索批量判定当前队列；失败或无法确定的标签会保留在队列中。"
+                    f"当前待人工决定标签：*{count}* 个\n"
+                    f"高权重未分类候选：*{len(high_weight_candidates)}* 个（最多 40 个，权重 ≥ 1.0）\n\n"
+                    "可查看高权重候选后确认分类；也可一键判定当前待人工队列。失败或无法确定的标签会保留在队列中。"
                 )
                 await query.edit_message_text(
                     text, reply_markup=self._build_tag_review_menu(), parse_mode="Markdown"
                 )
+            elif sub_action == "high_weight":
+                chat_id = getattr(getattr(query, "message", None), "chat_id", 0)
+                if detail_action == "confirm":
+                    snapshots = getattr(self, "_high_weight_tag_review_snapshots", {})
+                    candidates = snapshots.get(chat_id, [])
+                    if not candidates:
+                        await query.answer("请先查看候选列表", show_alert=True)
+                        return
+                    current = await db.get_high_weight_unclassified_profile_tags(limit=40, min_profile_weight=1.0)
+                    current_tags = {item["tag"] for item in current}
+                    stale = [item["tag"] for item in candidates if item["tag"] not in current_tags]
+                    if stale:
+                        await query.edit_message_text(
+                            "候选列表已变化，请重新查看后再确认。",
+                            reply_markup=self._build_tag_review_menu(),
+                        )
+                        snapshots.pop(chat_id, None)
+                        return
+                    tags = [item["tag"] for item in candidates]
+                    if getattr(self, "_tag_review_batch_running", False):
+                        await query.answer("Gemini 批量判定正在执行，请稍候", show_alert=True)
+                        return
+                    config = load_config()
+                    classifier_config = config.get("tag_classifier", {})
+                    maintenance_config = classifier_config.get("maintenance", {}) if isinstance(classifier_config, dict) else {}
+                    concurrency = maintenance_config.get("concurrency", 10) if isinstance(maintenance_config, dict) else 10
+                    self._tag_review_batch_running = True
+                    await query.edit_message_text(f"🤖 正在分类 {len(tags)} 个已确认的高权重候选…")
+                    try:
+                        summary = await run_scheduled_maintenance(tags, config, concurrency=concurrency)
+                        await query.edit_message_text(
+                            f"🤖 高权重候选分类完成：已接受 {summary['accepted']}，"
+                            f"未解决 {summary['unresolved']}，失败 {summary['failed']}。",
+                            reply_markup=self._build_tag_review_menu(),
+                        )
+                    except Exception as exc:
+                        logger.exception("Telegram high-weight tag maintenance failed")
+                        await query.edit_message_text(
+                            f"❌ 高权重候选分类启动失败：{type(exc).__name__}",
+                            reply_markup=self._build_tag_review_menu(),
+                        )
+                    finally:
+                        self._tag_review_batch_running = False
+                        snapshots.pop(chat_id, None)
+                else:
+                    candidates = await db.get_high_weight_unclassified_profile_tags(limit=40, min_profile_weight=1.0)
+                    snapshots = getattr(self, "_high_weight_tag_review_snapshots", None)
+                    if snapshots is None:
+                        snapshots = self._high_weight_tag_review_snapshots = {}
+                    snapshots[chat_id] = candidates
+                    if not candidates:
+                        await query.edit_message_text(
+                            "📋 当前没有权重 ≥ 1.0 的未分类画像标签。",
+                            reply_markup=self._build_tag_review_menu(),
+                        )
+                        return
+                    lines = ["📋 高权重未分类候选（已按权重排序）", ""]
+                    lines.extend(
+                        f"{index}. {item['tag']} ({item['profile_weight']:.2f})"
+                        for index, item in enumerate(candidates, 1)
+                    )
+                    lines.extend(["", "请确认后才会发送这批标签给 Gemini Grounded Judge。"])
+                    await query.edit_message_text(
+                        "\n".join(lines), reply_markup=self._build_high_weight_tag_confirmation_menu(),
+                    )
             elif sub_action == "run":
                 if getattr(self, "_tag_review_batch_running", False):
                     await query.answer("Gemini 批量判定正在执行，请稍候", show_alert=True)
