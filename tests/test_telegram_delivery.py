@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 from types import MethodType, SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 try:
     from notifier.telegram import TelegramNotifier
@@ -32,6 +33,37 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.delivered_ids, [1])
         self.assertEqual(result.failed_ids, [2])
         self.assertEqual(result.queued_ids, [])
+
+    async def test_tag_review_menu_runs_gemini_for_the_current_queue_and_reports_remaining_count(self):
+        notifier = TelegramNotifier.__new__(TelegramNotifier)
+        notifier._tag_review_batch_running = False
+        query = SimpleNamespace(edit_message_text=AsyncMock(), answer=AsyncMock())
+        summary = {
+            "attempted": 2, "accepted": 1, "unresolved": 1, "failed": 0,
+            "human_override": 0, "usage": {"total": 23, "search_queries": 2},
+        }
+
+        with patch("database.get_tag_review_count", new=AsyncMock(side_effect=[2, 1])), \
+             patch("database.get_tag_review_queue", new=AsyncMock(return_value=[{"tag": "one"}, {"tag": "two"}])) as queue, \
+             patch("notifier.telegram.load_config", return_value={"tag_classifier": {"maintenance": {"concurrency": 3}}}), \
+             patch("notifier.telegram.run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run:
+            await notifier._handle_menu_callback(query, "menu:tag_review:run")
+
+        queue.assert_awaited_once_with(limit=2)
+        run.assert_awaited_once_with(
+            ["one", "two"], {"tag_classifier": {"maintenance": {"concurrency": 3}}}, concurrency=3,
+        )
+        self.assertFalse(notifier._tag_review_batch_running)
+        self.assertIn("当前待人工决定：*1*", query.edit_message_text.await_args_list[-1].args[0])
+
+    async def test_tag_review_menu_displays_exact_pending_count(self):
+        notifier = TelegramNotifier.__new__(TelegramNotifier)
+        query = SimpleNamespace(edit_message_text=AsyncMock(), answer=AsyncMock())
+
+        with patch("database.get_tag_review_count", new=AsyncMock(return_value=7)):
+            await notifier._handle_menu_callback(query, "menu:tag_review")
+
+        self.assertIn("当前待人工决定标签：*7* 个", query.edit_message_text.await_args.args[0])
 
 
 if __name__ == "__main__":

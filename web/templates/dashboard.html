@@ -28,14 +28,14 @@
     </div>
 </div>
 
-<!-- XP 画像词云 -->
+<!-- XP 特征词云 -->
 <div class="card">
     <div class="card-header">
-        <h2 class="card-title">🎯 XP 画像 Top 20</h2>
+        <h2 class="card-title">🎯 XP 特征 Top 20</h2>
     </div>
-    {% if top_tags %}
+    {% if feature_tags %}
     <div class="tag-cloud">
-        {% for tag, weight in top_tags %}
+        {% for tag, weight in feature_tags %}
         <span class="tag" style="font-size: {{ 0.8 + weight * 0.1 }}rem;">
             {{ tag }}
             <span class="weight">{{ "%.1f"|format(weight) }}</span>
@@ -43,9 +43,25 @@
         {% endfor %}
     </div>
     {% else %}
-    <p style="color: var(--text-secondary);">暂无数据，请先运行一次推送任务。</p>
+    <p style="color: var(--text-secondary);">暂无已分类的特征标签。请先完成标签分类。</p>
     {% endif %}
 </div>
+
+{% if identity_tags %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">🧩 角色 / 作品偏好 Top 10</h2>
+    </div>
+    <div class="tag-cloud">
+        {% for tag, weight in identity_tags %}
+        <span class="tag" style="font-size: {{ 0.8 + weight * 0.1 }}rem;">
+            {{ tag }}
+            <span class="weight">{{ "%.1f"|format(weight) }}</span>
+        </span>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
 
 <!-- 热门画师 -->
 {% if stats.top_artists %}

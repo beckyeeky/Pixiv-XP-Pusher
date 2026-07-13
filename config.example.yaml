@@ -127,8 +127,19 @@ tag_classifier:
   concurrency: 5
   maintenance:
     max_tags_per_run: 40 # 每次仅刷新高影响画像标签，避免全量重跑
+    concurrency: 10 # Gemini Grounded Judge 的并发请求数
     min_profile_weight: 0.0
     prefer_unresolved_first: true
+  grounded_judge:
+    timeout_seconds: 45
+    max_output_tokens: 1024
+    temperature: 0.0
+    thinking_level: minimal # 单标签固定 JSON 分类，减少推理 token 挤占输出预算
+    max_retries: 2 # 首次请求失败后最多重试两次，仅重试超时、限流和服务端错误
+    retry_delay_seconds: 1 # 重试间隔按 1s、2s 指数退避
+    # 仅对 503 覆盖默认重试策略，给 Gemini 服务恢复更长窗口；其他可重试错误使用上方默认值。
+    retry_by_status:
+      "503": {max_retries: 5, retry_delay_seconds: 5}
   # Grounded Judge 必须恰好选择一个 Gemini Model。
   judges: [gemini_flash]
   danbooru:

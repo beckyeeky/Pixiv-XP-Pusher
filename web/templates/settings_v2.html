@@ -1103,6 +1103,13 @@ function ensureObject(parent, key) {
     return parent[key];
 }
 
+function ensureArray(parent, key) {
+    if (!Array.isArray(parent[key])) {
+        parent[key] = [];
+    }
+    return parent[key];
+}
+
 const KNOWN_LLM_MODELS = {{ known_llm_models | tojson }};
 const KNOWN_EMBEDDING_MODELS = {{ known_embedding_models | tojson }};
 let editingProviderCredential = null;
@@ -1134,8 +1141,7 @@ function renderLLMSettings() {
     const providers = ensureObject(initialConfig, 'providers');
     const llmProviders = Object.fromEntries(Object.entries(providers).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)));
     const models = ensureObject(initialConfig, 'models');
-    const judges = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'judges');
-    if (!Array.isArray(judges)) initialConfig.tag_classifier.judges = [];
+    const judges = ensureArray(ensureObject(initialConfig, 'tag_classifier'), 'judges');
     document.getElementById('provider_list').innerHTML = Object.entries(llmProviders)
         .map(([name, provider]) => renderProviderCard(name, provider, models)).join('')
         || '<p class="empty-models">尚未配置 AI Provider。先添加一个服务连接。</p>';
@@ -1246,8 +1252,8 @@ function renameModelReferences(oldName, newName) {
 }
 function modelReferenceLabels(name) {
     const refs = [];
-    const judges = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'judges');
-    if (Array.isArray(judges) && judges.includes(name)) refs.push('标签审查 Judge');
+    const judges = ensureArray(ensureObject(initialConfig, 'tag_classifier'), 'judges');
+    if (judges.includes(name)) refs.push('标签审查 Judge');
     if (ensureObject(ensureObject(initialConfig, 'profiler'), 'ai').model === name) refs.push('画像分析');
     if (ensureObject(ensureObject(initialConfig, 'ai'), 'embedding').model === name) refs.push('语义嵌入');
     if (ensureObject(ensureObject(initialConfig, 'ai'), 'scorer').model === name) refs.push('智能精排');
@@ -1256,7 +1262,7 @@ function modelReferenceLabels(name) {
 function renderJudgeSelection() {
     const target = document.getElementById('judge_selection');
     if (!target) return;
-    const judges = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'judges');
+    const judges = ensureArray(ensureObject(initialConfig, 'tag_classifier'), 'judges');
     const llmModels = Object.entries(ensureObject(initialConfig, 'models')).filter(([, model]) => Array.isArray(model?.capabilities) && model.capabilities.includes('llm'));
     target.innerHTML = llmModels.length ? llmModels.map(([name, model]) => `<label class="toggle-switch"><input type="checkbox" ${judges.includes(name) ? 'checked' : ''} onchange="toggleJudge('${escapeJs(name)}', this.checked)"><span>${escapeHtml(name)} (${escapeHtml(model.provider || '')})</span></label>`).join('') : '<span class="help-text">请先在 Model 页面创建 LLM Model。</span>';
 }

@@ -13,8 +13,9 @@
 - `/mute`, `/unmute`：标签静音
 - `/block_artist`, `/unblock_artist`：画师屏蔽
 - `/batch`：批量模式设置
+- `/menu` → `🏷️ 标签审核`：查看待人工决定标签数，并一键用 Gemini 搜索批量判定当前队列
 - `/rich`：Rich Message 模式设置（inline 按钮，或 `on` / `off` / `fallback on|off` / `mode photo|rich_card|hybrid` / `test`）
 - `/help`：帮助
-- `/restart`：重启服务（需部署环境支持）
+- `/restart`：通过 systemd 同时重启 `pixiv-pusher.service` 与 `pixiv-web.service`（需部署环境支持）
 
 > 说明：命令交互与按钮文案可能随版本调整，建议升级后以 `/help` 与菜单实际显示为准。

@@ -2,6 +2,8 @@
 
 import json
 import re
+import asyncio
+import logging
 from dataclasses import dataclass
 
 import aiohttp
@@ -10,12 +12,20 @@ from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
 
 
 _LANGUAGE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]+)?$", re.IGNORECASE)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class GeminiJudgeConfig:
     api_key: str
     model: str
+    timeout_seconds: int
+    max_output_tokens: int
+    temperature: float
+    thinking_level: str
+    max_retries: int
+    retry_delay_seconds: float
+    retry_by_status: dict[int, tuple[int, float]]
 
 
 def _selected_gemini_judge(config: dict) -> GeminiJudgeConfig:
@@ -33,7 +43,93 @@ def _selected_gemini_judge(config: dict) -> GeminiJudgeConfig:
     model_name = str(model.get("model") or "").strip()
     if not api_key or not model_name:
         raise ValueError("Grounded Judge 缺少 Gemini API Key 或模型名称")
-    return GeminiJudgeConfig(api_key=api_key, model=model_name)
+    settings = classifier.get("grounded_judge") if isinstance(classifier.get("grounded_judge"), dict) else {}
+    return GeminiJudgeConfig(
+        api_key=api_key,
+        model=model_name,
+        timeout_seconds=_positive_int(settings.get("timeout_seconds"), 45),
+        max_output_tokens=_positive_int(settings.get("max_output_tokens"), 512),
+        temperature=_temperature(settings.get("temperature"), 1.0),
+        thinking_level=_thinking_level(settings.get("thinking_level"), "medium"),
+        max_retries=_nonnegative_int(settings.get("max_retries"), 2),
+        retry_delay_seconds=_nonnegative_float(settings.get("retry_delay_seconds"), 1.0),
+        retry_by_status=_retry_by_status(settings.get("retry_by_status")),
+    )
+
+
+def _positive_int(value, default: int) -> int:
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _nonnegative_int(value, default: int) -> int:
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _nonnegative_float(value, default: float) -> float:
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _temperature(value, default: float) -> float:
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        return min(2.0, max(0.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _thinking_level(value, default: str) -> str:
+    level = str(value or "").strip().lower()
+    return level if level in {"minimal", "low", "medium", "high"} else default
+
+
+def _retry_by_status(value) -> dict[int, tuple[int, float]]:
+    """Parse optional per-HTTP-status retry overrides from YAML."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[int, tuple[int, float]] = {}
+    for raw_status, policy in value.items():
+        try:
+            status = int(raw_status)
+        except (TypeError, ValueError):
+            continue
+        if not 100 <= status <= 599 or not isinstance(policy, dict):
+            continue
+        result[status] = (
+            _nonnegative_int(policy.get("max_retries"), 2),
+            _nonnegative_float(policy.get("retry_delay_seconds"), 1.0),
+        )
+    return result
+
+
+def _is_retryable_error(error: Exception) -> bool:
+    if isinstance(error, (asyncio.TimeoutError, aiohttp.ClientConnectionError)):
+        return True
+    return isinstance(error, aiohttp.ClientResponseError) and (
+        error.status == 408 or error.status == 429 or error.status >= 500
+    )
+
+
+def _retry_policy(error: Exception, judge: GeminiJudgeConfig) -> tuple[int, float]:
+    """Return the retry budget and base delay for this retryable error."""
+    if isinstance(error, aiohttp.ClientResponseError):
+        return judge.retry_by_status.get(error.status, (judge.max_retries, judge.retry_delay_seconds))
+    return judge.max_retries, judge.retry_delay_seconds
 
 
 def _build_grounding_prompt(tag: str, translation: str | None) -> str:
@@ -86,12 +182,39 @@ async def classify_single_tag(tag: str, translation: str | None, config: dict) -
     payload = {
         "contents": [{"role": "user", "parts": [{"text": _build_grounding_prompt(tag, translation)}]}],
         "tools": [{"google_search": {}}],
-        "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+        "generationConfig": {
+            "temperature": judge.temperature,
+            "maxOutputTokens": judge.max_output_tokens,
+            "responseMimeType": "application/json",
+            "thinkingConfig": {"thinkingLevel": judge.thinking_level},
+        },
     }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=45)) as response:
-            response.raise_for_status()
-            raw = await response.json()
+    attempt = 0
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=judge.timeout_seconds),
+                ) as response:
+                    response.raise_for_status()
+                    raw = await response.json()
+            break
+        except Exception as exc:
+            if not _is_retryable_error(exc):
+                raise
+            max_retries, retry_delay_seconds = _retry_policy(exc, judge)
+            if attempt >= max_retries:
+                raise
+            attempt += 1
+            status = getattr(exc, "status", "network/timeout")
+            delay = retry_delay_seconds * (2 ** (attempt - 1))
+            logger.warning(
+                "Gemini Grounded Judge 请求失败 (HTTP %s)，第 %s/%s 次重试将在 %.1fs 后进行",
+                status, attempt, max_retries, delay,
+            )
+            await asyncio.sleep(delay)
     usage = _extract_usage(raw)
     try:
         record = json.loads(_extract_response_text(raw))

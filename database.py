@@ -9,7 +9,12 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
 
-from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
+from tag_categories import (
+    IDENTITY_TAG_CATEGORIES,
+    TAG_CATEGORY_FEATURE,
+    TAG_CATEGORY_UNRESOLVED,
+    normalize_tag_category,
+)
 from utils import normalize_tag
 
 logger = logging.getLogger(__name__)
@@ -543,6 +548,17 @@ async def get_tag_review_queue(limit: int = 100) -> list[dict]:
                 evidence_item["is_fresh"] = is_tag_evidence_fresh(evidence_item)
                 item["evidence"].append(evidence_item)
         return list(queue.values())
+
+
+async def get_tag_review_count() -> int:
+    """Return the exact number of tags still awaiting a human decision."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM tag_classification_cache WHERE classification = ?",
+            (TAG_CATEGORY_UNRESOLVED,),
+        )
+        row = await cursor.fetchone()
+    return int(row[0] if row else 0)
 
 
 async def review_tag_classification(normalized_tag: str, classification: str) -> None:
@@ -1657,18 +1673,51 @@ async def is_artist_blocked(artist_id: int) -> bool:
 
 
 # ============ XP 画像查询 (/xp) ============
-async def get_top_xp_tags(limit: int = 15) -> list[tuple[str, float]]:
+async def get_top_xp_tags(
+    limit: int = 15,
+    categories: tuple[str, ...] | None = None,
+) -> list[tuple[str, float]]:
     """
-    获取权重最高的 Top N 标签
+    获取权重最高的 Top N 标签；可按标签分类筛选。
     Returns: [(tag, weight), ...]
     """
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT tag, weight FROM xp_profile ORDER BY weight DESC LIMIT ?",
-            (limit,)
-        )
+        if categories is None:
+            cursor = await db.execute(
+                "SELECT tag, weight FROM xp_profile ORDER BY weight DESC LIMIT ?",
+                (limit,),
+            )
+        else:
+            normalized_categories = tuple(
+                dict.fromkeys(normalize_tag_category(category) for category in categories)
+            )
+            if not normalized_categories:
+                return []
+            placeholders = ",".join("?" * len(normalized_categories))
+            cursor = await db.execute(
+                f"""
+                SELECT xp.tag, xp.weight
+                FROM xp_profile AS xp
+                INNER JOIN tag_classification_cache AS classification
+                    ON classification.normalized_tag = xp.tag
+                WHERE classification.classification IN ({placeholders})
+                ORDER BY xp.weight DESC
+                LIMIT ?
+                """,
+                (*normalized_categories, limit),
+            )
         rows = await cursor.fetchall()
         return [(row[0], row[1]) for row in rows]
+
+
+async def get_xp_profile_display_sections(
+    feature_limit: int = 15,
+    identity_limit: int = 5,
+) -> dict[str, list[tuple[str, float]]]:
+    """Return separately ranked transferable features and identity preferences."""
+    feature_tags = await get_top_xp_tags(feature_limit, (TAG_CATEGORY_FEATURE,))
+    identity_tags = await get_top_xp_tags(identity_limit, tuple(IDENTITY_TAG_CATEGORIES))
+    return {"feature": feature_tags, "identity": identity_tags}
 
 
 # ============ 互动画师发现 (策略E) ============
