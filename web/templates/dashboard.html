@@ -36,7 +36,7 @@
     {% if feature_tags %}
     <div class="tag-cloud">
         {% for tag, weight in feature_tags %}
-        <span class="tag" style="font-size: {{ 0.8 + weight * 0.1 }}rem;">
+        <span class="tag tag--previewable" data-preview-kind="tag" data-preview-value="{{ tag }}" data-preview-label="{{ tag }}" style="font-size: {{ 0.8 + weight * 0.1 }}rem;">
             {{ tag }}
             <span class="weight">{{ "%.1f"|format(weight) }}</span>
         </span>
@@ -54,7 +54,7 @@
     </div>
     <div class="tag-cloud">
         {% for tag, weight in identity_tags %}
-        <span class="tag" style="font-size: {{ 0.8 + weight * 0.1 }}rem;">
+        <span class="tag tag--previewable" data-preview-kind="tag" data-preview-value="{{ tag }}" data-preview-label="{{ tag }}" style="font-size: {{ 0.8 + weight * 0.1 }}rem;">
             {{ tag }}
             <span class="weight">{{ "%.1f"|format(weight) }}</span>
         </span>
@@ -62,6 +62,108 @@
     </div>
 </div>
 {% endif %}
+
+<div id="tagPreviewTooltip" class="tag-preview-tooltip" role="status" aria-live="polite">
+    <div class="tag-preview-tooltip__header">最近点赞的作品：<strong id="tagPreviewName"></strong></div>
+    <div id="tagPreviewGallery" class="tag-preview-tooltip__gallery"></div>
+</div>
+
+<script>
+(() => {
+document.addEventListener('DOMContentLoaded', () => {
+    const tooltip = document.getElementById('tagPreviewTooltip');
+    const name = document.getElementById('tagPreviewName');
+    const gallery = document.getElementById('tagPreviewGallery');
+    const tags = document.querySelectorAll('[data-preview-kind]');
+    const cache = new Map();
+    const intentDelay = 400;
+    let timer;
+    let requestVersion = 0;
+
+    function hidePreview() {
+        window.clearTimeout(timer);
+        requestVersion += 1;
+        tooltip.classList.remove('is-visible');
+    }
+
+    function positionPreview(target) {
+        const rect = target.getBoundingClientRect();
+        const tooltipRect = tooltip.getBoundingClientRect();
+        let top = rect.bottom + 14;
+        let left = Math.min(rect.left, window.innerWidth - tooltipRect.width - 16);
+        left = Math.max(16, left);
+        if (top + tooltipRect.height + 16 > window.innerHeight) {
+            top = Math.max(16, rect.top - tooltipRect.height - 14);
+        }
+        tooltip.style.top = `${top}px`;
+        tooltip.style.left = `${left}px`;
+    }
+
+    function renderLoading(tag) {
+        name.textContent = tag;
+        gallery.replaceChildren();
+        const loading = document.createElement('span');
+        loading.className = 'tag-preview-tooltip__message';
+        loading.textContent = '加载中…';
+        gallery.append(loading);
+    }
+
+    function renderImages(illustIds) {
+        gallery.replaceChildren();
+        if (!illustIds.length) {
+            const empty = document.createElement('span');
+            empty.className = 'tag-preview-tooltip__message';
+            empty.textContent = '暂无匹配的近期点赞作品';
+            gallery.append(empty);
+            return;
+        }
+        for (const id of illustIds) {
+            const image = document.createElement('img');
+            image.src = `/api/proxy/image/${id}`;
+            image.alt = `近期点赞作品 #${id}`;
+            image.loading = 'lazy';
+            gallery.append(image);
+        }
+    }
+
+    async function loadPreview(kind, value, version) {
+        try {
+            const cacheKey = `${kind}:${value}`;
+            let illustIds = cache.get(cacheKey);
+            if (!illustIds) {
+                const query = new URLSearchParams({ kind, value });
+                const response = await fetch(`/api/dashboard/tag-preview?${query}`);
+                if (!response.ok) throw new Error('Preview request failed');
+                ({ illust_ids: illustIds } = await response.json());
+                cache.set(cacheKey, illustIds);
+            }
+            if (version === requestVersion) renderImages(illustIds);
+        } catch (_) {
+            if (version === requestVersion) renderImages([]);
+        }
+    }
+
+    for (const target of tags) {
+        target.addEventListener('mouseenter', () => {
+            window.clearTimeout(timer);
+            const kind = target.dataset.previewKind;
+            const value = target.dataset.previewValue;
+            const label = target.dataset.previewLabel;
+            const version = ++requestVersion;
+            timer = window.setTimeout(() => {
+                renderLoading(label);
+                tooltip.classList.add('is-visible');
+                positionPreview(target);
+                loadPreview(kind, value, version);
+            }, intentDelay);
+        });
+        target.addEventListener('mouseleave', hidePreview);
+    }
+    window.addEventListener('scroll', hidePreview, { passive: true });
+    window.addEventListener('resize', hidePreview);
+});
+})();
+</script>
 
 <!-- 热门画师 -->
 {% if stats.top_artists %}
@@ -71,7 +173,8 @@
     </div>
     <div class="tag-cloud">
         {% for artist_id, count in stats.top_artists %}
-        <a href="https://www.pixiv.net/users/{{ artist_id }}" target="_blank" class="tag"
+        <a href="https://www.pixiv.net/users/{{ artist_id }}" target="_blank" class="tag tag--previewable"
+            data-preview-kind="artist" data-preview-value="{{ artist_id }}" data-preview-label="画师 ID: {{ artist_id }}"
             style="text-decoration: none;">
             ID: {{ artist_id }}
             <span class="weight">{{ count }} 张</span>
@@ -89,7 +192,8 @@
     </div>
     <div class="tag-cloud">
         {% for tag, count in stats.top_tags %}
-        <a href="https://www.pixiv.net/tags/{{ tag }}/illustrations" target="_blank" class="tag" style="text-decoration: none;">
+        <a href="https://www.pixiv.net/tags/{{ tag }}/illustrations" target="_blank" class="tag tag--previewable"
+            data-preview-kind="tag" data-preview-value="{{ tag }}" data-preview-label="#{{ tag }}" style="text-decoration: none;">
             #{{ tag }}
             <span class="weight">{{ count }}</span>
         </a>

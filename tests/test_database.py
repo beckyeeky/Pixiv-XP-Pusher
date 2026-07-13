@@ -11,6 +11,35 @@ import database
 
 
 class DatabaseInitTests(unittest.TestCase):
+    def test_high_weight_unclassified_profile_tags_include_missing_and_unresolved(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                await database.update_xp_profile({
+                    "missing_high": 8.0,
+                    "unresolved_mid": 4.0,
+                    "resolved_high": 7.0,
+                    "missing_low": 0.2,
+                })
+                await database.save_tag_classifications([
+                    ("unresolved_mid", "unresolved", "ai"),
+                    ("resolved_high", "feature", "manual"),
+                ])
+                return await database.get_high_weight_unclassified_profile_tags(
+                    limit=10, min_profile_weight=1.0,
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tags = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
+
+        self.assertEqual(
+            tags,
+            [
+                {"tag": "missing_high", "profile_weight": 8.0, "classification": None},
+                {"tag": "unresolved_mid", "profile_weight": 4.0, "classification": "unresolved"},
+            ],
+        )
+
     def test_init_db_backfills_provenance_for_legacy_tag_evidence(self):
         async def _run(db_path):
             with patch.object(database, "DB_PATH", db_path):

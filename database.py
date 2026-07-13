@@ -550,6 +550,33 @@ async def get_tag_review_queue(limit: int = 100) -> list[dict]:
         return list(queue.values())
 
 
+async def get_high_weight_unclassified_profile_tags(
+    limit: int = 40,
+    min_profile_weight: float = 0.0,
+) -> list[dict]:
+    """List high-impact profile tags that still need Grounded Judge classification."""
+    limit = max(1, int(limit))
+    minimum = abs(float(min_profile_weight))
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT xp.tag, xp.weight, classification.classification
+            FROM xp_profile AS xp
+            LEFT JOIN tag_classification_cache AS classification
+                ON classification.normalized_tag = xp.tag
+            WHERE ABS(xp.weight) >= ?
+              AND (classification.normalized_tag IS NULL OR classification.classification = ?)
+            ORDER BY ABS(xp.weight) DESC, xp.tag ASC
+            LIMIT ?
+            """,
+            (minimum, TAG_CATEGORY_UNRESOLVED, limit),
+        )
+        return [
+            {"tag": tag, "profile_weight": float(weight), "classification": classification}
+            for tag, weight, classification in await cursor.fetchall()
+        ]
+
+
 async def get_tag_review_count() -> int:
     """Return the exact number of tags still awaiting a human decision."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1003,6 +1030,60 @@ async def get_liked_illusts() -> set[int]:
         )
         rows = await cursor.fetchall()
         return {row[0] for row in rows}
+
+
+async def get_recent_liked_illusts_for_tag(tag: str, limit: int = 3) -> list[int]:
+    """Return the most recently liked cached works containing a profile tag.
+
+    Tags are stored as JSON, so matching is deliberately performed after loading
+    a bounded recent result set rather than relying on SQLite JSON extensions.
+    """
+    normalized_tag = normalize_tag(tag)
+    if not normalized_tag or limit < 1:
+        return []
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT f.illust_id, c.tags
+            FROM feedback AS f
+            INNER JOIN illust_cache AS c ON c.illust_id = f.illust_id
+            WHERE f.action = 'like'
+            ORDER BY f.created_at DESC
+            """
+        )
+        result: list[int] = []
+        while rows := await cursor.fetchmany(200):
+            for illust_id, tags_json in rows:
+                try:
+                    tags = json.loads(tags_json) if tags_json else []
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if any(normalize_tag(str(item)) == normalized_tag for item in tags):
+                    result.append(illust_id)
+                    if len(result) >= limit:
+                        return result
+        return result
+
+
+async def get_recent_liked_illusts_for_artist(artist_id: int, limit: int = 3) -> list[int]:
+    """Return the most recently liked cached works by one artist."""
+    if artist_id < 1 or limit < 1:
+        return []
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT f.illust_id
+            FROM feedback AS f
+            INNER JOIN illust_cache AS c ON c.illust_id = f.illust_id
+            WHERE f.action = 'like' AND c.user_id = ?
+            ORDER BY f.created_at DESC
+            LIMIT ?
+            """,
+            (artist_id, limit),
+        )
+        return [row[0] for row in await cursor.fetchall()]
 
 
 async def increment_tag_dislike(tag: str) -> int:

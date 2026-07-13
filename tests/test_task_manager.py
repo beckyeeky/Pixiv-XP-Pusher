@@ -26,6 +26,21 @@ class _ClosableClient:
 
 
 class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_daily_report_cleans_embeddings_older_than_ninety_days(self):
+        notifier = AsyncMock()
+        notifier.send_text = AsyncMock()
+
+        with patch("database.get_top_xp_tags", new=AsyncMock(return_value=[])), \
+             patch("database.get_all_strategy_stats", new=AsyncMock(return_value={})), \
+             patch("database.sync_blocked_tags_to_xp", new=AsyncMock(return_value=0)), \
+             patch("database.cleanup_old_sent_history", new=AsyncMock(return_value=0)), \
+             patch("database.cleanup_old_illust_cache", new=AsyncMock(return_value=0)), \
+             patch("database.cleanup_old_embeddings", new=AsyncMock(return_value=12)) as cleanup_embeddings:
+            await task_manager.daily_report_task({}, [notifier])
+
+        cleanup_embeddings.assert_awaited_once_with(days=90)
+        self.assertIn("清理 12 条过期作品向量", notifier.send_text.await_args.args[0])
+
     async def test_run_once_waits_for_maintenance_after_successful_delivery(self):
         maintenance_finished = asyncio.Event()
 

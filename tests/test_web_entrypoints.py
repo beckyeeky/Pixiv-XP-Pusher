@@ -22,6 +22,37 @@ from web.app_v2 import app as compat_app
 
 
 class WebEntrypointTests(unittest.TestCase):
+    def test_dashboard_preview_supports_tag_and_artist_targets(self):
+        async def authenticated():
+            return None
+
+        canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+        try:
+            with patch.object(
+                web_app_module.db,
+                "get_recent_liked_illusts_for_tag",
+                new=AsyncMock(return_value=[101, 102]),
+            ) as tag_preview, patch.object(
+                web_app_module.db,
+                "get_recent_liked_illusts_for_artist",
+                new=AsyncMock(return_value=[201]),
+            ) as artist_preview, TestClient(canonical_app) as client:
+                tag_response = client.get(
+                    "/api/dashboard/tag-preview",
+                    params={"kind": "tag", "value": "white_hair"},
+                )
+                artist_response = client.get(
+                    "/api/dashboard/tag-preview",
+                    params={"kind": "artist", "value": "42"},
+                )
+        finally:
+            canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+
+        self.assertEqual(tag_response.json()["illust_ids"], [101, 102])
+        self.assertEqual(artist_response.json()["illust_ids"], [201])
+        tag_preview.assert_awaited_once_with("white_hair", limit=3)
+        artist_preview.assert_awaited_once_with(42, limit=3)
+
     def test_authenticated_settings_page_separates_ai_provider_model_and_features(self):
         template = (Path(web_app_module.TEMPLATES_DIR) / "settings_v2.html").read_text(encoding="utf-8")
         for marker in (

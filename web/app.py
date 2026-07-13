@@ -290,6 +290,22 @@ async def dashboard(request: Request):
     })
 
 
+@app.get("/api/dashboard/tag-preview")
+async def dashboard_tag_preview(
+    kind: str = Query(..., min_length=1, max_length=20),
+    value: str = Query(..., min_length=1, max_length=200),
+    _=Depends(require_auth),
+):
+    """Return a small, on-demand preview for a Dashboard tag or artist."""
+    if kind == "tag":
+        illust_ids = await db.get_recent_liked_illusts_for_tag(value, limit=3)
+    elif kind == "artist" and value.isdigit():
+        illust_ids = await db.get_recent_liked_illusts_for_artist(int(value), limit=3)
+    else:
+        raise HTTPException(status_code=422, detail="Unsupported dashboard preview target")
+    return {"kind": kind, "value": value, "illust_ids": illust_ids}
+
+
 # 配置路径常量（添加到文件顶部已有的常量后面）
 PROJECT_ROOT = Path(__file__).parent.parent
 IP_TAGS_FILE = PROJECT_ROOT / "data" / "ip_tags.json"

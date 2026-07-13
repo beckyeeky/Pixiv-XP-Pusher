@@ -792,8 +792,19 @@ async def daily_report_task(config: dict, notifiers: list, profiler=None):
     except Exception as e:
         logger.error(f"清理作品缓存失败: {e}")
         maintenance_summary.append(f"⚠️ 清理作品缓存失败: {e}")
-    
-    # ========== 6. 添加维护摘要到日报 ==========
+
+    # ========== 6. 清理过期作品向量 ==========
+    try:
+        from database import cleanup_old_embeddings
+        embeddings_removed = await cleanup_old_embeddings(days=90)
+        if embeddings_removed > 0:
+            maintenance_summary.append(f"🗑️ 清理 {embeddings_removed} 条过期作品向量")
+            logger.info(f"已清理 {embeddings_removed} 条 90 天前的作品向量")
+    except Exception as e:
+        logger.error(f"清理作品向量失败: {e}")
+        maintenance_summary.append(f"⚠️ 清理作品向量失败: {e}")
+
+    # ========== 7. 添加维护摘要到日报 ==========
     if maintenance_summary:
         lines.append("")
         lines.append("🛠️ **维护记录**")
@@ -802,7 +813,7 @@ async def daily_report_task(config: dict, notifiers: list, profiler=None):
     
     report_msg = "\n".join(lines)
     
-    # ========== 7. 发送日报 (带重试) ==========
+    # ========== 8. 发送日报 (带重试) ==========
     async def _send_report():
         for n in notifiers:
             if hasattr(n, 'send_text'):
