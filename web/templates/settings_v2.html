@@ -181,42 +181,32 @@ textarea.form-control {
     margin-top: 0.3rem;
 }
 
-/* AI connections deliberately mirror config.yaml: Provider -> Model -> feature. */
-.ai-relationship {
-    margin: 0 0 1.25rem;
-    padding: 1rem 1.1rem;
-    background: var(--accent-soft);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text-secondary);
-    line-height: 1.55;
-}
-
-.ai-relationship strong { color: var(--text-primary); }
-
-.provider-stack { display: grid; gap: 1rem; }
-
-.provider-card {
+/* AI management is intentionally task-first: connection -> model -> feature. */
+.ai-intro { margin: 0 0 1.25rem; color: var(--text-secondary); line-height: 1.55; }
+.management-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+.management-toolbar h2, .management-toolbar p { margin: 0; }
+.management-toolbar p { margin-top: 0.25rem; color: var(--text-secondary); }
+.provider-stack, .feature-stack { display: grid; gap: 0.8rem; }
+.provider-card, .feature-card, .model-row {
     border: 1px solid var(--border);
     border-radius: 10px;
-    overflow: hidden;
     background: var(--bg-secondary);
 }
-
-.provider-card-header {
-    display: flex;
-    align-items: start;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 1rem 1.1rem;
-    border-bottom: 1px solid var(--border);
-}
-
+.provider-card, .model-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.1rem; }
 .provider-card-title { margin: 0; font-size: 1.05rem; color: var(--text-primary); }
 .provider-card-meta { margin: 0.25rem 0 0; font-size: 0.82rem; color: var(--text-secondary); }
-.provider-card-body { padding: 1rem 1.1rem; }
-.provider-fields { display: grid; grid-template-columns: minmax(150px, 0.75fr) minmax(220px, 1.5fr); gap: 0.8rem; align-items: end; }
-.credential-control { display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem; }
+.provider-actions, .model-row-actions, .reference-list { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; }
+.model-list { display: grid; gap: 0.65rem; }
+.model-row-main { min-width: 0; }
+.model-row-title { margin: 0; color: var(--text-primary); font-size: 1rem; }
+.model-row-meta { margin: 0.25rem 0 0; color: var(--text-secondary); font-size: 0.85rem; overflow-wrap: anywhere; }
+.feature-card { padding: 1.1rem; }
+.feature-card-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.feature-card-title { margin: 0; color: var(--text-primary); font-size: 1.05rem; }
+.feature-card-description { margin: 0.3rem 0 0; color: var(--text-secondary); font-size: 0.88rem; }
+.feature-advanced { margin-top: 0.9rem; border-top: 1px solid var(--border); padding-top: 0.8rem; }
+.feature-advanced summary { cursor: pointer; color: var(--text-secondary); }
+.feature-advanced .form-grid { margin-top: 1rem; }
 .credential-state, .reference-badge, .capability-badge {
     display: inline-flex;
     align-items: center;
@@ -230,19 +220,11 @@ textarea.form-control {
 }
 .credential-state.is-set { color: #4caf50; border-color: #4caf50; }
 .credential-state.is-missing { color: #ff9800; border-color: #ff9800; }
-.model-stack { display: grid; gap: 0.75rem; margin-top: 1rem; }
-.model-card { padding: 0.9rem; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; }
-.model-card-header { display: flex; gap: 0.75rem; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
-.model-card-header h4 { margin: 0; font-size: 0.95rem; }
-.model-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.8rem; align-items: end; }
-.reference-list { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.65rem; }
 .reference-badge { color: var(--accent); }
 .empty-models { margin: 0.8rem 0 0; color: var(--text-secondary); font-size: 0.9rem; }
-.provider-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 
 @media (max-width: 760px) {
-    .provider-card-header, .model-card-header { flex-direction: column; }
-    .provider-fields, .model-fields { grid-template-columns: 1fr; }
+    .provider-card, .model-row, .feature-card-header, .management-toolbar { flex-direction: column; align-items: stretch; }
 }
 
 .save-bar {
@@ -419,8 +401,9 @@ textarea.form-control {
         <button class="settings-nav-item" data-section="strategies" aria-controls="section-strategies" aria-selected="false" onclick="showSection('strategies', event)">🎯 推送策略</button>
         <button class="settings-nav-item" data-section="notifier" aria-controls="section-notifier" aria-selected="false" onclick="showSection('notifier', event)">📢 推送通道</button>
         <button class="settings-nav-item" data-section="profiler" aria-controls="section-profiler" aria-selected="false" onclick="showSection('profiler', event)">👤 画像分析</button>
-        <button class="settings-nav-item" data-section="llm" aria-controls="section-llm" aria-selected="false" onclick="showSection('llm', event)">🧠 AI 凭据与模型</button>
-        <button class="settings-nav-item" data-section="ai" aria-controls="section-ai" aria-selected="false" onclick="showSection('ai', event)">🤖 AI 增强</button>
+        <button class="settings-nav-item" data-section="providers" aria-controls="section-providers" aria-selected="false" onclick="showSection('providers', event)">🔌 AI Provider</button>
+        <button class="settings-nav-item" data-section="models" aria-controls="section-models" aria-selected="false" onclick="showSection('models', event)">🧩 AI Model</button>
+        <button class="settings-nav-item" data-section="ai" aria-controls="section-ai" aria-selected="false" onclick="showSection('ai', event)">✨ AI 功能</button>
         <button class="settings-nav-item" data-section="filter" aria-controls="section-filter" aria-selected="false" onclick="showSection('filter', event)">🛡️ 内容过滤</button>
         <button class="settings-nav-item" data-section="fetcher" aria-controls="section-fetcher" aria-selected="false" onclick="showSection('fetcher', event)">📥 内容获取</button>
         <button class="settings-nav-item" data-section="scheduler" aria-controls="section-scheduler" aria-selected="false" onclick="showSection('scheduler', event)">⏰ 定时任务</button>
@@ -587,44 +570,6 @@ textarea.form-control {
             <div class="form-grid">
                 <div>
                     <div class="form-group">
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="profiler_ai_enabled"
-                                   {% if config.profiler.ai.enabled %}checked{% endif %}>
-                            <span>启用 AI 标签分析</span>
-                        </label>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">模型</label>
-                        <select class="form-control" id="profiler_ai_model"></select>
-                        <div class="help-text">从 Models 中选择 capabilities=llm 的 Model；凭据由 Provider 持有</div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">并发</label>
-                        <input type="number" class="form-control" id="profiler_ai_concurrency"
-                               value="{{ config.profiler.ai.concurrency | default(10) }}">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">批次大小</label>
-                        <input type="number" class="form-control" id="profiler_ai_batch_size"
-                               value="{{ config.profiler.ai.batch_size | default(200) }}">
-                    </div>
-                    <div class="form-group">
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="profiler_ai_filter_meaningless"
-                                   {% if config.profiler.ai.filter_meaningless | default(true) %}checked{% endif %}>
-                            <span>过滤无意义标签</span>
-                        </label>
-                    </div>
-                    <div class="form-group">
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="profiler_ai_merge_synonyms"
-                                   {% if config.profiler.ai.merge_synonyms | default(true) %}checked{% endif %}>
-                            <span>合并同义词</span>
-                        </label>
-                    </div>
-                </div>
-                <div>
-                    <div class="form-group">
                         <label class="form-label">扫描收藏数上限</label>
                         <input type="number" class="form-control" id="profiler_scan_limit"
                                value="{{ config.profiler.scan_limit | default(1000) }}">
@@ -680,110 +625,44 @@ textarea.form-control {
             </div>
         </div>
 
-        <!-- AI 增强 -->
-        <div id="section-llm" class="settings-section">
-            <div class="section-header"><h2>AI 凭据、模型与用途</h2><p>在这里按配置文件的关系管理 AI：凭据只保存在 Provider，多个 Model 和功能可以安全地复用它。</p></div>
-            <div class="ai-relationship"><strong>配置关系</strong>：Provider（服务地址 + 凭据） → Model（具体模型 + 能力） → 功能（画像分析、语义嵌入、AI 评分、标签审查）。修改 Provider 凭据会影响其下所有 Model，但不会把凭据复制到功能配置。</div>
-            <div class="settings-card"><div class="section-header"><div><h3>AI Providers</h3><p>每个 Provider 只保存一份 API 凭据。展开其下 Model 可查看和编辑所有复用关系。</p></div><button type="button" class="btn-secondary" onclick="addProvider()">添加 Provider</button></div><div id="provider_list" class="provider-stack"></div></div>
-            <div class="settings-card">
-                <h3>Classification Maintenance</h3>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="tag_classifier_enabled"
-                                   {% if config.tag_classifier.enabled %}checked{% endif %}>
-                            <span>启用 Classification Maintenance</span>
-                        </label>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">证据缓存天数 (ttl_days)</label>
-                        <input type="number" min="1" class="form-control" id="tag_classifier_ttl_days"
-                               value="{{ config.tag_classifier.ttl_days | default(30) }}">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">批大小 (batch_size)</label>
-                        <input type="number" min="1" class="form-control" id="tag_classifier_batch_size"
-                               value="{{ config.tag_classifier.batch_size | default(50) }}">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">并发 (concurrency)</label>
-                        <input type="number" min="1" class="form-control" id="tag_classifier_concurrency"
-                               value="{{ config.tag_classifier.concurrency | default(5) }}">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">每次维护标签上限</label>
-                        <input type="number" min="1" class="form-control" id="tag_classifier_max_tags_per_run"
-                               value="{{ config.tag_classifier.maintenance.max_tags_per_run | default(40) }}">
-                    </div>
-                </div>
-            </div>
+        <!-- AI Provider -->
+        <div id="section-providers" class="settings-section">
+            <div class="management-toolbar"><div><h2>AI Provider</h2><p>管理服务地址与凭据。凭据只保存一次，供关联 Model 复用。</p></div><button type="button" class="btn-primary" onclick="openProviderDialog()">添加 Provider</button></div>
+            <div id="provider_list" class="provider-stack"></div>
+        </div>
+
+        <!-- AI Model -->
+        <div id="section-models" class="settings-section">
+            <div class="management-toolbar"><div><h2>AI Model</h2><p>Model 指定实际模型和能力，并连接到一个 AI Provider。</p></div><button type="button" class="btn-primary" onclick="openModelDialog()">添加 Model</button></div>
+            <div id="model_list" class="model-list"></div>
             <datalist id="known_llm_models">{% for model in known_llm_models %}<option value="{{ model }}">{% endfor %}</datalist>
             <datalist id="known_embedding_models">{% for model in known_embedding_models %}<option value="{{ model }}">{% endfor %}</datalist>
             <datalist id="known_both_models">{% for model in known_llm_models %}<option value="{{ model }}">{% endfor %}{% for model in known_embedding_models %}<option value="{{ model }}">{% endfor %}</datalist>
         </div>
 
         <div id="section-ai" class="settings-section">
-            <h3 class="section-title">🤖 AI 增强</h3>
-            <div class="form-grid">
-                <div>
-                    <h4 style="color: var(--text-secondary); margin-bottom: 1rem;">Embedding 语义匹配</h4>
-                    <div class="form-group">
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="ai_embedding_enabled"
-                                   {% if config.ai.embedding.enabled %}checked{% endif %}>
-                            <span>启用 Embedding</span>
-                        </label>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Embedding Model</label>
-                        <select class="form-control" id="ai_embedding_model"></select>
-                        <small class="form-hint">凭据由所选 Model 的 Provider 管理。</small>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">向量维度</label>
-                        <select class="form-control" id="ai_embedding_dimensions">
-                            <option value="256" {% if config.ai.embedding.dimensions == 256 %}selected{% endif %}>256</option>
-                            <option value="512" {% if config.ai.embedding.dimensions == 512 %}selected{% endif %}>512</option>
-                            <option value="1024" {% if config.ai.embedding.dimensions == 1024 %}selected{% endif %}>1024</option>
-                            <option value="1536" {% if config.ai.embedding.dimensions == 1536 %}selected{% endif %}>1536</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">语义权重</label>
-                        <input type="number" step="0.01" class="form-control" id="ai_embedding_semantic_weight"
-                               value="{{ config.ai.embedding.semantic_weight | default(0.3) }}">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">缓存天数</label>
-                        <input type="number" class="form-control" id="ai_embedding_cache_ttl_days"
-                               value="{{ config.ai.embedding.cache_ttl_days | default(30) }}">
-                    </div>
-                </div>
-                <div>
-                    <h4 style="color: var(--text-secondary); margin-bottom: 1rem;">AI 评分器</h4>
-                    <div class="form-group">
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="ai_scorer_enabled"
-                                   {% if config.ai.scorer.enabled %}checked{% endif %}>
-                            <span>启用 AI 评分</span>
-                        </label>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Scorer Model</label>
-                        <select class="form-control" id="ai_scorer_model"></select>
-                        <small class="form-hint">仅显示具备 LLM 能力的 Model。</small>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Max Candidates</label>
-                        <input type="number" class="form-control" id="ai_scorer_max_candidates"
-                               value="{{ config.ai.scorer.max_candidates | default(50) }}">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">评分权重</label>
-                        <input type="number" step="0.01" class="form-control" id="ai_scorer_score_weight"
-                               value="{{ config.ai.scorer.score_weight | default(0.3) }}">
-                    </div>
-                </div>
+            <div class="management-toolbar"><div><h2>AI 功能</h2><p>为每项功能选择已配置的 Model；展开卡片后调整运行参数。</p></div></div>
+            <div class="feature-stack">
+                <section class="feature-card">
+                    <div class="feature-card-header"><div><h3 class="feature-card-title">画像分析</h3><p class="feature-card-description">用 LLM 清理和归并你的收藏标签。</p></div><label class="toggle-switch"><input type="checkbox" id="profiler_ai_enabled" {% if config.profiler.ai.enabled %}checked{% endif %}><span>启用</span></label></div>
+                    <div class="form-group"><label class="form-label">使用的 Model</label><select class="form-control" id="profiler_ai_model"></select></div>
+                    <details class="feature-advanced"><summary>高级参数</summary><div class="form-grid"><div class="form-group"><label class="form-label">并发</label><input type="number" class="form-control" id="profiler_ai_concurrency" value="{{ config.profiler.ai.concurrency | default(10) }}"></div><div class="form-group"><label class="form-label">批次大小</label><input type="number" class="form-control" id="profiler_ai_batch_size" value="{{ config.profiler.ai.batch_size | default(200) }}"></div><div class="form-group"><label class="toggle-switch"><input type="checkbox" id="profiler_ai_filter_meaningless" {% if config.profiler.ai.filter_meaningless | default(true) %}checked{% endif %}><span>过滤无意义标签</span></label></div><div class="form-group"><label class="toggle-switch"><input type="checkbox" id="profiler_ai_merge_synonyms" {% if config.profiler.ai.merge_synonyms | default(true) %}checked{% endif %}><span>合并同义词</span></label></div></div></details>
+                </section>
+                <section class="feature-card">
+                    <div class="feature-card-header"><div><h3 class="feature-card-title">语义匹配</h3><p class="feature-card-description">用 Embedding 计算作品与画像的语义相似度。</p></div><label class="toggle-switch"><input type="checkbox" id="ai_embedding_enabled" {% if config.ai.embedding.enabled %}checked{% endif %}><span>启用</span></label></div>
+                    <div class="form-group"><label class="form-label">使用的 Model</label><select class="form-control" id="ai_embedding_model"></select></div>
+                    <details class="feature-advanced"><summary>高级参数</summary><div class="form-grid"><div class="form-group"><label class="form-label">向量维度</label><select class="form-control" id="ai_embedding_dimensions"><option value="256" {% if config.ai.embedding.dimensions == 256 %}selected{% endif %}>256</option><option value="512" {% if config.ai.embedding.dimensions == 512 %}selected{% endif %}>512</option><option value="1024" {% if config.ai.embedding.dimensions == 1024 %}selected{% endif %}>1024</option><option value="1536" {% if config.ai.embedding.dimensions == 1536 %}selected{% endif %}>1536</option></select></div><div class="form-group"><label class="form-label">语义权重</label><input type="number" step="0.01" class="form-control" id="ai_embedding_semantic_weight" value="{{ config.ai.embedding.semantic_weight | default(0.3) }}"></div><div class="form-group"><label class="form-label">缓存天数</label><input type="number" class="form-control" id="ai_embedding_cache_ttl_days" value="{{ config.ai.embedding.cache_ttl_days | default(30) }}"></div></div></details>
+                </section>
+                <section class="feature-card">
+                    <div class="feature-card-header"><div><h3 class="feature-card-title">智能精排</h3><p class="feature-card-description">原“AI 评分器”：用 LLM 对候选作品进行二次排序。</p></div><label class="toggle-switch"><input type="checkbox" id="ai_scorer_enabled" {% if config.ai.scorer.enabled %}checked{% endif %}><span>启用</span></label></div>
+                    <div class="form-group"><label class="form-label">使用的 Model</label><select class="form-control" id="ai_scorer_model"></select></div>
+                    <details class="feature-advanced"><summary>高级参数</summary><div class="form-grid"><div class="form-group"><label class="form-label">候选上限</label><input type="number" class="form-control" id="ai_scorer_max_candidates" value="{{ config.ai.scorer.max_candidates | default(50) }}"></div><div class="form-group"><label class="form-label">评分权重</label><input type="number" step="0.01" class="form-control" id="ai_scorer_score_weight" value="{{ config.ai.scorer.score_weight | default(0.3) }}"></div></div></details>
+                </section>
+                <section class="feature-card">
+                    <div class="feature-card-header"><div><h3 class="feature-card-title">标签审查</h3><p class="feature-card-description">使用一个或多个 LLM Judge 分类和维护标签证据。</p></div><label class="toggle-switch"><input type="checkbox" id="tag_classifier_enabled" {% if config.tag_classifier.enabled %}checked{% endif %}><span>启用</span></label></div>
+                    <div id="judge_selection" class="reference-list"></div>
+                    <details class="feature-advanced"><summary>高级参数</summary><div class="form-grid"><div class="form-group"><label class="form-label">证据缓存天数</label><input type="number" min="1" class="form-control" id="tag_classifier_ttl_days" value="{{ config.tag_classifier.ttl_days | default(30) }}"></div><div class="form-group"><label class="form-label">批大小</label><input type="number" min="1" class="form-control" id="tag_classifier_batch_size" value="{{ config.tag_classifier.batch_size | default(50) }}"></div><div class="form-group"><label class="form-label">并发</label><input type="number" min="1" class="form-control" id="tag_classifier_concurrency" value="{{ config.tag_classifier.concurrency | default(5) }}"></div><div class="form-group"><label class="form-label">每次维护标签上限</label><input type="number" min="1" class="form-control" id="tag_classifier_max_tags_per_run" value="{{ config.tag_classifier.maintenance.max_tags_per_run | default(40) }}"></div></div></details>
+                </section>
             </div>
         </div>
 
@@ -1120,6 +999,27 @@ textarea.form-control {
     </div>
 </div>
 
+<dialog id="providerDialog">
+    <form method="dialog" class="settings-card" onsubmit="saveProviderDialog(event)">
+        <h3 id="providerDialogTitle">添加 AI Provider</h3>
+        <div class="form-group"><label class="form-label">Provider 名称</label><input required class="form-control" id="provider_dialog_name" placeholder="例如 openrouter"></div>
+        <div class="form-group"><label class="form-label">服务类型</label><select class="form-control" id="provider_dialog_type"><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="anthropic">Anthropic</option><option value="google">Google</option><option value="local">本地服务</option><option value="openai_compatible">自定义 OpenAI-compatible</option></select></div>
+        <div class="form-group"><label class="form-label">Base URL</label><input type="url" class="form-control" id="provider_dialog_url" placeholder="https://gateway.example/v1"></div>
+        <div class="form-actions"><button type="button" class="btn-secondary" onclick="document.getElementById('providerDialog').close()">取消</button><button type="submit" class="btn-primary">保存</button></div>
+    </form>
+</dialog>
+
+<dialog id="modelDialog">
+    <form method="dialog" class="settings-card" onsubmit="saveModelDialog(event)">
+        <h3 id="modelDialogTitle">添加 AI Model</h3>
+        <div class="form-group"><label class="form-label">配置名称</label><input required class="form-control" id="model_dialog_name" placeholder="例如 gpt_mini"></div>
+        <div class="form-group"><label class="form-label">Provider</label><select required class="form-control" id="model_dialog_provider"></select></div>
+        <div class="form-group"><label class="form-label">能力</label><select class="form-control" id="model_dialog_capabilities" onchange="updateModelDialogCatalog()"><option value="llm">LLM</option><option value="embedding">Embedding</option><option value="both">LLM + Embedding</option></select></div>
+        <div class="form-group"><label class="form-label">实际模型 ID</label><input required class="form-control" id="model_dialog_model" list="known_llm_models" placeholder="例如 gpt-4o-mini"></div>
+        <div class="form-actions"><button type="button" class="btn-secondary" onclick="document.getElementById('modelDialog').close()">取消</button><button type="submit" class="btn-primary">保存</button></div>
+    </form>
+</dialog>
+
 <dialog id="providerCredentialDialog">
     <form method="dialog" class="settings-card">
         <h3 id="credentialDialogTitle">编辑 Provider 凭据</h3>
@@ -1241,41 +1141,31 @@ function renderLLMSettings() {
     const providers = ensureObject(initialConfig, 'providers');
     const llmProviders = Object.fromEntries(Object.entries(providers).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)));
     const models = ensureObject(initialConfig, 'models');
-    ensureArray(ensureObject(initialConfig, 'tag_classifier'), 'judges');
-    const providerCards = Object.entries(llmProviders).map(([name, provider]) => renderProviderCard(name, provider, models));
-    const orphanModels = Object.entries(models).filter(([, model]) => !llmProviders[model?.provider]);
-    if (orphanModels.length) {
-        providerCards.push(`<div class="provider-card"><div class="provider-card-header"><div><h3 class="provider-card-title">未关联的 Model</h3><p class="provider-card-meta">这些 Model 指向不存在的 Provider；请选择或恢复对应 Provider 后才能正常使用。</p></div></div><div class="provider-card-body"><div class="model-stack">${orphanModels.map(([name, model]) => renderModelCard(name, model, model.provider || '未知 Provider')).join('')}</div></div></div>`);
-    }
-    document.getElementById('provider_list').innerHTML = providerCards.join('') || '<p class="empty-models">尚未配置 AI Provider。先添加 Provider，再设置凭据和 Model。</p>';
+    const judges = ensureArray(ensureObject(initialConfig, 'tag_classifier'), 'judges');
+    document.getElementById('provider_list').innerHTML = Object.entries(llmProviders)
+        .map(([name, provider]) => renderProviderCard(name, provider, models)).join('')
+        || '<p class="empty-models">尚未配置 AI Provider。先添加一个服务连接。</p>';
+    document.getElementById('model_list').innerHTML = Object.entries(models)
+        .map(([name, model]) => renderModelRow(name, model, llmProviders)).join('')
+        || '<p class="empty-models">尚未配置 Model。先添加 Provider，再创建可用于功能的 Model。</p>';
     setFunctionModelOptions('profiler_ai_model', 'llm', ensureObject(ensureObject(initialConfig, 'profiler'), 'ai')?.model);
     setFunctionModelOptions('ai_embedding_model', 'embedding', ensureObject(initialConfig, 'ai').embedding?.model);
     setFunctionModelOptions('ai_scorer_model', 'llm', ensureObject(initialConfig, 'ai').scorer?.model);
+    renderJudgeSelection();
 }
 
 function renderProviderCard(name, provider, models) {
     const ownedModels = Object.entries(models).filter(([, model]) => model && model.provider === name);
     const credentialSet = Boolean(provider.api_key) && provider.api_key !== '••••';
-    const credentialState = credentialSet ? '已设置' : '未设置';
-    return `<section class="provider-card">
-        <div class="provider-card-header"><div><h3 class="provider-card-title">${escapeHtml(name)}</h3><p class="provider-card-meta">此 Provider 的凭据由 ${ownedModels.length} 个 Model 复用</p></div><div class="provider-actions"><button type="button" class="btn-secondary" onclick="openCredentialDialog('${escapeJs(name)}', 'api_key', 'API Key')">管理 API Key</button><button type="button" class="btn-secondary" onclick="removeProvider('${escapeJs(name)}')">删除 Provider</button></div></div>
-        <div class="provider-card-body"><div class="provider-fields">
-            <div class="form-group"><label class="form-label">Provider 名称</label><input class="form-control" value="${escapeHtml(name)}" onchange="renameProvider('${escapeJs(name)}', this.value)"></div>
-            <div class="form-group"><label class="form-label">服务类型</label><select class="form-control" onchange="initialConfig.providers['${escapeJs(name)}'].type=this.value; renderLLMSettings()"><option value="openai" ${provider.type === 'openai' ? 'selected' : ''}>OpenAI</option><option value="deepseek" ${provider.type === 'deepseek' ? 'selected' : ''}>DeepSeek</option><option value="anthropic" ${provider.type === 'anthropic' ? 'selected' : ''}>Anthropic</option><option value="google" ${provider.type === 'google' ? 'selected' : ''}>Google</option><option value="local" ${provider.type === 'local' ? 'selected' : ''}>本地服务</option><option value="openai_compatible" ${provider.type === 'openai_compatible' ? 'selected' : ''}>自定义 OpenAI-compatible</option></select></div>
-            ${provider.type === 'openai_compatible' || provider.type === 'local' ? `<div class="form-group"><label class="form-label">Base URL</label><input type="url" class="form-control" value="${escapeHtml(provider.base_url || '')}" placeholder="https://gateway.example/v1" onchange="initialConfig.providers['${escapeJs(name)}'].base_url=this.value"></div>` : ''}
-        </div><div class="credential-control"><span class="credential-state ${credentialSet ? 'is-set' : 'is-missing'}">API Key：${credentialState}</span><span class="help-text">凭据不会显示在页面或复制到 Model 中。</span></div>
-        <div class="model-stack">${ownedModels.map(([modelName, model]) => renderModelCard(modelName, model, name)).join('')}</div>${ownedModels.length ? '' : '<p class="empty-models">尚未创建 Model。Model 会引用此 Provider 的凭据。</p>'}<button type="button" class="btn-secondary" style="margin-top: 1rem;" onclick="addModel('${escapeJs(name)}')">添加使用此 Provider 的 Model</button></div>
-    </section>`;
+    return `<section class="provider-card"><div><h3 class="provider-card-title">${escapeHtml(name)}</h3><p class="provider-card-meta">${escapeHtml(provider.type || 'openai_compatible')} · ${ownedModels.length} 个关联 Model</p></div><div class="provider-actions"><span class="credential-state ${credentialSet ? 'is-set' : 'is-missing'}">API Key：${credentialSet ? '已设置' : '未设置'}</span><button type="button" class="btn-secondary" onclick="openProviderDialog('${escapeJs(name)}')">编辑</button><button type="button" class="btn-secondary" onclick="openCredentialDialog('${escapeJs(name)}', 'api_key', 'API Key')">凭据</button><button type="button" class="btn-secondary" onclick="removeProvider('${escapeJs(name)}')">删除</button></div></section>`;
 }
 
-function renderModelCard(name, model, providerName) {
-    const catalog = modelCatalogForCapabilities(model.capabilities);
+function renderModelRow(name, model, providers) {
     const capabilities = Array.isArray(model.capabilities) ? model.capabilities : ['llm'];
     const capabilityValue = capabilities.includes('llm') && capabilities.includes('embedding') ? 'both' : capabilities.includes('embedding') ? 'embedding' : 'llm';
     const references = modelReferenceLabels(name);
-    return `<article class="model-card"><div class="model-card-header"><h4>${escapeHtml(name)}</h4><div><span class="capability-badge">${capabilityValue === 'both' ? 'LLM + Embedding' : capabilityValue === 'embedding' ? 'Embedding' : 'LLM'}</span> <button type="button" class="btn-secondary" onclick="removeModel('${escapeJs(name)}')">删除</button></div></div>
-        <div class="model-fields"><div class="form-group"><label class="form-label">配置名称</label><input class="form-control" value="${escapeHtml(name)}" onchange="renameModel('${escapeJs(name)}', this.value)"></div><div class="form-group"><label class="form-label">连接 Provider</label><select class="form-control" onchange="initialConfig.models['${escapeJs(name)}'].provider=this.value; renderLLMSettings()">${Object.keys(Object.fromEntries(Object.entries(ensureObject(initialConfig, 'providers')).filter(([, item]) => item && !['pixiv', 'danbooru'].includes(item.type)))).map(provider => `<option value="${escapeHtml(provider)}" ${provider === model.provider ? 'selected' : ''}>${escapeHtml(provider)}</option>`).join('')}</select></div><div class="form-group"><label class="form-label">能力</label><select class="form-control" onchange="setModelCapabilities('${escapeJs(name)}', this.value)"><option value="llm" ${capabilityValue === 'llm' ? 'selected' : ''}>LLM</option><option value="embedding" ${capabilityValue === 'embedding' ? 'selected' : ''}>Embedding</option><option value="both" ${capabilityValue === 'both' ? 'selected' : ''}>LLM + Embedding</option></select></div><div class="form-group"><label class="form-label">实际模型 ID</label><input list="${catalog}" class="form-control" value="${escapeHtml(model.model || '')}" onchange="initialConfig.models['${escapeJs(name)}'].model=this.value"><label class="toggle-switch"><input type="checkbox" ${initialConfig.tag_classifier.judges.includes(name) ? 'checked' : ''} onchange="toggleJudge('${escapeJs(name)}', this.checked); renderLLMSettings()"><span>用于标签审查 Judge</span></label></div></div>
-        <div class="help-text">通过 Provider <strong>${escapeHtml(providerName)}</strong> 连接；它的 API Key 会被此 Model 自动复用。</div><div class="reference-list">${references.length ? references.map(reference => `<span class="reference-badge">${escapeHtml(reference)}</span>`).join('') : '<span class="help-text">暂未被功能引用</span>'}</div></article>`;
+    const providerState = providers[model.provider] ? model.provider : `Provider ${model.provider || '未设置'} 不可用`;
+    return `<article class="model-row"><div class="model-row-main"><h3 class="model-row-title">${escapeHtml(name)}</h3><p class="model-row-meta">${escapeHtml(model.model || '未填写模型 ID')} · ${escapeHtml(providerState)}</p><div class="reference-list">${references.length ? references.map(reference => `<span class="reference-badge">${escapeHtml(reference)}</span>`).join('') : '<span class="help-text">暂未被功能引用</span>'}</div></div><div class="model-row-actions"><span class="capability-badge">${capabilityValue === 'both' ? 'LLM + Embedding' : capabilityValue === 'embedding' ? 'Embedding' : 'LLM'}</span><button type="button" class="btn-secondary" onclick="openModelDialog('${escapeJs(name)}')">编辑</button><button type="button" class="btn-secondary" onclick="removeModel('${escapeJs(name)}')">删除</button></div></article>`;
 }
 function escapeHtml(value) { const node = document.createElement('span'); node.textContent = String(value); return node.innerHTML; }
 function escapeJs(value) { return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
@@ -1290,26 +1180,68 @@ function defaultModelForCapabilities(capabilities) {
     if (caps.includes('embedding') && !caps.includes('llm')) return KNOWN_EMBEDDING_MODELS[0] || '';
     return KNOWN_LLM_MODELS[0] || '';
 }
-function addProvider() { const name = `provider_${Object.keys(ensureObject(initialConfig, 'providers')).length + 1}`; initialConfig.providers[name] = {type: 'openai_compatible', base_url: '', api_key: ''}; renderLLMSettings(); }
-function addModel(providerName) { const providers = Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)).map(([name]) => name); if (!providers.length) return alert('请先添加 Provider'); const name = `model_${Object.keys(ensureObject(initialConfig, 'models')).length + 1}`; initialConfig.models[name] = {provider: providers.includes(providerName) ? providerName : providers[0], model: KNOWN_LLM_MODELS[0], capabilities: ['llm']}; renderLLMSettings(); }
-function setModelCapabilities(name, value) {
-    const capabilities = value === 'both' ? ['llm', 'embedding'] : [value];
-    initialConfig.models[name].capabilities = capabilities;
-    if (!initialConfig.models[name].model) {
-        initialConfig.models[name].model = defaultModelForCapabilities(capabilities);
+let editingProviderName = null;
+let editingModelName = null;
+function aiProviderEntries() { return Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)); }
+function openProviderDialog(name = null) {
+    editingProviderName = name;
+    const provider = name ? initialConfig.providers[name] : {type: 'openai_compatible', base_url: ''};
+    document.getElementById('providerDialogTitle').textContent = name ? '编辑 AI Provider' : '添加 AI Provider';
+    document.getElementById('provider_dialog_name').value = name || '';
+    document.getElementById('provider_dialog_type').value = provider.type || 'openai_compatible';
+    document.getElementById('provider_dialog_url').value = provider.base_url || '';
+    document.getElementById('providerDialog').showModal();
+}
+function saveProviderDialog(event) {
+    event.preventDefault();
+    const name = document.getElementById('provider_dialog_name').value.trim();
+    if (!name || (name !== editingProviderName && initialConfig.providers[name])) return alert('Provider 名称不能为空且不能重复');
+    const previous = editingProviderName ? initialConfig.providers[editingProviderName] : {};
+    const provider = {...previous, type: document.getElementById('provider_dialog_type').value, base_url: document.getElementById('provider_dialog_url').value.trim()};
+    initialConfig.providers[name] = provider;
+    if (editingProviderName && editingProviderName !== name) {
+        delete initialConfig.providers[editingProviderName];
+        Object.values(ensureObject(initialConfig, 'models')).forEach(model => { if (model.provider === editingProviderName) model.provider = name; });
     }
-    setFunctionModelOptions('profiler_ai_model', 'llm', ensureObject(ensureObject(initialConfig, 'profiler'), 'ai')?.model);
-    setFunctionModelOptions('ai_embedding_model', 'embedding', ensureObject(initialConfig, 'ai').embedding?.model);
-    setFunctionModelOptions('ai_scorer_model', 'llm', ensureObject(initialConfig, 'ai').scorer?.model);
+    document.getElementById('providerDialog').close();
+    renderLLMSettings();
+}
+function openModelDialog(name = null) {
+    const providers = aiProviderEntries().map(([providerName]) => providerName);
+    if (!providers.length) return alert('请先添加 AI Provider');
+    editingModelName = name;
+    const model = name ? initialConfig.models[name] : {provider: providers[0], model: KNOWN_LLM_MODELS[0] || '', capabilities: ['llm']};
+    const capabilities = Array.isArray(model.capabilities) ? model.capabilities : ['llm'];
+    const capabilityValue = capabilities.includes('llm') && capabilities.includes('embedding') ? 'both' : capabilities.includes('embedding') ? 'embedding' : 'llm';
+    document.getElementById('modelDialogTitle').textContent = name ? '编辑 AI Model' : '添加 AI Model';
+    document.getElementById('model_dialog_name').value = name || '';
+    document.getElementById('model_dialog_provider').innerHTML = providers.map(item => `<option value="${escapeHtml(item)}" ${item === model.provider ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('');
+    document.getElementById('model_dialog_capabilities').value = capabilityValue;
+    document.getElementById('model_dialog_model').value = model.model || '';
+    updateModelDialogCatalog();
+    document.getElementById('modelDialog').showModal();
+}
+function updateModelDialogCatalog() {
+    const value = document.getElementById('model_dialog_capabilities').value;
+    document.getElementById('model_dialog_model').setAttribute('list', value === 'embedding' ? 'known_embedding_models' : value === 'both' ? 'known_both_models' : 'known_llm_models');
+}
+function saveModelDialog(event) {
+    event.preventDefault();
+    const name = document.getElementById('model_dialog_name').value.trim();
+    const provider = document.getElementById('model_dialog_provider').value;
+    const modelId = document.getElementById('model_dialog_model').value.trim();
+    const capability = document.getElementById('model_dialog_capabilities').value;
+    if (!name || !provider || !modelId || (name !== editingModelName && initialConfig.models[name])) return alert('请填写不重复的名称、Provider 和模型 ID');
+    initialConfig.models[name] = {provider, model: modelId, capabilities: capability === 'both' ? ['llm', 'embedding'] : [capability]};
+    if (editingModelName && editingModelName !== name) {
+        delete initialConfig.models[editingModelName];
+        renameModelReferences(editingModelName, name);
+    }
+    document.getElementById('modelDialog').close();
     renderLLMSettings();
 }
 function setFunctionModelOptions(id, capability, selected) { const select = document.getElementById(id); if (!select) return; const models = ensureObject(initialConfig, 'models'); const options = Object.entries(models).filter(([, model]) => Array.isArray(model?.capabilities) && model.capabilities.includes(capability)); select.innerHTML = options.map(([name, model]) => `<option value="${escapeHtml(name)}" ${name === selected ? 'selected' : ''}>${escapeHtml(name)} (${escapeHtml(model.provider || '')})</option>`).join('') || '<option value="">请先配置兼容 Model</option>'; }
-function renameProvider(oldName, newName) { newName = newName.trim(); if (!newName || newName === oldName || initialConfig.providers[newName]) return renderLLMSettings(); initialConfig.providers[newName] = initialConfig.providers[oldName]; delete initialConfig.providers[oldName]; Object.values(initialConfig.models || {}).forEach(model => { if (model.provider === oldName) model.provider = newName; }); renderLLMSettings(); }
-function renameModel(oldName, newName) {
-    newName = newName.trim();
-    if (!newName || newName === oldName || initialConfig.models[newName]) return renderLLMSettings();
-    initialConfig.models[newName] = initialConfig.models[oldName];
-    delete initialConfig.models[oldName];
+function renameModelReferences(oldName, newName) {
     initialConfig.tag_classifier.judges = initialConfig.tag_classifier.judges.map(name => name === oldName ? newName : name);
     const profilerAi = ensureObject(ensureObject(initialConfig, 'profiler'), 'ai');
     if (profilerAi.model === oldName) profilerAi.model = newName;
@@ -1317,7 +1249,6 @@ function renameModel(oldName, newName) {
     if (embedding.model === oldName) embedding.model = newName;
     const scorer = ensureObject(ensureObject(initialConfig, 'ai'), 'scorer');
     if (scorer.model === oldName) scorer.model = newName;
-    renderLLMSettings();
 }
 function modelReferenceLabels(name) {
     const refs = [];
@@ -1325,8 +1256,15 @@ function modelReferenceLabels(name) {
     if (judges.includes(name)) refs.push('标签审查 Judge');
     if (ensureObject(ensureObject(initialConfig, 'profiler'), 'ai').model === name) refs.push('画像分析');
     if (ensureObject(ensureObject(initialConfig, 'ai'), 'embedding').model === name) refs.push('语义嵌入');
-    if (ensureObject(ensureObject(initialConfig, 'ai'), 'scorer').model === name) refs.push('AI 评分');
+    if (ensureObject(ensureObject(initialConfig, 'ai'), 'scorer').model === name) refs.push('智能精排');
     return refs;
+}
+function renderJudgeSelection() {
+    const target = document.getElementById('judge_selection');
+    if (!target) return;
+    const judges = ensureArray(ensureObject(initialConfig, 'tag_classifier'), 'judges');
+    const llmModels = Object.entries(ensureObject(initialConfig, 'models')).filter(([, model]) => Array.isArray(model?.capabilities) && model.capabilities.includes('llm'));
+    target.innerHTML = llmModels.length ? llmModels.map(([name, model]) => `<label class="toggle-switch"><input type="checkbox" ${judges.includes(name) ? 'checked' : ''} onchange="toggleJudge('${escapeJs(name)}', this.checked)"><span>${escapeHtml(name)} (${escapeHtml(model.provider || '')})</span></label>`).join('') : '<span class="help-text">请先在 Model 页面创建 LLM Model。</span>';
 }
 function removeModel(name) {
     const refs = modelReferenceLabels(name);
