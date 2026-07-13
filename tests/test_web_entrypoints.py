@@ -22,6 +22,20 @@ from web.app_v2 import app as compat_app
 
 
 class WebEntrypointTests(unittest.TestCase):
+    def test_authenticated_settings_page_separates_ai_provider_model_and_features(self):
+        template = (Path(web_app_module.TEMPLATES_DIR) / "settings_v2.html").read_text(encoding="utf-8")
+        for marker in (
+            'data-section="providers"',
+            'data-section="models"',
+            'data-section="ai"',
+            'id="section-providers"',
+            'id="section-models"',
+            'id="providerDialog"',
+            'id="modelDialog"',
+            '智能精排',
+        ):
+            self.assertIn(marker, template)
+
     def test_authenticated_single_tag_grounded_judge_uses_translation_and_activates_valid_result(self):
         async def authenticated():
             return None
