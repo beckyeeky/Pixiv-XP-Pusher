@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="390" viewBox="0 0 1200 390" role="img" aria-labelledby="title desc">
+  <title id="title">Pixiv-XP-Pusher</title>
+  <desc id="desc">A Pixiv favorites pipeline that builds a preference profile, finds diverse illustrations, and delivers them to your chosen notifier.</desc>
+  <rect width="1200" height="390" rx="28" fill="#0b0f14"/>
+  <path d="M0 312H1200M0 88H1200" stroke="#223042" stroke-width="1"/>
+  <g fill="none" stroke="#223042" stroke-width="1">
+    <path d="M64 0V390M112 0V390M160 0V390M208 0V390M256 0V390M304 0V390M352 0V390M400 0V390M448 0V390M496 0V390M544 0V390M592 0V390M640 0V390M688 0V390M736 0V390M784 0V390M832 0V390M880 0V390M928 0V390M976 0V390M1024 0V390M1072 0V390M1120 0V390" opacity=".34"/>
+  </g>
+  <circle cx="1090" cy="86" r="174" fill="#e11d48" opacity=".13"/>
+  <circle cx="1050" cy="312" r="128" fill="#e11d48" opacity=".08"/>
+  <g transform="translate(64 58)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif">
+    <text x="0" y="0" fill="#e11d48" font-size="17" font-weight="700" letter-spacing="2">PIXIV RECOMMENDATION PIPELINE</text>
+    <text x="0" y="74" fill="#e6eaf0" font-size="58" font-weight="750">Pixiv-XP-Pusher</text>
+    <text x="0" y="119" fill="#9aa4b2" font-size="24">把收藏沉淀为 XP 画像，持续发现更对味的作品。</text>
+    <text x="0" y="154" fill="#9aa4b2" font-size="20">自动筛选、去重、排序，并推送到你的聊天机器人。</text>
+    <g transform="translate(0 205)">
+      <rect width="160" height="40" rx="20" fill="#2a141c" stroke="#6f1a32"/>
+      <text x="20" y="26" fill="#fda4af" font-size="16" font-weight="650">Python · FastAPI</text>
+      <rect x="174" width="114" height="40" rx="20" fill="#111b26" stroke="#223042"/>
+      <text x="195" y="26" fill="#e6eaf0" font-size="16" font-weight="650">Telegram</text>
+      <rect x="302" width="136" height="40" rx="20" fill="#111b26" stroke="#223042"/>
+      <text x="322" y="26" fill="#e6eaf0" font-size="16" font-weight="650">Web Console</text>
+    </g>
+  </g>
+  <g transform="translate(752 54)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif">
+    <rect width="376" height="282" rx="18" fill="#0f1620" stroke="#34465c"/>
+    <text x="28" y="36" fill="#9aa4b2" font-size="14" font-weight="700" letter-spacing="1.4">YOUR TASTE, IN MOTION</text>
+    <g transform="translate(28 66)">
+      <rect width="104" height="56" rx="12" fill="#2a141c" stroke="#7f1d3b"/>
+      <text x="16" y="24" fill="#fda4af" font-size="13" font-weight="700">FAVORITES</text>
+      <text x="16" y="43" fill="#e6eaf0" font-size="15">收藏作品</text>
+      <path d="M114 28H138" stroke="#e11d48" stroke-width="2"/>
+      <path d="M134 23L142 28 134 33" fill="none" stroke="#e11d48" stroke-width="2"/>
+      <rect x="150" width="104" height="56" rx="12" fill="#111b26" stroke="#34465c"/>
+      <text x="166" y="24" fill="#9aa4b2" font-size="13" font-weight="700">XP PROFILE</text>
+      <text x="166" y="43" fill="#e6eaf0" font-size="15">标签权重</text>
+      <path d="M264 28H288" stroke="#e11d48" stroke-width="2"/>
+      <path d="M284 23L292 28 284 33" fill="none" stroke="#e11d48" stroke-width="2"/>
+      <rect x="300" width="48" height="56" rx="12" fill="#e11d48"/>
+      <path d="M318 18H330M318 28H334M318 38H327" stroke="#fff1f2" stroke-width="2.5" stroke-linecap="round"/>
+      <text x="0" y="100" fill="#9aa4b2" font-size="14">策略：xp_search · related · ranking · subscription</text>
+      <g transform="translate(0 126)">
+        <rect width="348" height="88" rx="12" fill="#111b26" stroke="#34465c"/>
+        <text x="18" y="27" fill="#e6eaf0" font-size="16" font-weight="700">过滤、去重与多样性控制</text>
+        <g transform="translate(18 44)">
+          <rect width="65" height="24" rx="12" fill="#2a141c"/><text x="12" y="17" fill="#fda4af" font-size="12">feature</text>
+          <rect x="74" width="42" height="24" rx="12" fill="#223042"/><text x="87" y="17" fill="#cbd5e1" font-size="12">IP</text>
+          <rect x="126" width="74" height="24" rx="12" fill="#223042"/><text x="137" y="17" fill="#cbd5e1" font-size="12">画师衰减</text>
+          <rect x="210" width="74" height="24" rx="12" fill="#223042"/><text x="221" y="17" fill="#cbd5e1" font-size="12">内容筛选</text>
+        </g>
+      </g>
+    </g>
+  </g>
+  <text x="64" y="356" fill="#64748b" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14">favorites → profile → discover → curate → deliver</text>
+</svg>

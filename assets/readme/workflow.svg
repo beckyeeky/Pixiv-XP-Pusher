@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title desc">
+  <title id="title">From Pixiv favorites to curated delivery</title>
+  <desc id="desc">Four-stage pipeline: build a preference profile, discover candidates, curate results, and deliver them through supported notification channels.</desc>
+  <rect width="1200" height="340" rx="24" fill="#0f1620"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif">
+    <text x="56" y="58" fill="#e6eaf0" font-size="30" font-weight="750">从收藏到推送，形成可维护的推荐闭环</text>
+    <text x="56" y="87" fill="#9aa4b2" font-size="17">用画像解释偏好，用策略扩大候选，用规则守住质量。</text>
+    <g transform="translate(56 128)">
+      <g>
+        <rect width="230" height="146" rx="16" fill="#111b26" stroke="#34465c"/>
+        <circle cx="30" cy="31" r="15" fill="#e11d48"/><text x="25" y="37" fill="#fff1f2" font-size="16" font-weight="700">1</text>
+        <text x="56" y="36" fill="#e6eaf0" font-size="20" font-weight="700">建立画像</text>
+        <text x="24" y="76" fill="#9aa4b2" font-size="16">收藏与反馈 → 标签权重</text>
+        <text x="24" y="105" fill="#9aa4b2" font-size="16">特征 / IP 分类与清洗</text>
+      </g>
+      <path d="M244 73H284" stroke="#e11d48" stroke-width="3"/><path d="M278 65L292 73 278 81" fill="none" stroke="#e11d48" stroke-width="3"/>
+      <g transform="translate(304)">
+        <rect width="230" height="146" rx="16" fill="#111b26" stroke="#34465c"/>
+        <circle cx="30" cy="31" r="15" fill="#e11d48"/><text x="25" y="37" fill="#fff1f2" font-size="16" font-weight="700">2</text>
+        <text x="56" y="36" fill="#e6eaf0" font-size="20" font-weight="700">发现候选</text>
+        <text x="24" y="76" fill="#9aa4b2" font-size="16">搜索、关联、排行、订阅</text>
+        <text x="24" y="105" fill="#9aa4b2" font-size="16">可选语义匹配与 AI 精排</text>
+      </g>
+      <path d="M548 73H588" stroke="#e11d48" stroke-width="3"/><path d="M582 65L596 73 582 81" fill="none" stroke="#e11d48" stroke-width="3"/>
+      <g transform="translate(608)">
+        <rect width="230" height="146" rx="16" fill="#111b26" stroke="#34465c"/>
+        <circle cx="30" cy="31" r="15" fill="#e11d48"/><text x="25" y="37" fill="#fff1f2" font-size="16" font-weight="700">3</text>
+        <text x="56" y="36" fill="#e6eaf0" font-size="20" font-weight="700">筛选排序</text>
+        <text x="24" y="76" fill="#9aa4b2" font-size="16">内容规则、去重与阈值</text>
+        <text x="24" y="105" fill="#9aa4b2" font-size="16">画师与 IP 多样性控制</text>
+      </g>
+      <path d="M852 73H892" stroke="#e11d48" stroke-width="3"/><path d="M886 65L900 73 886 81" fill="none" stroke="#e11d48" stroke-width="3"/>
+      <g transform="translate(912)">
+        <rect width="230" height="146" rx="16" fill="#2a141c" stroke="#7f1d3b"/>
+        <circle cx="30" cy="31" r="15" fill="#e11d48"/><text x="25" y="37" fill="#fff1f2" font-size="16" font-weight="700">4</text>
+        <text x="56" y="36" fill="#fff1f2" font-size="20" font-weight="700">推送与控制</text>
+        <text x="24" y="76" fill="#fda4af" font-size="16">Telegram · OneBot</text>
+        <text x="24" y="105" fill="#fda4af" font-size="16">AstrBot · Web 控制台</text>
+      </g>
+    </g>
+  </g>
+</svg>
