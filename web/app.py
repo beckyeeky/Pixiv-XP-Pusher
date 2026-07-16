@@ -26,10 +26,15 @@ import aiohttp
 import yaml
 
 import database as db
-from config import get_known_model_catalog, load_config as shared_load_config
+from config import (
+    get_known_model_catalog,
+    load_config as shared_load_config,
+    resolve_tag_mapping_config,
+)
 from proxy_utils import normalize_proxy_url
 from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
 from classification_maintenance import classify_and_activate_tag
+from tag_mapping import AITagMappingCandidateGenerator
 from utils import normalize_tag
 from web.settings_editor import (
     apply_settings_payload,
@@ -387,6 +392,15 @@ class TagReviewRequest(BaseModel):
     classification: str
 
 
+class TagMappingReviewRequest(BaseModel):
+    decision: str
+    kind: Optional[str] = None
+
+
+class TagAliasDeleteRequest(BaseModel):
+    original_tag: str
+
+
 TAG_REVIEW_CSV_MAX_BYTES = 2 * 1024 * 1024
 TAG_REVIEW_CSV_CATEGORIES = {"feature", "character", "copyright", "artist", "non_preference"}
 
@@ -693,13 +707,13 @@ async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth))
         except Exception as e:
             logger.warning(f"搜索 xp_profile 表失败（可能表不存在）: {e}")
         
-        # 2. 搜索 tag_mapping_stats 表 - 通过原始标签找标准化标签
+        # 2. 只通过已审核 Tag Alias 反查 Normalized Tag
         try:
             cursor = await conn.execute(
-                """SELECT DISTINCT tms.normalized_tag, xp.weight, tms.original_tag
-                   FROM tag_mapping_stats tms 
-                   LEFT JOIN xp_profile xp ON tms.normalized_tag = xp.tag
-                   WHERE tms.original_tag LIKE ? 
+                """SELECT DISTINCT alias.normalized_tag, xp.weight, alias.original_tag
+                   FROM tag_aliases alias
+                   LEFT JOIN xp_profile xp ON alias.normalized_tag = xp.tag
+                   WHERE alias.original_tag LIKE ?
                    ORDER BY COALESCE(xp.weight, 0) DESC 
                    LIMIT 20""",
                 (f"%{q}%",)
@@ -722,40 +736,9 @@ async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth))
                         "original_tags": original_tags  # 所有原始标签
                     })
         except Exception as e:
-            logger.warning(f"搜索 tag_mapping_stats 表失败: {e}")
+            logger.warning(f"搜索 tag_aliases 表失败: {e}")
         
-        # 3. 搜索 ai_tag_cache 表 - 原始标签到清洗后标签的映射
-        try:
-            cursor = await conn.execute(
-                """SELECT DISTINCT atc.cleaned_tag, xp.weight, atc.original_tag
-                   FROM ai_tag_cache atc 
-                   LEFT JOIN xp_profile xp ON atc.cleaned_tag = xp.tag
-                   WHERE atc.original_tag LIKE ? AND atc.cleaned_tag IS NOT NULL
-                   ORDER BY COALESCE(xp.weight, 0) DESC 
-                   LIMIT 20""",
-                (f"%{q}%",)
-            )
-            cache_rows = await cursor.fetchall()
-            for row in cache_rows:
-                tag = row[0]
-                original_tag = row[2]
-                if tag and tag not in seen_tags:
-                    seen_tags.add(tag)
-                    # 获取所有原始标签
-                    original_tags = await get_original_tags_for_normalized(conn, tag)
-                    results.append({
-                        "tag": tag, 
-                        "weight": row[1] or 0.0, 
-                        "source": "ai_cache",
-                        "type": "normalized",
-                        "original_match": True,
-                        "matched_original": original_tag,
-                        "original_tags": original_tags
-                    })
-        except Exception as e:
-            logger.warning(f"搜索 ai_tag_cache 表失败: {e}")
-        
-        # 4. 如果结果太少，搜索 xp_bookmarks 表 (收藏数据)
+        # 3. 如果结果太少，搜索 xp_bookmarks 表 (收藏数据)
         if len(results) < 5:
             try:
                 cursor = await conn.execute(
@@ -787,32 +770,16 @@ async def search_tag(q: str = Query(..., min_length=1), _=Depends(require_auth))
         return {"success": False, "error": str(e)}
 
 async def get_original_tags_for_normalized(conn, normalized_tag: str) -> list:
-    """获取标准化标签对应的所有原始标签"""
+    """获取 Normalized Tag 对应的已审核别名。"""
     try:
-        # 从 tag_mapping_stats 表获取
         cursor = await conn.execute(
-            "SELECT original_tag FROM tag_mapping_stats WHERE normalized_tag = ? ORDER BY frequency DESC LIMIT 5",
+            """SELECT original_tag FROM tag_aliases
+               WHERE normalized_tag = ?
+               ORDER BY CASE kind WHEN 'search' THEN 0 ELSE 1 END, priority DESC
+               LIMIT 5""",
             (normalized_tag,)
         )
-        mapping_rows = await cursor.fetchall()
-        
-        # 从 ai_tag_cache 表获取
-        cursor = await conn.execute(
-            "SELECT original_tag FROM ai_tag_cache WHERE cleaned_tag = ? LIMIT 5",
-            (normalized_tag,)
-        )
-        cache_rows = await cursor.fetchall()
-        
-        # 合并并去重
-        original_tags = set()
-        for row in mapping_rows:
-            if row[0]:
-                original_tags.add(row[0])
-        for row in cache_rows:
-            if row[0]:
-                original_tags.add(row[0])
-        
-        return list(original_tags)
+        return list(dict.fromkeys(row[0] for row in await cursor.fetchall() if row[0]))
     except Exception as e:
         logger.warning(f"获取原始标签失败: {e}")
         return []
@@ -849,6 +816,73 @@ async def submit_tag_review(req: TagReviewRequest, _=Depends(require_auth)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"success": True, "tag": req.tag, "classification": req.classification}
+
+
+@app.get("/api/tag-mapping-candidates")
+async def api_tag_mapping_candidates(
+    limit: int = Query(100, ge=1, le=500),
+    _=Depends(require_auth),
+):
+    """Return untrusted mapping proposals in human review order."""
+    return {"items": await db.get_tag_mapping_candidates(limit=limit)}
+
+
+@app.get("/api/tag-aliases")
+async def api_tag_aliases(limit: int = Query(500, ge=1, le=2000), _=Depends(require_auth)):
+    """Return active human-reviewed aliases."""
+    return {"items": await db.list_tag_aliases(limit=limit)}
+
+
+@app.delete("/api/tag-aliases")
+async def delete_tag_alias(req: TagAliasDeleteRequest, _=Depends(require_auth)):
+    """Revoke one alias while preserving its candidate review history."""
+    deleted = await db.delete_tag_alias(req.original_tag)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Tag Alias 不存在")
+    return {"success": True, "original_tag": req.original_tag}
+
+
+@app.post("/api/tag-mapping-candidates/{candidate_id:int}")
+async def review_tag_mapping_candidate(
+    candidate_id: int,
+    req: TagMappingReviewRequest,
+    _=Depends(require_auth),
+):
+    """Accept a candidate as a Tag Alias or reject it without runtime effect."""
+    try:
+        result = await db.review_tag_mapping_candidate(
+            candidate_id,
+            req.decision,
+            kind=req.kind,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, **result}
+
+
+@app.post("/api/tag-mapping-candidates/generate")
+async def generate_tag_mapping_candidates(
+    limit: int = Query(50, ge=1, le=200),
+    _=Depends(require_auth),
+):
+    """Ask the configured adapter for proposals; never activate its output."""
+    runtime_config = resolve_tag_mapping_config(load_config())
+    generator = AITagMappingCandidateGenerator(runtime_config)
+    if not generator.enabled:
+        raise HTTPException(status_code=409, detail="请先启用标签映射候选并选择可用的 LLM Model")
+    tags = await db.get_tag_mapping_candidate_inputs(limit=limit)
+    try:
+        proposals = await generator.propose(tags)
+    except Exception as exc:
+        logger.warning("标签映射候选生成失败: %s", exc)
+        raise HTTPException(status_code=502, detail="标签映射候选生成失败") from exc
+    inserted = await db.save_tag_mapping_candidates(proposals)
+    return {
+        "success": True,
+        "attempted": len(tags),
+        "proposed": len(proposals),
+        "inserted": inserted,
+    }
 
 
 @app.post("/api/tag-reviews/{tag}/classify")

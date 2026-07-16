@@ -204,6 +204,40 @@ class WebEntrypointTests(unittest.TestCase):
         self.assertIn("审核队列加载失败", response.text)
         self.assertIn("正在加载审核队列", response.text)
         self.assertIn("await loadReviewQueue()", response.text)
+        self.assertIn("标签映射候选", response.text)
+        self.assertIn("/api/tag-mapping-candidates", response.text)
+
+    def test_authenticated_mapping_review_accepts_only_an_explicit_human_decision(self):
+        async def authenticated():
+            return None
+
+        canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+        try:
+            with patch.object(
+                web_app_module.db,
+                "get_tag_mapping_candidates",
+                new=AsyncMock(return_value=[{"id": 7, "original_tag": "ブルアカ"}]),
+            ) as get_candidates, patch.object(
+                web_app_module.db,
+                "review_tag_mapping_candidate",
+                new=AsyncMock(return_value={
+                    "id": 7, "status": "accepted", "original_tag": "ブルアカ",
+                    "normalized_tag": "blue_archive", "kind": "equivalent",
+                }),
+            ) as review_candidate:
+                client = TestClient(canonical_app)
+                queue_response = client.get("/api/tag-mapping-candidates")
+                decision_response = client.post(
+                    "/api/tag-mapping-candidates/7",
+                    json={"decision": "accept", "kind": "equivalent"},
+                )
+        finally:
+            canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+
+        self.assertEqual(queue_response.status_code, 200)
+        self.assertEqual(decision_response.status_code, 200)
+        get_candidates.assert_awaited_once_with(limit=100)
+        review_candidate.assert_awaited_once_with(7, "accept", kind="equivalent")
 
     def test_authenticated_csv_review_flow_exports_and_applies_only_filled_rows(self):
         async def authenticated():

@@ -627,12 +627,14 @@ textarea.form-control {
 
         <!-- AI Provider -->
         <div id="section-providers" class="settings-section">
+            <p class="ai-intro">Provider（服务地址 + 凭据） → Model → AI 功能。此 Provider 的凭据由关联 Model 统一引用，不需要在每项功能中重复填写。</p>
             <div class="management-toolbar"><div><h2>AI Provider</h2><p>管理服务地址与凭据。凭据只保存一次，供关联 Model 复用。</p></div><button type="button" class="btn-primary" onclick="openProviderDialog()">添加 Provider</button></div>
             <div id="provider_list" class="provider-stack"></div>
         </div>
 
         <!-- AI Model -->
         <div id="section-models" class="settings-section">
+            <p class="ai-intro">选择 Provider 后，API Key 会被此 Model 自动复用；功能只需引用 Model。</p>
             <div class="management-toolbar"><div><h2>AI Model</h2><p>Model 指定实际模型和能力，并连接到一个 AI Provider。</p></div><button type="button" class="btn-primary" onclick="openModelDialog()">添加 Model</button></div>
             <div id="model_list" class="model-list"></div>
             <datalist id="known_llm_models">{% for model in known_llm_models %}<option value="{{ model }}">{% endfor %}</datalist>
@@ -644,9 +646,9 @@ textarea.form-control {
             <div class="management-toolbar"><div><h2>AI 功能</h2><p>为每项功能选择已配置的 Model；展开卡片后调整运行参数。</p></div></div>
             <div class="feature-stack">
                 <section class="feature-card">
-                    <div class="feature-card-header"><div><h3 class="feature-card-title">画像分析</h3><p class="feature-card-description">用 LLM 清理和归并你的收藏标签。</p></div><label class="toggle-switch"><input type="checkbox" id="profiler_ai_enabled" {% if config.profiler.ai.enabled %}checked{% endif %}><span>启用</span></label></div>
-                    <div class="form-group"><label class="form-label">使用的 Model</label><select class="form-control" id="profiler_ai_model"></select></div>
-                    <details class="feature-advanced"><summary>高级参数</summary><div class="form-grid"><div class="form-group"><label class="form-label">并发</label><input type="number" class="form-control" id="profiler_ai_concurrency" value="{{ config.profiler.ai.concurrency | default(10) }}"></div><div class="form-group"><label class="form-label">批次大小</label><input type="number" class="form-control" id="profiler_ai_batch_size" value="{{ config.profiler.ai.batch_size | default(200) }}"></div><div class="form-group"><label class="toggle-switch"><input type="checkbox" id="profiler_ai_filter_meaningless" {% if config.profiler.ai.filter_meaningless | default(true) %}checked{% endif %}><span>过滤无意义标签</span></label></div><div class="form-group"><label class="toggle-switch"><input type="checkbox" id="profiler_ai_merge_synonyms" {% if config.profiler.ai.merge_synonyms | default(true) %}checked{% endif %}><span>合并同义词</span></label></div></div></details>
+                    <div class="feature-card-header"><div><h3 class="feature-card-title">标签映射候选</h3><p class="feature-card-description">用 LLM 生成待人工审核的等价标签候选；候选不会直接修改画像。</p></div><label class="toggle-switch"><input type="checkbox" id="tag_mapping_enabled" {% if config.tag_mapping.enabled %}checked{% endif %}><span>启用</span></label></div>
+                    <div class="form-group"><label class="form-label">使用的 Model</label><select class="form-control" id="tag_mapping_model"></select></div>
+                    <details class="feature-advanced"><summary>高级参数</summary><div class="form-grid"><div class="form-group"><label class="form-label">批次大小</label><input type="number" min="1" class="form-control" id="tag_mapping_batch_size" value="{{ config.tag_mapping.batch_size | default(50) }}"></div></div></details>
                 </section>
                 <section class="feature-card">
                     <div class="feature-card-header"><div><h3 class="feature-card-title">语义匹配</h3><p class="feature-card-description">用 Embedding 计算作品与画像的语义相似度。</p></div><label class="toggle-switch"><input type="checkbox" id="ai_embedding_enabled" {% if config.ai.embedding.enabled %}checked{% endif %}><span>启用</span></label></div>
@@ -1148,7 +1150,7 @@ function renderLLMSettings() {
     document.getElementById('model_list').innerHTML = Object.entries(models)
         .map(([name, model]) => renderModelRow(name, model, llmProviders)).join('')
         || '<p class="empty-models">尚未配置 Model。先添加 Provider，再创建可用于功能的 Model。</p>';
-    setFunctionModelOptions('profiler_ai_model', 'llm', ensureObject(ensureObject(initialConfig, 'profiler'), 'ai')?.model);
+    setFunctionModelOptions('tag_mapping_model', 'llm', ensureObject(initialConfig, 'tag_mapping')?.model);
     setFunctionModelOptions('ai_embedding_model', 'embedding', ensureObject(initialConfig, 'ai').embedding?.model);
     setFunctionModelOptions('ai_scorer_model', 'llm', ensureObject(initialConfig, 'ai').scorer?.model);
     renderJudgeSelection();
@@ -1243,8 +1245,8 @@ function saveModelDialog(event) {
 function setFunctionModelOptions(id, capability, selected) { const select = document.getElementById(id); if (!select) return; const models = ensureObject(initialConfig, 'models'); const options = Object.entries(models).filter(([, model]) => Array.isArray(model?.capabilities) && model.capabilities.includes(capability)); select.innerHTML = options.map(([name, model]) => `<option value="${escapeHtml(name)}" ${name === selected ? 'selected' : ''}>${escapeHtml(name)} (${escapeHtml(model.provider || '')})</option>`).join('') || '<option value="">请先配置兼容 Model</option>'; }
 function renameModelReferences(oldName, newName) {
     initialConfig.tag_classifier.judges = initialConfig.tag_classifier.judges.map(name => name === oldName ? newName : name);
-    const profilerAi = ensureObject(ensureObject(initialConfig, 'profiler'), 'ai');
-    if (profilerAi.model === oldName) profilerAi.model = newName;
+    const tagMapping = ensureObject(initialConfig, 'tag_mapping');
+    if (tagMapping.model === oldName) tagMapping.model = newName;
     const embedding = ensureObject(ensureObject(initialConfig, 'ai'), 'embedding');
     if (embedding.model === oldName) embedding.model = newName;
     const scorer = ensureObject(ensureObject(initialConfig, 'ai'), 'scorer');
@@ -1254,7 +1256,7 @@ function modelReferenceLabels(name) {
     const refs = [];
     const judges = ensureArray(ensureObject(initialConfig, 'tag_classifier'), 'judges');
     if (judges.includes(name)) refs.push('标签审查 Judge');
-    if (ensureObject(ensureObject(initialConfig, 'profiler'), 'ai').model === name) refs.push('画像分析');
+    if (ensureObject(initialConfig, 'tag_mapping').model === name) refs.push('标签映射候选');
     if (ensureObject(ensureObject(initialConfig, 'ai'), 'embedding').model === name) refs.push('语义嵌入');
     if (ensureObject(ensureObject(initialConfig, 'ai'), 'scorer').model === name) refs.push('智能精排');
     return refs;
@@ -1383,7 +1385,6 @@ function collectConfig() {
     const tg = ensureObject(notifier, 'telegram');
     const richMessage = ensureObject(tg, 'rich_message');
     const profiler = ensureObject(cfg, 'profiler');
-    const profilerAi = ensureObject(profiler, 'ai');
     const ai = ensureObject(cfg, 'ai');
     const embedding = ensureObject(ai, 'embedding');
     const scorer = ensureObject(ai, 'scorer');
@@ -1452,15 +1453,13 @@ function collectConfig() {
     tg.topic_rules = parseJsonField('tg_topic_rules', tg.topic_rules || {});
     tg.topic_tag_mapping = parseJsonField('tg_topic_tag_mapping', tg.topic_tag_mapping || {});
 
-    profilerAi.enabled = document.getElementById('profiler_ai_enabled').checked;
-    profilerAi.model = document.getElementById('profiler_ai_model').value || profilerAi.model || '';
-    delete profilerAi.provider;
-    delete profilerAi.api_key;
-    delete profilerAi.base_url;
-    profilerAi.concurrency = asInt(document.getElementById('profiler_ai_concurrency').value, profilerAi.concurrency || 10);
-    profilerAi.batch_size = asInt(document.getElementById('profiler_ai_batch_size').value, profilerAi.batch_size || 200);
-    profilerAi.filter_meaningless = document.getElementById('profiler_ai_filter_meaningless').checked;
-    profilerAi.merge_synonyms = document.getElementById('profiler_ai_merge_synonyms').checked;
+    const tagMapping = ensureObject(cfg, 'tag_mapping');
+    tagMapping.enabled = document.getElementById('tag_mapping_enabled').checked;
+    tagMapping.model = document.getElementById('tag_mapping_model').value || tagMapping.model || '';
+    delete tagMapping.provider;
+    delete tagMapping.api_key;
+    delete tagMapping.base_url;
+    tagMapping.batch_size = asInt(document.getElementById('tag_mapping_batch_size').value, tagMapping.batch_size || 50);
 
     const tagClassifier = ensureObject(cfg, 'tag_classifier');
     const maintenance = ensureObject(tagClassifier, 'maintenance');

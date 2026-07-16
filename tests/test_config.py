@@ -46,7 +46,7 @@ class ConfigNormalizationTests(unittest.TestCase):
             self.assertEqual(config.load_config(path), {})
 
     def test_global_key_inheritance(self):
-        """profiler.ai.api_key → scorer 自动继承；分类器改由 Provider 持有凭据"""
+        """旧 profiler.ai key 可供 scorer 迁移继承；分类器改由 Provider 持有凭据"""
         cfg = config.normalize_config({
             "profiler": {"ai": {"api_key": "sk-shared"}},
             "ai": {"scorer": {"enabled": True}},

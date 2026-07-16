@@ -320,6 +320,24 @@
     <div id="reviewFeedback" class="review-feedback" role="status" aria-live="polite"></div>
     <div id="reviewQueue" class="review-queue" aria-live="polite">正在加载审核队列…</div>
 </div>
+
+<div class="card" aria-labelledby="mapping-review-title">
+    <div class="card-header">
+        <div>
+            <h2 id="mapping-review-title" class="card-title">🔗 标签映射候选</h2>
+            <p class="review-meta">旧自动映射与 LLM 建议都只作为候选；只有人工接受的 Tag Alias 才会影响画像和搜索。</p>
+        </div>
+        <div class="review-actions">
+            <button type="button" onclick="generateMappingCandidates()">生成新候选</button>
+            <button type="button" onclick="loadMappingCandidates()">刷新</button>
+        </div>
+    </div>
+    <div id="mappingFeedback" class="review-feedback" role="status" aria-live="polite"></div>
+    <div class="section-header"><span class="section-title">已生效 Tag Alias</span></div>
+    <div id="activeTagAliases" class="tag-list"><span class="empty-state">正在加载已生效别名…</span></div>
+    <div class="section-header" style="margin-top: 1rem;"><span class="section-title">待审核候选</span></div>
+    <div id="mappingQueue" class="review-queue" aria-live="polite">正在加载映射候选…</div>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}
@@ -328,6 +346,8 @@
 document.addEventListener('DOMContentLoaded', () => {
     loadTagSettings();
     loadReviewQueue();
+    loadMappingCandidates();
+    loadActiveTagAliases();
 });
 
 const tagCategoryLabels = {
@@ -509,6 +529,116 @@ async function uploadReviewCsv() {
         feedback.textContent = `已应用 ${payload.processed} 条人工决定；跳过 ${payload.skipped} 条未填写的记录。`;
     } catch (error) {
         feedback.textContent = `CSV 未应用：${error.message}`;
+    }
+}
+
+function renderMappingCandidates(items) {
+    const queue = document.getElementById('mappingQueue');
+    if (!items.length) {
+        queue.innerHTML = '<p class="empty-state">没有待审核的标签映射候选。</p>';
+        return;
+    }
+    queue.innerHTML = items.map(item => {
+        const target = item.proposed_normalized_tag || '旧系统曾建议过滤，无映射目标';
+        const canAccept = Boolean(item.proposed_normalized_tag);
+        const acceptActions = canAccept
+            ? `<button type="button" onclick="reviewMappingCandidate(${item.id}, 'accept', 'equivalent')">接受为等价别名</button><button type="button" onclick="reviewMappingCandidate(${item.id}, 'accept', 'search')">仅接受为搜索别名</button>`
+            : '';
+        return `<article class="review-item" data-mapping-id="${item.id}">
+            <div class="review-item-header"><div><div class="review-tag">${escapeHtml(item.original_tag)} → ${escapeHtml(target)}</div><div class="review-meta">来源：${escapeHtml(item.source)} · 建议类型：${escapeHtml(item.kind)} · 影响权重：${escapeHtml(item.profile_weight)} · 历史次数：${escapeHtml(item.occurrence_count)}</div></div></div>
+            <p class="review-meta">${escapeHtml(item.explanation || '没有说明')}</p>
+            <div class="review-actions">${acceptActions}<button type="button" onclick="reviewMappingCandidate(${item.id}, 'reject')">拒绝</button></div>
+        </article>`;
+    }).join('');
+}
+
+async function loadMappingCandidates() {
+    const queue = document.getElementById('mappingQueue');
+    const feedback = document.getElementById('mappingFeedback');
+    queue.textContent = '正在加载映射候选…';
+    feedback.textContent = '';
+    try {
+        const response = await fetch('/api/tag-mapping-candidates');
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || '无法读取映射候选');
+        renderMappingCandidates(payload.items || []);
+    } catch (error) {
+        queue.innerHTML = '<p class="empty-state">映射候选加载失败。</p>';
+        feedback.textContent = error.message;
+    }
+}
+
+async function loadActiveTagAliases() {
+    const container = document.getElementById('activeTagAliases');
+    try {
+        const response = await fetch('/api/tag-aliases');
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || '无法读取已生效别名');
+        const items = payload.items || [];
+        if (!items.length) {
+            container.innerHTML = '<span class="empty-state">暂无人工接受的 Tag Alias。</span>';
+            return;
+        }
+        container.innerHTML = items.map(item => {
+            const encoded = encodeURIComponent(item.original_tag).replace(/'/g, '%27');
+            return `<button type="button" class="tag-chip" title="点击撤销" onclick="deleteTagAlias(decodeURIComponent('${encoded}'))">${escapeHtml(item.original_tag)} → ${escapeHtml(item.normalized_tag)} (${escapeHtml(item.kind)}) <span class="remove-icon">✕</span></button>`;
+        }).join('');
+    } catch (error) {
+        container.innerHTML = '<span class="empty-state">已生效别名加载失败。</span>';
+    }
+}
+
+async function deleteTagAlias(originalTag) {
+    if (!confirm(`确定撤销 Tag Alias “${originalTag}” 吗？下次画像构建将不再应用它。`)) return;
+    const feedback = document.getElementById('mappingFeedback');
+    try {
+        const response = await fetch('/api/tag-aliases', {
+            method: 'DELETE',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({original_tag: originalTag}),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || '撤销失败');
+        await loadActiveTagAliases();
+        feedback.textContent = `${originalTag} 的 Tag Alias 已撤销；审核历史仍被保留。`;
+    } catch (error) {
+        feedback.textContent = `无法撤销 Tag Alias：${error.message}`;
+    }
+}
+
+async function reviewMappingCandidate(id, decision, kind = null) {
+    const feedback = document.getElementById('mappingFeedback');
+    feedback.textContent = '正在保存映射审核决定…';
+    try {
+        const response = await fetch(`/api/tag-mapping-candidates/${id}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({decision, kind}),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || '保存失败');
+        document.querySelector(`[data-mapping-id="${id}"]`)?.remove();
+        if (decision === 'accept') await loadActiveTagAliases();
+        feedback.textContent = decision === 'accept'
+            ? `${payload.original_tag} 已接受为 ${payload.kind} Tag Alias；下次画像构建将使用该决定。`
+            : '候选已拒绝，不会影响运行时。';
+        if (!document.querySelector('#mappingQueue .review-item')) renderMappingCandidates([]);
+    } catch (error) {
+        feedback.textContent = `无法保存映射审核：${error.message}`;
+    }
+}
+
+async function generateMappingCandidates() {
+    const feedback = document.getElementById('mappingFeedback');
+    feedback.textContent = '正在生成候选；结果仍需人工审核…';
+    try {
+        const response = await fetch('/api/tag-mapping-candidates/generate', {method: 'POST'});
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || '生成失败');
+        await loadMappingCandidates();
+        feedback.textContent = `检查 ${payload.attempted} 个标签，模型提出 ${payload.proposed} 项，新增 ${payload.inserted} 项待审。`;
+    } catch (error) {
+        feedback.textContent = `无法生成映射候选：${error.message}`;
     }
 }
 

@@ -9,20 +9,6 @@ strategies:
   - subscription # 关注画师的更新推送
 
 profiler:
-  # AI 标签分析配置
-  ai:
-    enabled: true
-    # 从 Models 中选择 capabilities=llm 的 Model；凭据与地址从 Provider 解析
-    model: deepseek_flash
-    # 并发请求数 (建议 5-20)
-    concurrency: 10
-    # 批次大小
-    batch_size: 200
-
-    # 标签清洗配置
-    filter_meaningless: true
-    merge_synonyms: true
-
   # 标签画像配置
   scan_limit: 1000 # 扫描收藏数量上限
   discovery_rate: 0.1 # 探索新 Tag 的概率 (0.1 = 10%)
@@ -45,6 +31,13 @@ profiler:
     - manga
     - pixiv
     - illustration
+
+# Tag Mapping Candidate 只生成待审核候选，不会直接改写画像或 Normalized Tag
+tag_mapping:
+  enabled: false
+  # 从 Models 中选择 capabilities=llm 的 Model；凭据与地址从 Provider 解析
+  model: deepseek_flash
+  batch_size: 50
 
 # AI 增强配置 (可选，默认关闭)
 ai:

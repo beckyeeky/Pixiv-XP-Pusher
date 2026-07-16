@@ -93,14 +93,11 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
         "danbooru_login": "",
         "danbooru_api_key": "",
         "stop_words": [],
-        "ai": {
-            "enabled": False,
-            "model": "",
-            "concurrency": 10,
-            "batch_size": 200,
-            "filter_meaningless": True,
-            "merge_synonyms": True,
-        },
+    },
+    "tag_mapping": {
+        "enabled": False,
+        "model": "",
+        "batch_size": 50,
     },
     "ai": {
         "embedding": {
@@ -428,15 +425,15 @@ def _validate_provider_model_config(config: dict) -> None:
     function_selections = [
         ("ai", "embedding", "embedding"),
         ("ai", "scorer", "llm"),
-        ("profiler", "ai", "llm"),
+        (None, "tag_mapping", "llm"),
     ]
     for section_name, function_name, capability in function_selections:
-        section = config.get(section_name, {})
+        section = config.get(section_name, {}) if section_name else config
         function_cfg = section.get(function_name, {}) if isinstance(section, dict) else None
         model_ref = function_cfg.get("model") if isinstance(function_cfg, dict) else None
         if not isinstance(function_cfg, dict) or not function_cfg.get("enabled"):
             continue
-        label = f"{section_name}.{function_name}.model"
+        label = f"{section_name}.{function_name}.model" if section_name else f"{function_name}.model"
         if not model_ref or model_ref not in models:
             raise ValueError(f"{label} 必须选择 {capability} Model")
         model_capabilities = models[model_ref].get("capabilities", ["llm"])
@@ -459,16 +456,17 @@ def _validate_provider_model_deletions(config: dict) -> None:
     for section_name, function_name in (
         ("ai", "embedding"),
         ("ai", "scorer"),
-        ("profiler", "ai"),
+        (None, "tag_mapping"),
     ):
-        section = config.get(section_name, {})
+        section = config.get(section_name, {}) if section_name else config
         function_cfg = section.get(function_name, {}) if isinstance(section, dict) else None
         if not isinstance(function_cfg, dict):
             continue
         model_ref = str(function_cfg.get("model") or "").strip()
         if model_ref and model_ref not in models:
             raise ValueError(
-                f"Model {model_ref} 仍被 {section_name}.{function_name}.model 引用，无法删除"
+                f"Model {model_ref} 仍被 "
+                f"{section_name + '.' if section_name else ''}{function_name}.model 引用，无法删除"
             )
     for model_name, model in models.items():
         if not isinstance(model, dict):

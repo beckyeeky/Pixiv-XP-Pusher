@@ -144,7 +144,7 @@ class ModelSelectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             config.get_known_model_catalog("vision")
 
-    def test_normalize_migrates_legacy_profiler_ai_to_shared_model(self):
+    def test_normalize_migrates_legacy_profiler_ai_to_candidate_only_tag_mapping(self):
         normalized = config.normalize_config({
             "profiler": {
                 "ai": {
@@ -159,19 +159,21 @@ class ModelSelectionTests(unittest.TestCase):
             },
         })
 
-        model_ref = normalized["profiler"]["ai"]["model"]
+        model_ref = normalized["tag_mapping"]["model"]
         self.assertIn(model_ref, normalized["models"])
         self.assertEqual(normalized["models"][model_ref]["capabilities"], ["llm"])
-        self.assertNotIn("api_key", normalized["profiler"]["ai"])
-        self.assertNotIn("base_url", normalized["profiler"]["ai"])
-        self.assertNotIn("provider", normalized["profiler"]["ai"])
-        resolved = config.resolve_profiler_ai_config(normalized)
+        self.assertNotIn("ai", normalized["profiler"])
+        self.assertNotIn("api_key", normalized["tag_mapping"])
+        self.assertNotIn("base_url", normalized["tag_mapping"])
+        self.assertNotIn("provider", normalized["tag_mapping"])
+        self.assertNotIn("concurrency", normalized["tag_mapping"])
+        resolved = config.resolve_tag_mapping_config(normalized)
         self.assertEqual(resolved["api_key"], "profiler-key")
         self.assertEqual(resolved["base_url"], "https://profiler.example/v1")
         self.assertEqual(resolved["model"], "gpt-profiler")
-        self.assertEqual(resolved["concurrency"], 8)
+        self.assertEqual(resolved["batch_size"], 50)
 
-    def test_settings_reject_incompatible_profiler_model(self):
+    def test_settings_reject_incompatible_tag_mapping_model(self):
         current = {
             "web": {"require_login_password": False, "password": ""},
             "providers": {
@@ -180,14 +182,13 @@ class ModelSelectionTests(unittest.TestCase):
             "models": {
                 "embed_only": {"provider": "gateway", "model": "embed", "capabilities": ["embedding"]},
             },
-            "profiler": {"ai": {"enabled": True, "model": "embed_only"}},
+            "tag_mapping": {"enabled": True, "model": "embed_only"},
         }
 
-        with self.assertRaisesRegex(ValueError, "profiler.ai.model"):
+        with self.assertRaisesRegex(ValueError, "tag_mapping.model"):
             apply_settings_payload(current, {}, str)
 
-    def test_task_manager_resolves_profiler_ai_model_credentials(self):
-        from profiler import AITagProcessor
+    def test_task_manager_does_not_construct_a_mapping_generator_in_profile_runtime(self):
         from task_manager import setup_services
 
         config_data = config.normalize_config({
@@ -207,7 +208,7 @@ class ModelSelectionTests(unittest.TestCase):
                     "capabilities": ["llm"],
                 },
             },
-            "profiler": {"ai": {"enabled": True, "model": "profiler_llm", "concurrency": 3}},
+            "tag_mapping": {"enabled": True, "model": "profiler_llm"},
             "web": {"require_login_password": False, "password": ""},
         })
 
@@ -223,18 +224,11 @@ class ModelSelectionTests(unittest.TestCase):
 
         with patch("task_manager.init_db", return_value=None), \
              patch("task_manager.PixivClient", DummyClient), \
-             patch("task_manager.setup_notifiers", side_effect=fake_setup_notifiers), \
-             patch("profiler.HAS_OPENAI", True), \
-             patch("profiler.AsyncOpenAI", return_value=object()) as openai_ctor:
+             patch("task_manager.setup_notifiers", side_effect=fake_setup_notifiers):
             result = __import__("asyncio").run(setup_services(config_data))
 
         profiler = result[2]
-        self.assertIsInstance(profiler.ai_processor, AITagProcessor)
-        self.assertTrue(profiler.ai_processor.enabled)
-        self.assertEqual(profiler.ai_processor.model, "gpt-runtime")
-        openai_ctor.assert_called_once()
-        self.assertEqual(openai_ctor.call_args.kwargs["api_key"], "profiler-runtime-key")
-        self.assertEqual(openai_ctor.call_args.kwargs["base_url"], "https://profiler-runtime.example/v1")
+        self.assertFalse(hasattr(profiler, "ai_processor"))
 
 
 if __name__ == "__main__":

@@ -118,20 +118,23 @@ def _migrate_legacy_function_models(normalized: dict, providers: dict, models: d
             )
 
 
-def _migrate_legacy_profiler_ai(normalized: dict, providers: dict, models: dict) -> None:
-    """Move old inline profiler.ai credentials behind a shared LLM Model."""
+def _migrate_legacy_tag_mapping_config(normalized: dict, providers: dict, models: dict) -> None:
+    """Move retired profiler.ai settings to the candidate-only tag mapping function."""
     profiler = normalized.get("profiler")
-    if not isinstance(profiler, dict):
-        return
+    legacy = profiler.pop("ai", None) if isinstance(profiler, dict) else None
+    if "tag_mapping" not in normalized and isinstance(legacy, dict):
+        normalized["tag_mapping"] = legacy
+        logger.info("已将旧版 profiler.ai 配置迁移为 candidate-only tag_mapping")
+    tag_mapping = normalized.get("tag_mapping")
     _migrate_one_function_model(
-        profiler.get("ai"),
-        function_label="profiler.ai",
+        tag_mapping,
+        function_label="tag_mapping",
         capability="llm",
         providers=providers,
         models=models,
         default_model="gpt-4o-mini",
-        provider_name="profiler_provider",
-        model_ref="profiler_default",
+        provider_name="tag_mapping_provider",
+        model_ref="tag_mapping_default",
     )
 
 
@@ -234,6 +237,12 @@ def normalize_config(config: dict) -> dict:
 
     tag_classifier_cfg.setdefault("enabled", False)
 
+    tag_mapping_cfg = normalized.get("tag_mapping")
+    if tag_mapping_cfg is not None and not isinstance(tag_mapping_cfg, dict):
+        logger.warning("配置项 tag_mapping 必须是对象，已回退为默认值")
+        tag_mapping_cfg = {}
+        normalized["tag_mapping"] = tag_mapping_cfg
+
     providers = normalized.get("providers")
     if not isinstance(providers, dict):
         providers = {}
@@ -264,7 +273,7 @@ def normalize_config(config: dict) -> dict:
 
     # Current single-model installs are migrated on load.  Inline multi-Judge
     # configs were never shipped and deliberately have no compatibility path.
-    # This runs before profiler.ai migration so shared profiler keys remain visible.
+    # Read the legacy key before it is migrated to candidate-only tag_mapping.
     legacy_classifier_key = str(tag_classifier_cfg.get("api_key") or "").strip()
     if not legacy_classifier_key:
         legacy_classifier_key = str(
@@ -282,7 +291,15 @@ def normalize_config(config: dict) -> dict:
         tag_classifier_cfg["judges"] = [model_name]
         logger.info("已将单模型 tag_classifier 配置迁移为 Provider 和 Model")
 
-    _migrate_legacy_profiler_ai(normalized, providers, models)
+    _migrate_legacy_tag_mapping_config(normalized, providers, models)
+    tag_mapping_cfg = normalized.setdefault("tag_mapping", {})
+    tag_mapping_cfg["enabled"] = bool(tag_mapping_cfg.get("enabled", False))
+    tag_mapping_cfg["batch_size"] = max(1, _coerce_int(
+        tag_mapping_cfg.get("batch_size", 50), default=50,
+        field_name="tag_mapping.batch_size",
+    ))
+    for legacy_key in ("filter_meaningless", "merge_synonyms", "concurrency"):
+        tag_mapping_cfg.pop(legacy_key, None)
 
     legacy_pixiv = normalized.get("pixiv")
     legacy_pixiv = legacy_pixiv if isinstance(legacy_pixiv, dict) else {}
@@ -533,10 +550,9 @@ def normalize_config(config: dict) -> dict:
     )
     telegram_cfg["proxy_url"] = normalize_proxy_url(telegram_cfg.get("proxy_url"))
 
-    # Keep legacy empty-provider keys filled from the resolved profiler Model
-    # (or remaining profiler.ai inline key) so older scorer fallbacks still work.
-    profiler_ai = resolve_profiler_ai_config(normalized)
-    shared_key = str(profiler_ai.get("api_key") or "").strip()
+    # Keep older scorer/provider fallbacks working from the migrated Model.
+    tag_mapping_runtime = resolve_tag_mapping_config(normalized)
+    shared_key = str(tag_mapping_runtime.get("api_key") or "").strip()
     if shared_key:
         scorer_cfg = normalized.get("ai", {}).get("scorer")
         if isinstance(scorer_cfg, dict) and not str(scorer_cfg.get("api_key") or "").strip():
@@ -625,14 +641,13 @@ def resolve_model(config: dict, model_ref: str, capability: str | None = None) -
     return resolved
 
 
-def resolve_profiler_ai_config(config: dict) -> dict:
-    """Resolve profiler.ai against its selected shared LLM Model when present."""
-    profiler = config.get("profiler") if isinstance(config, dict) else None
-    ai_cfg = profiler.get("ai") if isinstance(profiler, dict) else None
-    if not isinstance(ai_cfg, dict):
+def resolve_tag_mapping_config(config: dict) -> dict:
+    """Resolve the candidate-only tag mapping function against its LLM Model."""
+    mapping_cfg = config.get("tag_mapping") if isinstance(config, dict) else None
+    if not isinstance(mapping_cfg, dict):
         return {}
-    resolved = copy.deepcopy(ai_cfg)
-    model_ref = str(ai_cfg.get("model") or "").strip()
+    resolved = copy.deepcopy(mapping_cfg)
+    model_ref = str(mapping_cfg.get("model") or "").strip()
     models = config.get("models") if isinstance(config, dict) else None
     if (
         model_ref
