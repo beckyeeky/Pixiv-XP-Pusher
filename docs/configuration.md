@@ -18,12 +18,14 @@ python scripts/refresh_config.py config.yaml --output config.new.yaml
 - `type: pixiv`：唯一的 Pixiv Provider，包含 `refresh_token`、可选 `sync_token` 与 `user_id`。
 - `type: danbooru`：唯一的 Danbooru Provider，包含可选 `login`、`api_key` 和 `base_url`；不会配置 Model。
 - LLM Provider 可配置多个；Model 只可引用 LLM Provider。
-- `models.<name>.capabilities` 声明可用功能：`llm` 用于 Scorer/Judge/Profiler，`embedding` 用于语义 Embedding，也可同时填写两者。
+- `models.<name>.capabilities` 声明可用功能：`llm` 用于 Scorer/Judge/Tag Mapping Candidate，`embedding` 用于语义 Embedding，也可同时填写两者。
 - WebUI 按能力分别暴露 LLM / Embedding 已知模型目录；自定义模型名仍可直接填写。
-- `profiler.ai.model`、`ai.scorer.model` 只能选择具备 `llm` 能力的 Model；`ai.embedding.model` 只能选择具备 `embedding` 能力的 Model。凭据、地址和 Provider 类型统一从所选 Model 解析。
+- `tag_mapping.model`、`ai.scorer.model` 只能选择具备 `llm` 能力的 Model；`ai.embedding.model` 只能选择具备 `embedding` 能力的 Model。凭据、地址和 Provider 类型统一从所选 Model 解析。
 - 旧版根级 `pixiv`、`profiler.danbooru_*` 与 `tag_classifier.danbooru` 凭据会在读取时迁移到 typed Provider，兼容字段仅供旧脚本读取。
 
-旧版 `profiler.ai` / `ai.embedding` / `ai.scorer` 中的 `provider`、`api_key`、`base_url` 和实际模型名会在读取时分别迁移为 `profiler_default` / `embedding_default` / `scorer_default` Model；运行时仍保留旧配置回退路径。
+旧版 `profiler.ai` 会迁移为只生成待审候选的 `tag_mapping`；它不再过滤标签、合并画像或写入正式映射。旧版内联 Provider 配置会迁移到共享 Model，`ai.embedding` / `ai.scorer` 的兼容迁移保持不变。
+
+标签映射候选必须在“标签管理 → 标签映射候选”中人工接受后才会成为 `Tag Alias` 或 `Search Alias`。旧 `ai_tag_cache` 与 `tag_mapping_stats` 数据会保留并一次性导入候选队列，但不再被运行时读取。
 
 ## strategies
 可选策略：`xp_search` / `related` / `ranking` / `subscription`

@@ -232,6 +232,12 @@ notifier:
 </details>
 
 <details>
+<summary><strong>不想使用 AI 可以吗？</strong></summary>
+
+可以。关闭 `tag_mapping.enabled`、`ai.embedding.enabled`、`ai.scorer.enabled` 和 `tag_classifier.enabled` 后，项目仍会使用规则与统计方式运行。`tag_mapping` 只生成待人工审核的映射候选，不会直接改写画像。
+</details>
+
+<details>
 <summary><strong>可以公开部署 Web 控制台吗？</strong></summary>
 
 可以，但至少开启登录密码；更推荐部署在内网、反向代理认证后，或仅通过 SSH 隧道访问。

@@ -58,6 +58,18 @@ A Recommendation Motive for works intentionally selected without relying on an e
 The stable, canonical identity under which equivalent raw Pixiv tag spellings are aggregated and classified.
 _Avoid_: Raw tag, per-work tag occurrence
 
+**Tag Alias**:
+A human-accepted equivalence between a raw tag spelling and one Normalized Tag. Only a Tag Alias may aggregate preference observations under another tag identity.
+_Avoid_: Automatic synonym, mapping cache
+
+**Search Alias**:
+A human-accepted retrieval spelling associated with a Normalized Tag without declaring identity equivalence.
+_Avoid_: Tag Alias, canonical tag
+
+**Tag Mapping Candidate**:
+An untrusted proposal that a raw tag may be a Tag Alias or Search Alias. It has no effect on profile construction, retrieval, classification, or ranking until a human accepts it.
+_Avoid_: Automatic mapping, pending alias
+
 **Tag Category**:
 The single recommendation-relevant meaning assigned to a normalized tag: Feature, Character, Copyright, Artist, or Non-preference. A tag has no category until its meaning is resolved.
 _Avoid_: Multi-label type, review status
