@@ -9,6 +9,7 @@ from pixiv_client import Illust
 import database as db
 from tag_categories import is_feature_category, is_identity_category, is_seed_category
 from daily_slate import DailySlateComposer
+from tag_mapping import TagIdentityResolver
 from utils import normalize_tag
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ def _build_match_breakdown(
     xp_profile: dict[str, float],
     negative_profile: dict[str, float] = None,
     tag_classifications: Optional[dict] = None,
+    tag_resolver: Optional[TagIdentityResolver] = None,
 ) -> dict[str, float | int]:
     if not illust.tags or not xp_profile:
         return {
@@ -52,9 +54,10 @@ def _build_match_breakdown(
     negative_penalty = 0.0
     seen_positive_tags: set[str] = set()
     seen_negative_tags: set[str] = set()
+    resolver = tag_resolver or TagIdentityResolver()
 
     for tag in illust.tags:
-        normalized_tag = normalize_tag(tag)
+        normalized_tag = resolver.resolve(tag)
         tag_key = normalized_tag or tag.lower().strip()
 
         weight = None
@@ -139,6 +142,7 @@ def calculate_match_score(
     xp_profile: dict[str, float],
     negative_profile: dict[str, float] = None,
     tag_classifications: Optional[dict] = None,
+    tag_resolver: Optional[TagIdentityResolver] = None,
 ) -> float:
     """
     计算作品与 XP 画像的匹配度（改进版）
@@ -158,6 +162,7 @@ def calculate_match_score(
         xp_profile,
         negative_profile,
         tag_classifications=tag_classifications,
+        tag_resolver=tag_resolver,
     )
     return _finalize_match_score(breakdown)
 
@@ -191,7 +196,8 @@ class ContentFilter:
         ip_diversity: Optional[dict] = None,
         daily_slate: Optional[dict] = None,
     ):
-        self._config_blacklist_tags = {normalize_tag(t) for t in (blacklist_tags or []) if t}
+        self._config_blacklist_raw = [t for t in (blacklist_tags or []) if t]
+        self._config_blacklist_tags = {normalize_tag(t) for t in self._config_blacklist_raw}
         self._db_blacklist_tags: set[str] = set()
         self.blacklist_tags = set(self._config_blacklist_tags)
         self.blocked_artist_ids: set[int] = set()
@@ -207,6 +213,7 @@ class ContentFilter:
         self.skip_ugoira = skip_ugoira
         self.content_type = content_type.lower()  # 统一小写
         self.tag_classifier = tag_classifier
+        self.tag_resolver = TagIdentityResolver()
         self.display_tags_max_ip_count = self._normalize_max_ip_count(display_tags_max_ip_count)
         
         # 画师多样性衰减 (借鉴 X 算法 AuthorDiversityScorer)
@@ -247,9 +254,18 @@ class ContentFilter:
         """加载数据库中的屏蔽标签和屏蔽画师。"""
         blocked_tags = await db.get_blocked_tags()
         blocked_artists = await db.get_blocked_artists()
+        try:
+            aliases = await db.get_accepted_tag_aliases("equivalent")
+        except Exception as exc:
+            logger.warning("加载已审核 Tag Alias 失败，使用确定性归一化: %s", exc)
+            aliases = {}
+        self.tag_resolver = TagIdentityResolver(aliases)
+        self._config_blacklist_tags = {
+            self.tag_resolver.resolve(tag) for tag in self._config_blacklist_raw
+        }
 
         self._db_blacklist_tags = {
-            normalize_tag(tag)
+            self.tag_resolver.resolve(tag)
             for tag in blocked_tags
             if tag
         }
@@ -347,7 +363,7 @@ class ContentFilter:
                 if muted_tags:
                     from utils import normalize_tag
                     muted_hit = any(
-                        normalize_tag(t) in muted_tags
+                        self.tag_resolver.resolve(t) in muted_tags
                         for t in (illust.tags or [])
                     )
                     if muted_hit:
@@ -455,6 +471,7 @@ class ContentFilter:
                     xp_profile,
                     negative_profile,
                     tag_classifications=tag_classifications,
+                    tag_resolver=self.tag_resolver,
                 )
                 score = _finalize_match_score(breakdown)
                 illust.feature_contribution = float(breakdown["feature_contribution"])
@@ -715,7 +732,7 @@ class ContentFilter:
         normalized_tags: list[str] = []
         for illust in illusts:
             for tag in illust.tags or []:
-                normalized = normalize_tag(tag)
+                normalized = self.tag_resolver.resolve(tag)
                 if normalized:
                     normalized_tags.append(normalized)
 
@@ -749,7 +766,7 @@ class ContentFilter:
         for illust in illusts:
             tag_rows: list[tuple[str, str, float]] = []
             for tag in illust.tags:
-                normalized_tag = normalize_tag(tag)
+                normalized_tag = self.tag_resolver.resolve(tag)
                 tag_lower = tag.lower()
                 if normalized_tag in self.blacklist_tags or tag_lower in self.blacklist_tags:
                     continue
@@ -782,8 +799,8 @@ class ContentFilter:
                 *(tag for tag, _, _ in identity_tags[:self.display_tags_max_ip_count]),
             ]
 
-    @staticmethod
     def _get_primary_identity_tag(
+        self,
         illust: Illust,
         tag_classifications: Optional[dict] = None,
         xp_profile: Optional[dict[str, float]] = None,
@@ -792,7 +809,7 @@ class ContentFilter:
         primary_identity_score = float("-inf")
 
         for tag in illust.tags or []:
-            normalized_tag = normalize_tag(tag)
+            normalized_tag = self.tag_resolver.resolve(tag)
             classification = (tag_classifications or {}).get(normalized_tag)
             if not is_identity_category(classification):
                 continue
@@ -891,7 +908,7 @@ class ContentFilter:
     def _has_blacklisted_tag(self, illust: Illust) -> bool:
         """检查是否包含黑名单Tag"""
         for tag in illust.tags:
-            if normalize_tag(tag) in self.blacklist_tags:
+            if self.tag_resolver.resolve(tag) in self.blacklist_tags:
                 return True
         return False
     
@@ -899,4 +916,3 @@ class ContentFilter:
         """动态添加黑名单Tag"""
         self.blacklist_tags.add(tag.lower())
         logger.info(f"Tag '{tag}' 已加入黑名单")
-

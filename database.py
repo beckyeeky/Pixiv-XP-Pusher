@@ -15,12 +15,13 @@ from tag_categories import (
     TAG_CATEGORY_UNRESOLVED,
     normalize_tag_category,
 )
+from tag_mapping import would_create_alias_cycle
 from utils import normalize_tag
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 TAG_EVIDENCE_FRESHNESS_DAYS = 60
 
 
@@ -127,7 +128,7 @@ def _init_db_sync():
                 value TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-            -- 标签映射统计表 (用于反查最佳搜索词)
+            -- 隔离的旧标签映射统计（仅迁入候选，不再供运行时读取）
             CREATE TABLE IF NOT EXISTS tag_mapping_stats (
                 normalized_tag TEXT,
                 original_tag TEXT,
@@ -135,12 +136,44 @@ def _init_db_sync():
                 PRIMARY KEY (normalized_tag, original_tag)
             );
             
-            -- AI 处理结果缓存 (Tag -> CleanedTag/NULL)
+            -- 隔离的旧 AI 处理缓存（仅迁入候选，不再供运行时读取）
             CREATE TABLE IF NOT EXISTS ai_tag_cache (
                 original_tag TEXT PRIMARY KEY,
                 cleaned_tag TEXT,  -- NULL 表示被过滤(meaningless)
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            -- 只有人工接受的别名可以参与 Normalized Tag 聚合或搜索反查。
+            CREATE TABLE IF NOT EXISTS tag_aliases (
+                original_tag TEXT PRIMARY KEY,
+                normalized_tag TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('equivalent', 'search')),
+                source TEXT NOT NULL DEFAULT 'manual',
+                priority INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- 自动模型和旧系统只能写候选；候选在人工接受前没有运行时效力。
+            CREATE TABLE IF NOT EXISTS tag_mapping_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_tag TEXT NOT NULL,
+                proposed_normalized_tag TEXT,
+                kind TEXT NOT NULL DEFAULT 'equivalent'
+                    CHECK(kind IN ('equivalent', 'search')),
+                source TEXT NOT NULL,
+                explanation TEXT NOT NULL DEFAULT '',
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'accepted', 'rejected')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tag_mapping_candidates_review
+                ON tag_mapping_candidates(status, occurrence_count DESC, id);
+            CREATE INDEX IF NOT EXISTS idx_tag_aliases_normalized
+                ON tag_aliases(normalized_tag, kind, priority DESC);
 
             -- Tag 分类缓存 (Tag Category; legacy ip is interpreted as copyright)
             CREATE TABLE IF NOT EXISTS tag_classification_cache (
@@ -246,6 +279,51 @@ def _init_db_sync():
             );
         """)
         db.commit()
+
+        # Quarantine legacy automatic mappings as review candidates exactly once.
+        # The source tables remain untouched for rollback/audit and are no longer
+        # consumed by runtime identity resolution.
+        legacy_imported = db.execute(
+            "SELECT value FROM system_state WHERE key = 'legacy_tag_mapping_candidates_imported_v1'"
+        ).fetchone()
+        if not legacy_imported:
+            db.execute(
+                """
+                INSERT INTO tag_mapping_candidates (
+                    original_tag, proposed_normalized_tag, kind, source,
+                    explanation, occurrence_count, status
+                )
+                SELECT original_tag, cleaned_tag, 'equivalent', 'legacy_ai_tag_cache',
+                       CASE
+                           WHEN cleaned_tag IS NULL THEN
+                               'Legacy AITagProcessor marked this tag meaningless; requires review.'
+                           ELSE
+                               'Legacy AITagProcessor proposed this automatic mapping; requires review.'
+                       END,
+                       1, 'pending'
+                FROM ai_tag_cache
+                WHERE cleaned_tag IS NULL OR cleaned_tag <> original_tag
+                """
+            )
+            db.execute(
+                """
+                INSERT INTO tag_mapping_candidates (
+                    original_tag, proposed_normalized_tag, kind, source,
+                    explanation, occurrence_count, status
+                )
+                SELECT original_tag, normalized_tag, 'search', 'legacy_tag_mapping_stats',
+                       'Legacy reverse-search observation; requires review before reuse.',
+                       MAX(frequency, 1), 'pending'
+                FROM tag_mapping_stats
+                """
+            )
+            db.execute(
+                """
+                INSERT INTO system_state (key, value, updated_at)
+                VALUES ('legacy_tag_mapping_candidates_imported_v1', 'true', CURRENT_TIMESTAMP)
+                """
+            )
+            db.commit()
         
         # === 迁移：为 illust_cache 添加 source 和 chain 列 ===
         try:
@@ -345,24 +423,198 @@ async def cleanup_old_records(days: int = 180):
             f"(保留最近 {days} 天)"
         )
 
-async def get_ai_cache_map() -> dict[str, str | None]:
-    """获取所有 AI 处理缓存"""
+async def get_accepted_tag_aliases(kind: str = "equivalent") -> dict[str, str]:
+    """Return the only mappings allowed to affect Normalized Tag identity."""
+    if kind not in {"equivalent", "search"}:
+        raise ValueError(f"不支持的 Tag Alias 类型: {kind}")
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT original_tag, cleaned_tag FROM ai_tag_cache")
-        rows = await cursor.fetchall()
-        return {row[0]: row[1] for row in rows}
+        cursor = await db.execute(
+            "SELECT original_tag, normalized_tag FROM tag_aliases WHERE kind = ?",
+            (kind,),
+        )
+        return {row[0]: row[1] for row in await cursor.fetchall()}
 
-async def update_ai_cache(cache_data: dict[str, str | None]):
-    """批量更新 AI 处理缓存"""
-    if not cache_data:
-        return
-        
+
+async def list_tag_aliases(limit: int = 500) -> list[dict]:
+    """List active aliases for review and correction."""
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.executemany(
-            "INSERT OR REPLACE INTO ai_tag_cache (original_tag, cleaned_tag) VALUES (?, ?)",
-            [(k, v) for k, v in cache_data.items()]
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT original_tag, normalized_tag, kind, source, priority, updated_at
+            FROM tag_aliases
+            ORDER BY updated_at DESC, original_tag ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+
+async def delete_tag_alias(original_tag: str) -> bool:
+    """Remove one active alias without deleting its review history."""
+    original = normalize_tag(original_tag)
+    if not original:
+        return False
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM tag_aliases WHERE original_tag = ?",
+            (original,),
         )
         await db.commit()
+        return cursor.rowcount > 0
+
+
+async def save_tag_mapping_candidates(candidates) -> int:
+    """Persist untrusted proposals without activating any alias."""
+    rows = []
+    for candidate in candidates:
+        read = candidate.get if isinstance(candidate, dict) else lambda key, default=None: getattr(candidate, key, default)
+        original = normalize_tag(str(read("original_tag") or ""))
+        target = normalize_tag(str(read("proposed_normalized_tag") or ""))
+        kind = str(read("kind", "equivalent") or "equivalent")
+        source = str(read("source", "ai_candidate") or "ai_candidate")
+        explanation = str(read("explanation", "") or "")
+        if not original or not target or original == target or kind not in {"equivalent", "search"}:
+            continue
+        rows.append((original, target, kind, source, explanation))
+    if not rows:
+        return 0
+
+    inserted = 0
+    async with aiosqlite.connect(DB_PATH) as db:
+        for row in rows:
+            cursor = await db.execute(
+                """
+                SELECT id FROM tag_mapping_candidates
+                WHERE original_tag = ? AND proposed_normalized_tag = ?
+                  AND kind = ? AND source = ?
+                LIMIT 1
+                """,
+                row[:4],
+            )
+            if await cursor.fetchone():
+                continue
+            await db.execute(
+                """
+                INSERT INTO tag_mapping_candidates (
+                    original_tag, proposed_normalized_tag, kind, source, explanation
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                row,
+            )
+            inserted += 1
+        await db.commit()
+    return inserted
+
+
+async def get_tag_mapping_candidates(limit: int = 100, status: str = "pending") -> list[dict]:
+    """Return mapping proposals in human review order."""
+    if status not in {"pending", "accepted", "rejected"}:
+        raise ValueError(f"不支持的候选状态: {status}")
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT c.*, MAX(COALESCE(po.weight, 0), COALESCE(pt.weight, 0)) AS profile_weight
+            FROM tag_mapping_candidates c
+            LEFT JOIN xp_profile po ON po.tag = c.original_tag
+            LEFT JOIN xp_profile pt ON pt.tag = c.proposed_normalized_tag
+            WHERE c.status = ?
+            ORDER BY profile_weight DESC, c.occurrence_count DESC, c.id ASC
+            LIMIT ?
+            """,
+            (status, limit),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+
+async def review_tag_mapping_candidate(candidate_id: int, decision: str, kind: str | None = None) -> dict:
+    """Apply one human decision; only acceptance creates a runtime Tag Alias."""
+    if decision not in {"accept", "reject"}:
+        raise ValueError("decision 必须是 accept 或 reject")
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+        cursor = await db.execute(
+            "SELECT * FROM tag_mapping_candidates WHERE id = ? AND status = 'pending'",
+            (candidate_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            await db.rollback()
+            raise ValueError("映射候选不存在或已经审核")
+
+        applied_kind = kind or row["kind"]
+        if applied_kind not in {"equivalent", "search"}:
+            await db.rollback()
+            raise ValueError("Tag Alias 类型必须是 equivalent 或 search")
+        original = normalize_tag(row["original_tag"])
+        target = normalize_tag(row["proposed_normalized_tag"] or "")
+
+        if decision == "accept":
+            if not original or not target or original == target:
+                await db.rollback()
+                raise ValueError("该候选没有可接受的目标 Normalized Tag")
+            if applied_kind == "equivalent":
+                aliases_cursor = await db.execute(
+                    "SELECT original_tag, normalized_tag FROM tag_aliases WHERE kind = 'equivalent'"
+                )
+                aliases = {item[0]: item[1] for item in await aliases_cursor.fetchall()}
+                if would_create_alias_cycle(aliases, original, target):
+                    await db.rollback()
+                    raise ValueError("Tag Alias 不能形成循环")
+            await db.execute(
+                """
+                INSERT INTO tag_aliases (
+                    original_tag, normalized_tag, kind, source, priority, updated_at
+                ) VALUES (?, ?, ?, 'manual', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(original_tag) DO UPDATE SET
+                    normalized_tag = excluded.normalized_tag,
+                    kind = excluded.kind,
+                    source = 'manual',
+                    priority = excluded.priority,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (original, target, applied_kind, int(row["occurrence_count"] or 1)),
+            )
+            new_status = "accepted"
+        else:
+            new_status = "rejected"
+
+        await db.execute(
+            "UPDATE tag_mapping_candidates SET status = ?, kind = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (new_status, applied_kind, candidate_id),
+        )
+        await db.commit()
+        return {
+            "id": candidate_id,
+            "status": new_status,
+            "original_tag": original,
+            "normalized_tag": target or None,
+            "kind": applied_kind,
+        }
+
+
+async def get_tag_mapping_candidate_inputs(limit: int = 100) -> list[str]:
+    """Select impactful tags which have neither an alias nor a pending proposal."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT p.tag
+            FROM xp_profile p
+            LEFT JOIN tag_aliases a ON a.original_tag = p.tag
+            WHERE a.original_tag IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM tag_mapping_candidates c
+                  WHERE c.original_tag = p.tag AND c.status = 'pending'
+              )
+            ORDER BY p.weight DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [row[0] for row in await cursor.fetchall()]
 
 
 async def get_tag_classifications(
@@ -749,30 +1001,15 @@ async def review_tag_classifications_batch(items: list[tuple[str, str]]) -> list
     return []
 
 
-async def update_tag_mapping_stats(mappings: dict[str, str]):
-    """
-    更新标签映射统计
-    mappings: {original_tag: normalized_tag}
-    """
-    async with aiosqlite.connect(DB_PATH) as db:
-        for original, normalized in mappings.items():
-            await db.execute("""
-                INSERT INTO tag_mapping_stats (normalized_tag, original_tag, frequency)
-                VALUES (?, ?, 1)
-                ON CONFLICT(normalized_tag, original_tag) 
-                DO UPDATE SET frequency = frequency + 1
-            """, (normalized, original))
-        await db.commit()
-
 async def get_best_search_tag(normalized_tag: str) -> str:
     """
-    获取某标准化标签对应的最高频原始标签
+    获取某 Normalized Tag 对应的已审核搜索词。
     """
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
-            SELECT original_tag FROM tag_mapping_stats
+            SELECT original_tag FROM tag_aliases
             WHERE normalized_tag = ?
-            ORDER BY frequency DESC
+            ORDER BY CASE kind WHEN 'search' THEN 0 ELSE 1 END, priority DESC, updated_at DESC
             LIMIT 1
         """, (normalized_tag,))
         row = await cursor.fetchone()
@@ -1353,7 +1590,8 @@ async def get_db_overview() -> dict:
     """返回数据库概览，供维护工具与 Web 使用。"""
     table_names = [
         "push_history", "xp_profile", "xp_bookmarks", "illust_cache", "feedback",
-        "strategy_stats", "tag_mapping_stats", "ai_tag_cache", "system_state"
+        "strategy_stats", "tag_aliases", "tag_mapping_candidates",
+        "tag_mapping_stats", "ai_tag_cache", "system_state"
     ]
     async with aiosqlite.connect(DB_PATH) as db:
         table_counts = {}
@@ -1492,30 +1730,24 @@ async def reset_xp_data():
     重置所有 XP 分析数据（适用于Prompt变更后需要重新清洗的情况）
     将会清除：
     1. XP画像 (xp_profile, xp_tag_pairs)
-    2. 标签映射统计 (tag_mapping_stats)
-    3. 系统状态中的处理进度 (system_state)
+    2. 运行策略统计
     
     保留：
     1. 推送历史 (push_history)
     2. 用户反馈 (feedback)
     3. 黑名单 (tag_blacklist)
+    4. 已审核 Tag Alias、映射候选和隔离的旧映射数据
     """
     async with aiosqlite.connect(DB_PATH) as db:
         # 清除画像数据
         await db.execute("DELETE FROM xp_profile")
         await db.execute("DELETE FROM xp_tag_pairs")
         
-        # 清除 AI 映射统计
-        await db.execute("DELETE FROM tag_mapping_stats")
-        
         # 清除 AI 错误日志
         await db.execute("DELETE FROM ai_error_logs")
         
         # 清除 MAB 策略统计
         await db.execute("DELETE FROM strategy_stats")
-        
-        # 清除 AI 处理结果缓存 (让 AI 重新清洗)
-        await db.execute("DELETE FROM ai_tag_cache")
         
         # 注意：不清除 system_state 中的同步进度
         # 这样 Profiler 会跳过 Pixiv API 抓取，直接从 xp_bookmarks 读取缓存进行重分析
@@ -1975,20 +2207,6 @@ async def sync_blocked_tags_to_xp() -> int:
         return cursor.rowcount
 
 
-async def get_uncached_tags(limit: int = 100) -> list[str]:
-    """
-    获取尚未被 AI 处理过的标签 (在 xp_profile 中但不在 ai_tag_cache 中)
-    """
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("""
-            SELECT DISTINCT tag FROM xp_profile 
-            WHERE tag NOT IN (SELECT original_tag FROM ai_tag_cache)
-            LIMIT ?
-        """, (limit,))
-        rows = await cursor.fetchall()
-        return [row[0] for row in rows]
-
-
 async def cleanup_old_sent_history(days: int = 30) -> int:
     """清理 N 天前的推送历史记录，返回删除数量"""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -2199,7 +2417,7 @@ async def search_tags_with_translation(keyword: str, limit: int = 10) -> list[tu
 
 async def get_best_search_tags(normalized_tags: list[str]) -> dict[str, str]:
     """
-    批量获取标准化标签对应的最高频原始标签
+    批量获取 Normalized Tag 对应的已审核搜索词。
     """
     if not normalized_tags:
         return {}
@@ -2211,9 +2429,9 @@ async def get_best_search_tags(normalized_tags: list[str]) -> dict[str, str]:
         # Since tags are small, we can loop or use a simple query
         for tag in normalized_tags:
             cursor = await db.execute("""
-                SELECT original_tag FROM tag_mapping_stats
+                SELECT original_tag FROM tag_aliases
                 WHERE normalized_tag = ?
-                ORDER BY frequency DESC
+                ORDER BY CASE kind WHEN 'search' THEN 0 ELSE 1 END, priority DESC, updated_at DESC
                 LIMIT 1
             """, (tag,))
             row = await cursor.fetchone()

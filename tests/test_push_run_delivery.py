@@ -54,7 +54,7 @@ class PushRunDeliveryTests(unittest.IsolatedAsyncioTestCase):
         runner = PushRun(
             config={},
             client=AsyncMock(),
-            profiler=SimpleNamespace(ai_processor=SimpleNamespace(occurred_errors=[])),
+            profiler=SimpleNamespace(),
             notifiers=[DeliveryResultNotifier()],
             stats=stats,
         )

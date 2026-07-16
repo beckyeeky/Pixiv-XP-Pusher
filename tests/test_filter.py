@@ -20,6 +20,7 @@ sys.modules.setdefault(
 from filter import ContentFilter, calculate_match_score
 from pixiv_client import Illust
 from tag_categories import TagClassification
+from tag_mapping import TagIdentityResolver
 
 
 class StubTagClassifier:
@@ -35,6 +36,31 @@ class StubTagClassifier:
 
 
 class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
+    def test_accepted_aliases_collapse_duplicate_semantic_matches(self):
+        item = Illust(
+            id=99, title="aliases", user_id=99, user_name="artist",
+            tags=["ブルアカ", "blue_archive"], bookmark_count=100, view_count=1000,
+            page_count=1, image_urls=["https://example.com/99.jpg"], is_r18=False,
+            ai_type=0, create_date=datetime.now(),
+        )
+        resolver = TagIdentityResolver({"ブルアカ": "blue_archive"})
+
+        score_with_duplicate = calculate_match_score(
+            item,
+            {"blue_archive": 1.0},
+            tag_classifications={"blue_archive": TagClassification("copyright", "manual")},
+            tag_resolver=resolver,
+        )
+        item.tags = ["blue_archive"]
+        score_once = calculate_match_score(
+            item,
+            {"blue_archive": 1.0},
+            tag_classifications={"blue_archive": TagClassification("copyright", "manual")},
+            tag_resolver=resolver,
+        )
+
+        self.assertEqual(score_with_duplicate, score_once)
+
     async def test_daily_slate_applies_motive_mix_and_identity_caps(self):
         def illust(illust_id, tags):
             return Illust(
@@ -511,4 +537,3 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([illust.id for illust in ranked], [12])
         self.assertIn("blue_archive", content_filter.blacklist_tags)
         self.assertIn(99, content_filter.blocked_artist_ids)
-

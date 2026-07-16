@@ -6,343 +6,19 @@ import logging
 import math
 import itertools
 import json
-import asyncio
-import re
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
-from typing import Optional
-
-try:
-    from openai import AsyncOpenAI
-    HAS_OPENAI = True
-except ImportError:
-    HAS_OPENAI = False
+from pathlib import Path
+from typing import Optional, Union
 
 from pixiv_client import Illust, PixivClient
 import database as db
-from utils import retry_async
+from tag_mapping import TagIdentityResolver
 
 
 
 logger = logging.getLogger(__name__)
 
-
-# 常见别名映射表（可扩展）
-TAG_ALIASES = {
-    "白髪": "white_hair",
-    "silver hair": "white_hair",
-    "白髮": "white_hair",
-    "猫耳": "cat_ears",
-    "cat ears": "cat_ears",
-    "nekomimi": "cat_ears",
-    "ロリ": "loli",
-    "巨乳": "large_breasts",
-    "おっぱい": "breasts",
-    "黒髪": "black_hair",
-    "金髪": "blonde_hair",
-    "ツインテール": "twintails",
-    "twin tails": "twintails",
-    "メイド": "maid",
-    "水着": "swimsuit",
-    "制服": "uniform",
-    "ストッキング": "stockings",
-    "ニーソ": "thighhighs",
-    "眼鏡": "glasses",
-}
-
-
-class AITagProcessor:
-    """AI Tag 处理器 - 过滤无意义tag和归类同义tag"""
-    
-    def __init__(self, config: dict):
-        self.enabled = config.get("enabled", False) and HAS_OPENAI
-        self.filter_meaningless = config.get("filter_meaningless", True)
-        self.merge_synonyms = config.get("merge_synonyms", True)
-        self.model = config.get("model", "gpt-4o-mini")
-        self.batch_size = config.get("batch_size", 50)
-        self.concurrency = config.get("concurrency", 3)  # 并发数
-        self.pattern_users = re.compile(r"^(.*?)\d+users入り$") # 预编译正则
-        
-        if self.enabled:
-            self.client = AsyncOpenAI(
-                api_key=config.get("api_key", ""),
-                base_url=config.get("base_url") or None
-            )
-        else:
-            self.client = None
-        
-        # 缓存处理结果 (Tag -> CleanedTag/None)
-        self._cache: dict[str, str | None] = {}
-        self._cache_initialized = False
-        # 记录发生的错误
-        self.occurred_errors: list[int] = []
-    
-    def _preprocess_tags(self, tags: list[str]) -> list[str]:
-        """正则预处理：去除 users入り 后缀等"""
-        processed = []
-        for tag in tags:
-            # 1. 去除 users入り
-            match = self.pattern_users.match(tag)
-            if match:
-                prefix = match.group(1)
-                # 如果前缀非空，则使用前缀（例如 "鸣潮"）；否则保留原样
-                processed.append(prefix if prefix else tag)
-            else:
-                processed.append(tag)
-        return processed
-
-    async def process_tags(self, tags: list[str]) -> tuple[list[str], dict[str, str]]:
-        if not self.enabled or not tags:
-            return tags, {}
-            
-        # 0. 正则预处理
-        effective_tags = self._preprocess_tags(tags)
-        
-        # 1. 首次运行时加载 DB 缓存
-        if not self._cache_initialized:
-            try:
-                db_cache = await db.get_ai_cache_map()
-                self._cache.update(db_cache)
-                self._cache_initialized = True
-                logger.info(f"已加载 {len(db_cache)} 条 AI 标签缓存")
-            except Exception as e:
-                logger.error(f"加载 AI 缓存失败: {e}")
-        
-        # 2. 检查缺失 (使用预处理后的标签)
-        uncached = [t for t in effective_tags if t not in self._cache]
-        
-        if uncached:
-            # 去重
-            uncached = list(set(uncached))
-            logger.info(f"发现 {len(uncached)} 个新 Tag，开始 AI 处理 ({self.batch_size}/批)...")
-            await self._batch_process(uncached)
-        
-        # 3. 应用结果
-        valid_tags = []
-        synonym_map = {}
-        
-        for i, original_tag in enumerate(tags):
-            effective_tag = effective_tags[i]
-            
-            # 安全获取结果
-            result = self._cache.get(effective_tag, effective_tag)
-            
-            if result is None:
-                continue # meaningless
-            
-            # 只要结果与原始标签不同，就记录映射
-            if result != original_tag:
-                synonym_map[original_tag] = result
-            
-            valid_tags.append(result)
-        
-        # 去重保持顺序
-        valid_tags = list(dict.fromkeys(valid_tags))
-        
-        return valid_tags, synonym_map
-
-    @retry_async(max_retries=3, delay=2.0)
-    async def _call_api(self, prompt: str) -> str:
-        """调用AI API（流式，防止超时）"""
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "你是一个Pixiv插画标签数据处理专家，只输出标准JSON。"},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1,
-            response_format={"type": "json_object"},
-            stream=True  # 启用流式
-        )
-        
-        collected_content = []
-        async for chunk in response:
-            if chunk.choices and chunk.choices[0].delta.content:
-                collected_content.append(chunk.choices[0].delta.content)
-                
-        return "".join(collected_content)
-
-    async def _batch_process(self, tags: list[str]):
-        """并发批量处理Tag"""
-        if not tags:
-            return
-        
-        batches = []
-        for i in range(0, len(tags), self.batch_size):
-            batches.append(tags[i:i + self.batch_size])
-            
-        logger.info(f"队列共 {len(batches)} 个批次，并发数: {self.concurrency}")
-        
-        semaphore = asyncio.Semaphore(self.concurrency)
-        
-        async def _bounded_Process(batch):
-            async with semaphore:
-                await self._process_single_batch(batch)
-                
-        tasks = [_bounded_Process(b) for b in batches]
-        await asyncio.gather(*tasks)
-
-    async def _process_single_batch(self, tags: list[str]):
-        """处理单批次并持久化"""
-        prompt = self._build_prompt(tags)
-        
-        last_error = None
-        max_logic_retries = 5
-        
-        for attempt in range(max_logic_retries):
-            try:
-                logger.info(f"🤖 正在请求 AI清洗 (尝试 {attempt+1}/{max_logic_retries})...")
-                content = await self._call_api(prompt)
-                
-                # 清洗 Markdown
-                content = content.strip()
-                if content.startswith("```json"): content = content[7:]
-                if content.startswith("```"): content = content[3:]
-                if content.endswith("```"): content = content[:-3]
-                
-                # 直接解析，失败则触发外层重试
-                result = json.loads(content)
-    
-                meaningless = set(result.get("meaningless", []))
-                synonyms = result.get("synonyms", {})
-                
-                # 构造更新映射
-                cache_update = {}
-                mapping_update = {} 
-                
-                for tag in tags:
-                    if tag in meaningless:
-                        cache_update[tag] = None
-                    elif tag in synonyms:
-                        cleaned = synonyms[tag]
-                        cache_update[tag] = cleaned
-                        mapping_update[tag] = cleaned
-                    else:
-                        cache_update[tag] = tag
-                
-                # 更新内存缓存
-                self._cache.update(cache_update)
-                
-                # 持久化到 DB
-                await db.update_ai_cache(cache_update) 
-                if mapping_update:
-                    await db.update_tag_mapping_stats(mapping_update)
-                    
-                # 美化日志输出
-                logger.info(f"✨ AI Batch 完成 (本批 {len(tags)} 个)")
-                
-                if meaningless:
-                    logger.info(f"   🗑️ 过滤 {len(meaningless)} 个标签")
-                if synonyms:
-                    logger.info(f"   🔄 归类 {len(synonyms)} 个标签")
-                
-                # 成功则直接返回
-                return
-
-            except Exception as e:
-                last_error = e
-                # 简化报错日志
-                error_msg = str(e)
-                if "524" in error_msg:
-                    logger.warning(f"AI API超时 (524)")
-                else:
-                    logger.warning(f"AI处理批次失败 (尝试 {attempt+1}): {e}")
-                
-                # 如果不是最后一次尝试，等待后重试
-                if attempt < max_logic_retries - 1:
-                    await asyncio.sleep(2)
-                    continue
-
-        # 如果所有重试都失败，执行最终的错误处理
-        if last_error:
-            logger.error(f"❌ AI Batch 最终失败: {last_error}")
-            
-            # 记录错误到数据库 (仅非超时错误)
-            if "524" not in str(last_error):
-                try:
-                    err_id = await db.add_ai_error(tags, str(last_error))
-                    self.occurred_errors.append(err_id)
-                except Exception as db_e:
-                    logger.error(f"记录错误日志失败: {db_e}")
-            
-            # 失败时保留所有tags (Fallback)
-            for tag in tags:
-                self._cache[tag] = tag
-    
-from utils import TAG_TRANSLATIONS
-
-
-def _build_ai_prompt(tags: list[str]) -> str:
-    """构建优化后的 AI 提示词"""
-    
-    # 构建完整的标准词库（供 AI 参考）
-    canonical_dict = {}
-    for canonical, query_str in TAG_TRANSLATIONS.items():
-        aliases = [p.strip().replace("(", "").replace(")", "") for p in query_str.split(" OR ")]
-        for alias in aliases:
-            if alias != canonical:
-                canonical_dict[alias] = canonical
-    
-    # 格式化词库为紧凑字符串
-    dict_entries = [f"{k} → {v}" for k, v in canonical_dict.items()]
-    dict_text = " | ".join(dict_entries)
-
-    return f"""# Pixiv Tag 清洗任务
-
-## 目标
-将原始 Pixiv 标签清洗为适合用户画像分析的标准化标签。
-
-## 已有标准词库（必须优先使用）
-以下是系统已定义的标准映射，如果输入包含这些标签，**必须**使用对应的标准形式：
-{dict_text}
-
-## 规则
-
-### 1. 过滤（放入 meaningless）
-删除以下类型的标签：
-- **平台/统计类**: original, pixiv, users入り, bookmark, 収藏, 仕事絵
-- **创作过程类**: 落書き, 練習, WIP, sketch, doodle
-- **宣传/请求类**: お仕事募集中, commission, request, follow me
-- **年份/日期类**: 2024, 2023, 新年, クリスマス
-- **纯数字或无意义字符** (⚠️注意：如果数字代表角色名如"37"或作品名如"1999"等，请**保留**，不要过滤)
-
-### 2. 归一化（放入 synonyms）
-将同义词映射到 **Danbooru 风格** 标准标签：
-- 格式: 全小写 + 下划线 (snake_case)
-- **多语言合并**: 必须将中文/日文的作品名、角色名合并为统一的英文/罗马音标签
-- **优先使用上方词库中的标准形式**，如果词库中没有，再自行判断
-
-### 3. 保留（不出现在输出中）
-仅保留无法归类或无需标准化的描述性标签（且不属于同义词）：
-- 独特的风格描述
-- 具体的场景细节
-- **注意**：如果一个标签可以被归一化（如作品名），必须归一化，**不要**保留原样！
-
-## 输入
-```json
-{json.dumps(tags, ensure_ascii=False)}
-```
-
-## 输出要求
-严格 JSON，无 Markdown 包裹：
-```json
-{{
-  "meaningless": ["tag1", "tag2"],
-  "synonyms": {{"原tag": "标准tag"}}
-}}
-```
-如果某类别为空，使用空数组/对象。"""
-
-
-# 将 _build_prompt 方法绑定到 AITagProcessor 类
-AITagProcessor._build_prompt = lambda self, tags: _build_ai_prompt(tags)
-
-
-from typing import Optional, Union
-from pathlib import Path
-import json
-
-# ... existing imports ...
 
 # 默认 IP 列表 (作为 Fallback)
 DEFAULT_IP_TAGS = {
@@ -367,18 +43,6 @@ DEFAULT_IP_TAGS = {
     "original", "copyright", "game", "anime", "manga", "comic",
 }
 
-# 手动 IP 标签映射表 (别名/简称 -> 标准英文名)
-# 用于处理日文简称、缩写等非标准名称
-# 可以从 data/ip_tag_aliases.json 覆盖
-DEFAULT_IP_TAG_ALIASES = {
-    # Blue Archive
-    "ブルアカ": "blue_archive",
-    "ブルーアーカイブ": "blue_archive",
-    "bluearchive": "blue_archive",
-    "ホシノ": "blue_archive",
-    "アロナ": "blue_archive",
-}
-
 class XPProfiler:
     """XP画像构建器"""
     
@@ -388,7 +52,6 @@ class XPProfiler:
         stop_words: Optional[list[str]] = None,
         discovery_rate: float = 0.1,
         time_decay_days: int = 180,
-        ai_config: Optional[dict] = None,
         saturation_threshold: float = 0.5,
         # 新增参数
         ip_tags: Optional[Union[list, str]] = None,
@@ -399,7 +62,6 @@ class XPProfiler:
         self.stop_words = set(stop_words or [])
         self.discovery_rate = discovery_rate
         self.time_decay_days = time_decay_days
-        self.ai_processor = AITagProcessor(ai_config or {})
         self.saturation_threshold = saturation_threshold  # 高频 Tag 饱和度阈值
         self._blocked_artist_ids: set[int] = set()  # 初始化，由 load_blacklist 填充
         
@@ -407,8 +69,7 @@ class XPProfiler:
         self.ip_weight_discount = ip_weight_discount
         self.ip_tags = set()
         
-        # 加载 IP 标签别名映射 (文件优先于默认)
-        self.ip_tag_aliases = self._load_ip_tag_aliases()
+        self.tag_resolver = TagIdentityResolver()
         
         # 手动加权配置
         self.boost_tags = boost_tags or {}
@@ -490,6 +151,8 @@ class XPProfiler:
     async def load_blacklist(self):
         """从数据库加载黑名单 (仅包括用户手动屏蔽的)"""
         try:
+            accepted_aliases = await db.get_accepted_tag_aliases("equivalent")
+            self.tag_resolver = TagIdentityResolver(accepted_aliases)
             # 1. 仅加载手动屏蔽的标签
             # 用户明确要求：没确认就不屏蔽，因此不加载 high-dislike counts
             blocked_tags = await db.get_blocked_tags()
@@ -508,22 +171,6 @@ class XPProfiler:
             logger.error(f"加载黑名单失败: {e}")
             self._blocked_artist_ids = set()
 
-    def _load_ip_tag_aliases(self) -> dict[str, str]:
-        """加载 IP 标签别名映射 (从文件或默认)"""
-        aliases_file = Path(__file__).parent / "data" / "ip_tag_aliases.json"
-        
-        if aliases_file.exists():
-            try:
-                with open(aliases_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    aliases = data.get("aliases", {})
-                    logger.info(f"已从文件加载 {len(aliases)} 个 IP 标签别名")
-                    return aliases
-            except Exception as e:
-                logger.warning(f"加载 IP 标签别名文件失败: {e}，使用默认映射")
-        
-        return DEFAULT_IP_TAG_ALIASES.copy()
-    
     async def build_profile(
         self,
         user_id: int,
@@ -694,24 +341,6 @@ class XPProfiler:
                 if normalized and normalized not in self.stop_words:
                     tag_occurrences[normalized].append((illust.id, illust.create_date, weight_mult))
         
-        # AI 处理：过滤无意义tag和归类同义tag
-        if self.ai_processor.enabled:
-            all_tags = list(tag_occurrences.keys())
-            valid_tags, synonym_map = await self.ai_processor.process_tags(all_tags)
-            
-            # 合并同义tag的统计
-            new_occurrences = defaultdict(list)
-            for tag, occs in tag_occurrences.items():
-                if tag in synonym_map:
-                    # 映射到规范化tag
-                    new_occurrences[synonym_map[tag]].extend(occs)
-                elif tag in valid_tags:
-                    new_occurrences[tag].extend(occs)
-                # else: 被过滤的无意义tag，丢弃
-            
-            tag_occurrences = new_occurrences
-            logger.info(f"AI处理后剩余 {len(tag_occurrences)} 个有效Tag")
-        
         # 计算权重
         total_docs = len(bookmarks)
         profile = {}
@@ -815,21 +444,7 @@ class XPProfiler:
         # IP 标签降权处理
         discounted_count = 0
         
-        # 先应用别名映射 (例如: ブルアカ -> blue_archive)
-        normalized_profile = {}
-        for tag, weight in profile.items():
-            # 检查是否有别名映射
-            normalized_tag = self.ip_tag_aliases.get(tag, tag)
-            
-            # 如果映射后的标签已存在，合并权重（取平均）
-            if normalized_tag in normalized_profile:
-                normalized_profile[normalized_tag] = (normalized_profile[normalized_tag] + weight) / 2
-            else:
-                normalized_profile[normalized_tag] = weight
-        
-        profile = normalized_profile
-        
-        # 然后进行 IP 降权 (但如果该 Tag 已有 Boost，则不进行 IP 降权，完全交给 Boost)
+        # IP 降权（Tag Alias 已经在统一 resolver seam 中应用）
         for tag in list(profile.keys()):
             if tag in self.ip_tags:
                 # 检查是否已有 Boost (包含在 boost_tags 中)
@@ -876,37 +491,9 @@ class XPProfiler:
         logger.info(f"构建XP画像完成，共 {len(profile)} 个Tag，{len(pairs_to_save)} 个热门组合")
         return profile
     
-    # 预编译正则：去除 users入り 后缀
-    _pattern_users = re.compile(r"^(.*?)\d+users入り$", re.IGNORECASE)
-    
     def _normalize_tag(self, tag: str) -> str:
-        """
-        Tag归一化
-        1. 去除 xxxusers入り 后缀
-        2. 统一转小写
-        3. 去除空格
-        4. 别名映射
-        """
-        tag = tag.strip()
-        
-        # 去除 users入り 后缀
-        match = self._pattern_users.match(tag)
-        if match:
-            prefix = match.group(1)
-            if prefix:  # 如果前缀非空，使用前缀
-                tag = prefix
-        
-        tag = tag.lower()
-        
-        # 检查别名映射
-        for alias, canonical in TAG_ALIASES.items():
-            if tag == alias.lower():
-                return canonical
-        
-        # 替换空格为下划线
-        tag = tag.replace(" ", "_")
-        
-        return tag
+        """Resolve a tag through the single accepted identity seam."""
+        return self.tag_resolver.resolve(tag)
     
     def _calculate_weight(
         self,
@@ -968,6 +555,9 @@ class XPProfiler:
             action: 'like' | 'dislike'
             config: 反馈配置
         """
+        accepted_aliases = await db.get_accepted_tag_aliases("equivalent")
+        self.tag_resolver = TagIdentityResolver(accepted_aliases)
+
         like_boost = config.get("like_boost", 0.5)
         dislike_penalty = config.get("dislike_penalty", 0.3)
         dislike_threshold = config.get("dislike_threshold", 3)

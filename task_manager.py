@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from config import CONFIG_PATH, get_singleton_provider, load_config, resolve_profiler_ai_config
+from config import CONFIG_PATH, get_singleton_provider, load_config
 from database import init_db, cache_illust, get_cached_illust
 from pixiv_client import PixivClient
 from profiler import XPProfiler
@@ -319,40 +319,7 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
     async def on_action(action: str, data: any):
         """通用动作回调"""
         if action == "retry_ai":
-            error_id = int(data)
-            logger.info(f"收到重试请求: error_id={error_id}")
-            
-            try:
-                from database import get_ai_error, update_ai_error_status
-                import json
-                
-                # 1. 获取错误记录
-                error_record = await get_ai_error(error_id)
-                if not error_record:
-                    logger.error("错误记录不存在")
-                    return
-                
-                if error_record["status"] == "resolved":
-                    logger.info("该错误已修复")
-                    return
-
-                tags = json.loads(error_record["tags_content"])
-                
-                # 2. 重新尝试 AI 处理
-                logger.info(f"正在重试 AI 处理 {len(tags)} 个标签...")
-                valid, mapping = await profiler.ai_processor.process_tags(tags)
-                
-                await update_ai_error_status(error_id, "resolved")
-                
-                # 通知用户（使用第一个可用的 notifier）
-                msg = f"✅ 修复成功！\n已验证 AI 配置可用。\n({len(tags)} 个标签已正确处理)"
-                for n in notifiers:
-                    if hasattr(n, 'send_text'):
-                        await n.send_text(msg)
-                        break
-                
-            except Exception as e:
-                logger.error(f"重试失败: {e}")
+            logger.info("忽略已退役 AITagProcessor 的旧重试按钮: %s", data)
         
         elif action == "run_task":
              # 手动触发推送任务 (Bot 命令跳过队列)
@@ -560,7 +527,6 @@ async def setup_services(config: dict):
         stop_words=profiler_cfg.get("stop_words"),
         discovery_rate=profiler_cfg.get("discovery_rate", 0.1),
         time_decay_days=profiler_cfg.get("time_decay_days", 180),
-        ai_config=resolve_profiler_ai_config(config),
         saturation_threshold=profiler_cfg.get("saturation_threshold", 0.5),
         # Pass IP discount config
         ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),
@@ -749,29 +715,7 @@ async def daily_report_task(config: dict, notifiers: list, profiler=None):
         logger.error(f"同步屏蔽标签失败: {e}")
         maintenance_summary.append(f"⚠️ 同步屏蔽标签失败: {e}")
     
-    # ========== 3. AI 标签增量处理 (带重试) ==========
-    if profiler and hasattr(profiler, 'ai_processor') and profiler.ai_processor.enabled:
-        try:
-            from database import get_uncached_tags
-            uncached_tags = await get_uncached_tags(limit=200)
-            if uncached_tags:
-                logger.info(f"发现 {len(uncached_tags)} 个未处理标签，启动 AI 清洗...")
-                
-                async def _ai_process():
-                    return await profiler.ai_processor.process_tags(uncached_tags)
-                
-                result = await retry_async(_ai_process, max_retries=3, delay=10.0)
-                if result:
-                    valid_tags, mapping = result
-                    maintenance_summary.append(f"🤖 AI 清洗 {len(uncached_tags)} 个标签 → {len(valid_tags)} 个有效")
-                    logger.info(f"AI 清洗完成: {len(valid_tags)}/{len(uncached_tags)} 有效")
-                else:
-                    maintenance_summary.append(f"⚠️ AI 清洗失败 (已重试)")
-        except Exception as e:
-            logger.error(f"AI 清洗失败: {e}")
-            maintenance_summary.append(f"⚠️ AI 清洗失败: {e}")
-    
-    # ========== 4. 清理旧推送历史 ==========
+    # ========== 3. 清理旧推送历史 ==========
     try:
         from database import cleanup_old_sent_history
         old_removed = await cleanup_old_sent_history(days=30)

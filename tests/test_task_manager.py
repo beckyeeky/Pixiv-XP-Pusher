@@ -126,7 +126,6 @@ class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
         client = AsyncMock()
         profiler = AsyncMock()
         profiler.build_profile.side_effect = RuntimeError("boom")
-        profiler.ai_processor.occurred_errors = []
 
         with patch.object(task_manager.db_module, "set_state", new=AsyncMock()) as mock_set_state:
             stats = await task_manager.main_task(
@@ -163,7 +162,6 @@ class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
         client = AsyncMock()
         profiler = AsyncMock()
         profiler.build_profile.side_effect = RuntimeError("boom")
-        profiler.ai_processor.occurred_errors = []
         notifier = AsyncMock()
         notifier.send_text = AsyncMock()
 
@@ -193,7 +191,6 @@ class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
         client = AsyncMock()
         profiler = AsyncMock()
         profiler.build_profile.side_effect = RuntimeError("boom")
-        profiler.ai_processor.occurred_errors = []
         notifier = AsyncMock()
         notifier.send_text = AsyncMock()
 

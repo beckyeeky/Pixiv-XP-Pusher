@@ -401,21 +401,6 @@ class PushRun:
                     for _ in range(len(filtered)):
                         self.stats.record_push_failed()
 
-                ai_errors = self.profiler.ai_processor.occurred_errors
-                if ai_errors:
-                    err_count = len(ai_errors)
-                    self.stats.record_ai_error(err_count)
-                    err_id = ai_errors[0]
-                    msg = f"⚠️ 警告：本次任务有 {err_count} 批 Tag AI 优化失败。\n已自动记录并降级处理。"
-                    buttons = [("🔄 重试修复", f"retry_ai:{err_id}")]
-                    logger.warning(f"AI 优化失败 {err_count} 次，发送警告")
-
-                    for notifier in self.notifiers:
-                        if hasattr(notifier, "send_text"):
-                            try:
-                                await notifier.send_text(msg, buttons)
-                            except Exception:
-                                pass
             except Exception as e:
                 logger.error(f"推送过程出错: {e}")
                 for _ in range(len(filtered)):

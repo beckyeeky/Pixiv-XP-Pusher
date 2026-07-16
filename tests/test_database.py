@@ -11,6 +11,97 @@ import database
 
 
 class DatabaseInitTests(unittest.TestCase):
+    def test_init_quarantines_legacy_automatic_mappings_without_activating_them(self):
+        async def _run(db_path):
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.executescript(
+                    """
+                    CREATE TABLE ai_tag_cache (
+                        original_tag TEXT PRIMARY KEY,
+                        cleaned_tag TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                    CREATE TABLE tag_mapping_stats (
+                        normalized_tag TEXT,
+                        original_tag TEXT,
+                        frequency INTEGER DEFAULT 0,
+                        PRIMARY KEY (normalized_tag, original_tag)
+                    );
+                    INSERT INTO ai_tag_cache (original_tag, cleaned_tag) VALUES
+                        ('パンツ', 'panties'),
+                        ('platform_noise', NULL),
+                        ('same', 'same');
+                    INSERT INTO tag_mapping_stats (normalized_tag, original_tag, frequency)
+                        VALUES ('panties', 'パンツ', 4);
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                candidates = await database.get_tag_mapping_candidates(limit=20)
+                aliases = await database.get_accepted_tag_aliases()
+                await database.init_db()
+                candidates_after_second_init = await database.get_tag_mapping_candidates(limit=20)
+            return candidates, aliases, candidates_after_second_init
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            candidates, aliases, repeated = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
+
+        self.assertEqual(len(candidates), 3)
+        self.assertEqual(aliases, {})
+        self.assertEqual(len(repeated), 3)
+        self.assertEqual(
+            {item["source"] for item in candidates},
+            {"legacy_ai_tag_cache", "legacy_tag_mapping_stats"},
+        )
+
+    def test_only_human_acceptance_creates_a_runtime_tag_alias(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                await database.save_tag_mapping_candidates([
+                    {
+                        "original_tag": "ブルアカ",
+                        "proposed_normalized_tag": "blue_archive",
+                        "kind": "equivalent",
+                        "source": "test_generator",
+                        "explanation": "Known Japanese abbreviation.",
+                    },
+                    {
+                        "original_tag": "着物ビキニ",
+                        "proposed_normalized_tag": "kimono",
+                        "kind": "equivalent",
+                        "source": "test_generator",
+                    },
+                ])
+                pending = await database.get_tag_mapping_candidates(limit=10)
+                by_original = {item["original_tag"]: item for item in pending}
+                before = await database.get_accepted_tag_aliases()
+                accepted = await database.review_tag_mapping_candidate(
+                    by_original["ブルアカ"]["id"], "accept"
+                )
+                rejected = await database.review_tag_mapping_candidate(
+                    by_original["着物ビキニ"]["id"], "reject"
+                )
+                after = await database.get_accepted_tag_aliases()
+                search_term = await database.get_best_search_tag("blue_archive")
+                return before, accepted, rejected, after, search_term
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            before, accepted, rejected, after, search_term = asyncio.run(
+                _run(Path(tmpdir) / "pixiv_xp.db")
+            )
+
+        self.assertEqual(before, {})
+        self.assertEqual(accepted["status"], "accepted")
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertEqual(after, {"ブルアカ": "blue_archive"})
+        self.assertEqual(search_term, "ブルアカ")
+
     def test_high_weight_unclassified_profile_tags_include_missing_and_unresolved(self):
         async def _run(db_path):
             with patch.object(database, "DB_PATH", db_path):
@@ -200,6 +291,8 @@ class DatabaseInitTests(unittest.TestCase):
             self.assertIn("xp_profile", tables)
             self.assertIn("strategy_stats", tables)
             self.assertIn("tag_classification_cache", tables)
+            self.assertIn("tag_aliases", tables)
+            self.assertIn("tag_mapping_candidates", tables)
 
 
 if __name__ == "__main__":
