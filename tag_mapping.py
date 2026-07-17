@@ -53,6 +53,7 @@ class TagMappingCandidate:
     kind: str = TAG_ALIAS_EQUIVALENT
     explanation: str = ""
     source: str = "ai_candidate"
+    embedding_similarity: float | None = None
 
 
 class TagIdentityResolver:

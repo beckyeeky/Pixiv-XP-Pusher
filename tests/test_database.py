@@ -8,9 +8,99 @@ from pathlib import Path
 from unittest.mock import patch
 
 import database
+from tag_relationship_judge import relationship_evidence
 
 
 class DatabaseInitTests(unittest.TestCase):
+    def test_v6_migrates_existing_mapping_candidates_for_embedding_evidence(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "pixiv_xp.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE tag_mapping_candidates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    original_tag TEXT NOT NULL,
+                    proposed_normalized_tag TEXT,
+                    kind TEXT NOT NULL DEFAULT 'equivalent',
+                    source TEXT NOT NULL,
+                    explanation TEXT NOT NULL DEFAULT '',
+                    occurrence_count INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.commit()
+            conn.close()
+            with patch.object(database, "DB_PATH", db_path):
+                database._init_db_sync()
+            conn = sqlite3.connect(db_path)
+            try:
+                columns = {
+                    row[1] for row in conn.execute(
+                        "PRAGMA table_info(tag_mapping_candidates)"
+                    )
+                }
+            finally:
+                conn.close()
+        self.assertIn("embedding_similarity", columns)
+
+    def test_ai_recommendation_is_audited_and_staged_without_creating_alias(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                await database.update_xp_profile({"白髪": 2.0, "white_hair": 3.0})
+                await database.save_tag_classifications([
+                    ("白髪", "feature", "ai"),
+                    ("white_hair", "feature", "ai"),
+                ])
+                await database.save_tag_mapping_candidates([{
+                    "original_tag": "白髪",
+                    "proposed_normalized_tag": "white_hair",
+                    "source": "test",
+                    "explanation": "same identity",
+                    "embedding_similarity": 0.94,
+                }])
+                candidate = (await database.get_tag_mapping_candidates(limit=10))[0]
+                recommendation_id = await database.save_tag_mapping_ai_recommendation(
+                    candidate["id"],
+                    {
+                        "relation": "equivalent", "confidence": 0.98,
+                        "rationale": "same", "canonical_tag": "white_hair",
+                        "risk_flags": [], "principle_checks": {
+                            "same_identity": True, "broader_narrower": False,
+                            "entity_franchise": False, "modifier_variant": False,
+                        },
+                    },
+                    model="deepseek:model",
+                    principles_version="tag-alias-review-v1",
+                    evidence=relationship_evidence(candidate),
+                )
+                enriched = (await database.get_tag_mapping_candidates(limit=10))[0]
+                staged = await database.stage_tag_mapping_ai_recommendations([{
+                    "candidate_id": candidate["id"],
+                    "recommendation_id": recommendation_id,
+                    "decision": "accept_equivalent",
+                }])
+                after = (await database.get_tag_mapping_candidates(limit=10))[0]
+                aliases = await database.get_accepted_tag_aliases()
+                return enriched, staged, after, aliases
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            enriched, staged, after, aliases = asyncio.run(
+                _run(Path(tmpdir) / "pixiv_xp.db")
+            )
+        self.assertEqual(enriched["ai_relation"], "equivalent")
+        self.assertEqual(enriched["original_classification"], "feature")
+        self.assertEqual(enriched["embedding_similarity"], 0.94)
+        self.assertTrue(enriched["ai_is_current"])
+        self.assertEqual(staged, 1)
+        self.assertEqual(after["ai_staged_decision"], "accept_equivalent")
+        self.assertEqual(after["status"], "pending")
+        self.assertEqual(aliases, {})
+
     def test_init_quarantines_legacy_automatic_mappings_without_activating_them(self):
         async def _run(db_path):
             conn = sqlite3.connect(db_path)

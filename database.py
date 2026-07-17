@@ -16,12 +16,17 @@ from tag_categories import (
     normalize_tag_category,
 )
 from tag_mapping import would_create_alias_cycle
+from tag_relationship_judge import (
+    MERGE_PRINCIPLES_VERSION,
+    hash_relationship_evidence,
+    relationship_evidence_hash,
+)
 from utils import normalize_tag
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 TAG_EVIDENCE_FRESHNESS_DAYS = 60
 
 
@@ -163,6 +168,7 @@ def _init_db_sync():
                     CHECK(kind IN ('equivalent', 'search')),
                 source TEXT NOT NULL,
                 explanation TEXT NOT NULL DEFAULT '',
+                embedding_similarity REAL,
                 occurrence_count INTEGER NOT NULL DEFAULT 1,
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK(status IN ('pending', 'accepted', 'rejected')),
@@ -174,6 +180,30 @@ def _init_db_sync():
                 ON tag_mapping_candidates(status, occurrence_count DESC, id);
             CREATE INDEX IF NOT EXISTS idx_tag_aliases_normalized
                 ON tag_aliases(normalized_tag, kind, priority DESC);
+
+            -- AI Relationship Recommendations are advisory evidence only.
+            CREATE TABLE IF NOT EXISTS tag_mapping_ai_recommendations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id INTEGER NOT NULL,
+                relation TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                rationale TEXT NOT NULL,
+                canonical_tag TEXT,
+                risk_flags TEXT NOT NULL,
+                principle_checks TEXT NOT NULL,
+                model TEXT NOT NULL,
+                principles_version TEXT NOT NULL,
+                evidence_hash TEXT NOT NULL,
+                evidence_payload TEXT NOT NULL,
+                recommendation_payload TEXT NOT NULL,
+                staged_decision TEXT
+                    CHECK(staged_decision IN ('accept_equivalent', 'reject')),
+                staged_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(candidate_id) REFERENCES tag_mapping_candidates(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tag_mapping_ai_candidate
+                ON tag_mapping_ai_recommendations(candidate_id, id DESC);
 
             -- Tag 分类缓存 (Tag Category; legacy ip is interpreted as copyright)
             CREATE TABLE IF NOT EXISTS tag_classification_cache (
@@ -279,6 +309,15 @@ def _init_db_sync():
             );
         """)
         db.commit()
+
+        candidate_columns = {
+            row[1] for row in db.execute("PRAGMA table_info(tag_mapping_candidates)")
+        }
+        if "embedding_similarity" not in candidate_columns:
+            db.execute(
+                "ALTER TABLE tag_mapping_candidates ADD COLUMN embedding_similarity REAL"
+            )
+            db.commit()
 
         # Quarantine legacy automatic mappings as review candidates exactly once.
         # The source tables remain untouched for rollback/audit and are no longer
@@ -475,9 +514,17 @@ async def save_tag_mapping_candidates(candidates) -> int:
         kind = str(read("kind", "equivalent") or "equivalent")
         source = str(read("source", "ai_candidate") or "ai_candidate")
         explanation = str(read("explanation", "") or "")
+        similarity = read("embedding_similarity")
+        if similarity is not None:
+            try:
+                similarity = float(similarity)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("embedding_similarity 必须是 -1 到 1 的数字") from exc
+            if not -1.0 <= similarity <= 1.0:
+                raise ValueError("embedding_similarity 必须是 -1 到 1 的数字")
         if not original or not target or original == target or kind not in {"equivalent", "search"}:
             continue
-        rows.append((original, target, kind, source, explanation))
+        rows.append((original, target, kind, source, explanation, similarity))
     if not rows:
         return 0
 
@@ -493,13 +540,24 @@ async def save_tag_mapping_candidates(candidates) -> int:
                 """,
                 row[:4],
             )
-            if await cursor.fetchone():
+            existing = await cursor.fetchone()
+            if existing:
+                if row[5] is not None:
+                    await db.execute(
+                        """
+                        UPDATE tag_mapping_candidates
+                        SET embedding_similarity = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (row[5], existing[0]),
+                    )
                 continue
             await db.execute(
                 """
                 INSERT INTO tag_mapping_candidates (
-                    original_tag, proposed_normalized_tag, kind, source, explanation
-                ) VALUES (?, ?, ?, ?, ?)
+                    original_tag, proposed_normalized_tag, kind, source, explanation,
+                    embedding_similarity
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 row,
             )
@@ -516,17 +574,149 @@ async def get_tag_mapping_candidates(limit: int = 100, status: str = "pending") 
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
-            SELECT c.*, MAX(COALESCE(po.weight, 0), COALESCE(pt.weight, 0)) AS profile_weight
+            SELECT c.*,
+                   COALESCE(po.weight, 0) AS original_weight,
+                   COALESCE(pt.weight, 0) AS target_weight,
+                   MAX(COALESCE(po.weight, 0), COALESCE(pt.weight, 0)) AS profile_weight,
+                   co.classification AS original_classification,
+                   ct.classification AS target_classification,
+                   ro.explanation AS original_explanation,
+                   ro.languages AS original_language,
+                   rt.explanation AS target_explanation,
+                   rt.languages AS target_language,
+                   tro.translated_name AS original_translation,
+                   trt.translated_name AS target_translation,
+                   recommendation.id AS ai_recommendation_id,
+                   recommendation.relation AS ai_relation,
+                   recommendation.confidence AS ai_confidence,
+                   recommendation.rationale AS ai_rationale,
+                   recommendation.canonical_tag AS ai_canonical_tag,
+                   recommendation.risk_flags AS ai_risk_flags,
+                   recommendation.principle_checks AS ai_principle_checks,
+                   recommendation.model AS ai_model,
+                   recommendation.principles_version AS ai_principles_version,
+                   recommendation.evidence_hash AS ai_evidence_hash,
+                   recommendation.staged_decision AS ai_staged_decision,
+                   recommendation.staged_at AS ai_staged_at
             FROM tag_mapping_candidates c
             LEFT JOIN xp_profile po ON po.tag = c.original_tag
             LEFT JOIN xp_profile pt ON pt.tag = c.proposed_normalized_tag
+            LEFT JOIN tag_classification_cache co ON co.normalized_tag = c.original_tag
+            LEFT JOIN tag_classification_cache ct ON ct.normalized_tag = c.proposed_normalized_tag
+            LEFT JOIN ai_tag_classification_records ro ON ro.tag = c.original_tag
+            LEFT JOIN ai_tag_classification_records rt ON rt.tag = c.proposed_normalized_tag
+            LEFT JOIN tag_translations tro ON tro.name = c.original_tag
+            LEFT JOIN tag_translations trt ON trt.name = c.proposed_normalized_tag
+            LEFT JOIN tag_mapping_ai_recommendations recommendation
+                ON recommendation.id = (
+                    SELECT latest.id
+                    FROM tag_mapping_ai_recommendations latest
+                    WHERE latest.candidate_id = c.id
+                    ORDER BY latest.id DESC
+                    LIMIT 1
+                )
             WHERE c.status = ?
             ORDER BY profile_weight DESC, c.occurrence_count DESC, c.id ASC
             LIMIT ?
             """,
             (status, limit),
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        items = [dict(row) for row in await cursor.fetchall()]
+        for item in items:
+            item["ai_is_current"] = bool(
+                item.get("ai_recommendation_id")
+                and item.get("ai_principles_version") == MERGE_PRINCIPLES_VERSION
+                and item.get("ai_evidence_hash") == relationship_evidence_hash(item)
+            )
+        return items
+
+
+async def save_tag_mapping_ai_recommendation(
+    candidate_id: int,
+    recommendation,
+    *,
+    model: str,
+    principles_version: str,
+    evidence,
+) -> int:
+    """Append advisory AI evidence without changing candidate or alias state."""
+
+    payload = dict(recommendation)
+    evidence_payload = dict(evidence)
+    evidence_hash = hash_relationship_evidence(evidence_payload)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT id FROM tag_mapping_candidates WHERE id = ? AND status = 'pending'",
+            (int(candidate_id),),
+        )
+        if not await cursor.fetchone():
+            raise ValueError("Tag Mapping Candidate 不存在或已经审核")
+        cursor = await db.execute(
+            """
+            INSERT INTO tag_mapping_ai_recommendations (
+                candidate_id, relation, confidence, rationale, canonical_tag,
+                risk_flags, principle_checks, model, principles_version,
+                evidence_hash, evidence_payload, recommendation_payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(candidate_id), payload["relation"], float(payload["confidence"]),
+                payload["rationale"], payload.get("canonical_tag"),
+                json.dumps(payload.get("risk_flags") or [], ensure_ascii=False),
+                json.dumps(payload.get("principle_checks") or {}, ensure_ascii=False, sort_keys=True),
+                model, principles_version, evidence_hash,
+                json.dumps(evidence_payload, ensure_ascii=False, sort_keys=True),
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+
+async def stage_tag_mapping_ai_recommendations(decisions) -> int:
+    """Shortlist current recommendations without reviewing candidates or creating aliases."""
+
+    allowed = {"accept_equivalent", "reject"}
+    rows = []
+    for decision in decisions:
+        read = decision.get if isinstance(decision, dict) else lambda key: getattr(decision, key)
+        staged_decision = str(read("decision"))
+        if staged_decision not in allowed:
+            raise ValueError("AI Recommendation 暂存决定无效")
+        rows.append((int(read("candidate_id")), int(read("recommendation_id")), staged_decision))
+    if not rows:
+        return 0
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            for candidate_id, recommendation_id, staged_decision in rows:
+                cursor = await db.execute(
+                    """
+                    UPDATE tag_mapping_ai_recommendations AS recommendation
+                    SET staged_decision = ?, staged_at = CURRENT_TIMESTAMP
+                    WHERE recommendation.id = ?
+                      AND recommendation.candidate_id = ?
+                      AND recommendation.id = (
+                          SELECT MAX(latest.id)
+                          FROM tag_mapping_ai_recommendations latest
+                          WHERE latest.candidate_id = recommendation.candidate_id
+                      )
+                      AND EXISTS (
+                          SELECT 1 FROM tag_mapping_candidates candidate
+                          WHERE candidate.id = recommendation.candidate_id
+                            AND candidate.status = 'pending'
+                      )
+                    """,
+                    (staged_decision, recommendation_id, candidate_id),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("AI Recommendation 已过期或候选已经审核")
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+    return len(rows)
 
 
 async def review_tag_mapping_candidate(candidate_id: int, decision: str, kind: str | None = None) -> dict:

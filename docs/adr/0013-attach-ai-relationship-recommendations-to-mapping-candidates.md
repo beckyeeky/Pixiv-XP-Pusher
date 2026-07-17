@@ -1,0 +1,5 @@
+# Attach AI Relationship Recommendations to Tag Mapping Candidates
+
+The Tag Relationship Judge reviews the existing Tag Mapping Candidate queue rather than creating a second semantic-candidate store. The authoritative candidate may carry nullable Embedding similarity evidence, so future Embedding candidate generators do not require another persistence model. The Judge uses the same configured `tag_mapping` LLM Model and persists each AI Relationship Recommendation with its model, versioned merge principles, and complete evidence snapshot. Changed evidence or principles makes an older recommendation ineligible for shortlist staging.
+
+High-confidence batch staging only marks the latest recommendation as `accept_equivalent` or `reject`; it does not change the candidate status and never writes `tag_aliases`. Equivalent staging additionally requires matching resolved categories, no risk flags, exact safe principle checks, and the existing candidate direction as canonical. Final activation remains an explicit human action through the authoritative Tag Mapping Candidate review flow, preserving ADR 0012.

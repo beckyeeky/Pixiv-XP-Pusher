@@ -98,6 +98,9 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
         "enabled": False,
         "model": "",
         "batch_size": 50,
+        "review_concurrency": 3,
+        "review_temperature": 0.0,
+        "review_max_output_tokens": 1024,
     },
     "ai": {
         "embedding": {
