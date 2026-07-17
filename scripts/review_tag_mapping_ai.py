@@ -47,7 +47,7 @@ async def judge_candidates(
         judge, configured_concurrency = relationship_judge_from_config()
         concurrency = concurrency or configured_concurrency
     concurrency = max(1, int(concurrency or 1))
-    pending = await db.get_tag_mapping_candidates(limit=500)
+    pending = db.get_tag_mapping_candidates_sync(limit=500)
     selected = [
         candidate for candidate in pending
         if refresh
@@ -91,7 +91,7 @@ async def judge_candidates(
 async def stage_recommendations(min_confidence: float, *, confirm: bool) -> dict:
     """Preview or mark a safe shortlist; never create Tag Aliases."""
 
-    candidates = await db.get_tag_mapping_candidates(limit=500)
+    candidates = db.get_tag_mapping_candidates_sync(limit=500)
     plan = plan_ai_recommendation_staging(
         candidates, min_confidence=min_confidence,
     )
@@ -116,14 +116,14 @@ async def stage_recommendations(min_confidence: float, *, confirm: bool) -> dict
     }
     if not confirm:
         return {**result, "dry_run": True}
-    staged = await db.stage_tag_mapping_ai_recommendations(plan.decisions)
+    staged = db.stage_tag_mapping_ai_recommendations_sync(plan.decisions)
     return {**result, "staged": staged}
 
 
 async def list_candidates(limit: int) -> dict:
     if int(limit) < 1:
         raise ValueError("list limit must be at least 1")
-    return {"items": await db.get_tag_mapping_candidates(limit=int(limit))}
+    return {"items": db.get_tag_mapping_candidates_sync(limit=int(limit))}
 
 
 def build_parser() -> argparse.ArgumentParser:
