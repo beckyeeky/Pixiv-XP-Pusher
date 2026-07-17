@@ -551,7 +551,10 @@ function renderMappingCandidates(items) {
     }
     queue.innerHTML = items.map(item => {
         const target = item.proposed_normalized_tag || '旧系统曾建议过滤，无映射目标';
-        const canAccept = Boolean(item.proposed_normalized_tag);
+        const canAccept = Boolean(
+            item.proposed_normalized_tag
+            && item.original_tag !== item.proposed_normalized_tag
+        );
         const acceptActions = canAccept
             ? `<button type="button" onclick="reviewMappingCandidate(${item.id}, 'accept', 'equivalent')">接受为等价别名</button><button type="button" onclick="reviewMappingCandidate(${item.id}, 'accept', 'search')">仅接受为搜索别名</button>`
             : '';

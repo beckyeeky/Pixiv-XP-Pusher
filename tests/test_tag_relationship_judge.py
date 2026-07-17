@@ -145,12 +145,21 @@ class TagRelationshipJudgeTests(unittest.TestCase):
             ai_principles_version=MERGE_PRINCIPLES_VERSION,
             ai_evidence_hash="old",
         )
+        self_mapping = self.candidate(
+            id=11, original_tag="white_hair", proposed_normalized_tag="white_hair",
+            ai_recommendation_id=23, ai_relation="equivalent", ai_confidence=0.99,
+            ai_canonical_tag="white_hair", ai_risk_flags="[]",
+            ai_principle_checks=json.dumps(self.recommendation()["principle_checks"]),
+            ai_principles_version=MERGE_PRINCIPLES_VERSION,
+        )
+        self_mapping["ai_evidence_hash"] = relationship_evidence_hash(self_mapping)
         plan = plan_ai_recommendation_staging(
-            [risky, wrong_direction, stale], min_confidence=0.95,
+            [risky, wrong_direction, stale, self_mapping], min_confidence=0.95,
         )
         self.assertEqual(plan.decisions, ())
         self.assertEqual(plan.blocked, {
             "risk_flags": 1, "canonical_direction": 1, "stale_evidence": 1,
+            "self_mapping": 1,
         })
 
     def test_batch_confidence_has_a_hard_floor(self):
