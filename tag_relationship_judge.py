@@ -244,6 +244,9 @@ def plan_ai_recommendation_staging(
         if relation == "distinct":
             decisions.append(HumanReviewDraft(int(candidate["id"]), recommendation_id, "reject"))
             continue
+        if candidate.get("original_tag") == candidate.get("proposed_normalized_tag"):
+            blocked["self_mapping"] += 1
+            continue
 
         flags = _json_value(candidate, "ai_risk_flags", ["other"])
         if flags:

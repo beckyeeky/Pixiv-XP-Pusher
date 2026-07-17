@@ -354,6 +354,7 @@ def _init_db_sync():
                        'Legacy reverse-search observation; requires review before reuse.',
                        MAX(frequency, 1), 'pending'
                 FROM tag_mapping_stats
+                WHERE normalized_tag <> original_tag
                 """
             )
             db.execute(
