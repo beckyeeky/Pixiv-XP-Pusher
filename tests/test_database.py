@@ -8,10 +8,66 @@ from pathlib import Path
 from unittest.mock import patch
 
 import database
-from tag_relationship_judge import relationship_evidence
+from tag_relationship_judge import relationship_evidence, relationship_evidence_hash
 
 
 class DatabaseInitTests(unittest.TestCase):
+    def test_sync_cli_read_and_stage_remain_alias_isolated(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "pixiv_xp.db"
+            with patch.object(database, "DB_PATH", db_path):
+                database._init_db_sync()
+                conn = sqlite3.connect(db_path)
+                conn.execute(
+                    """
+                    INSERT INTO tag_mapping_candidates (
+                        original_tag, proposed_normalized_tag, source
+                    ) VALUES ('白髪', 'white_hair', 'test')
+                    """
+                )
+                candidate_id = conn.execute(
+                    "SELECT id FROM tag_mapping_candidates"
+                ).fetchone()[0]
+                conn.commit()
+                conn.close()
+                candidate = database.get_tag_mapping_candidates_sync(limit=1)[0]
+                evidence_hash = relationship_evidence_hash(candidate)
+                conn = sqlite3.connect(db_path)
+                conn.execute(
+                    """
+                    INSERT INTO tag_mapping_ai_recommendations (
+                        candidate_id, relation, confidence, rationale, canonical_tag,
+                        risk_flags, principle_checks, model, principles_version,
+                        evidence_hash, evidence_payload, recommendation_payload
+                    ) VALUES (?, 'distinct', 0.99, 'different', NULL, '[]', '{}',
+                              'test:model', 'tag-alias-review-v1', ?, '{}', '{}')
+                    """,
+                    (candidate_id, evidence_hash),
+                )
+                recommendation_id = conn.execute(
+                    "SELECT id FROM tag_mapping_ai_recommendations"
+                ).fetchone()[0]
+                conn.commit()
+                conn.close()
+                current = database.get_tag_mapping_candidates_sync(limit=1)[0]
+                staged = database.stage_tag_mapping_ai_recommendations_sync([{
+                    "candidate_id": candidate_id,
+                    "recommendation_id": recommendation_id,
+                    "decision": "reject",
+                }])
+                conn = sqlite3.connect(db_path)
+                try:
+                    staged_decision = conn.execute(
+                        "SELECT staged_decision FROM tag_mapping_ai_recommendations"
+                    ).fetchone()[0]
+                    aliases = conn.execute("SELECT COUNT(*) FROM tag_aliases").fetchone()[0]
+                finally:
+                    conn.close()
+        self.assertTrue(current["ai_is_current"])
+        self.assertEqual(staged, 1)
+        self.assertEqual(staged_decision, "reject")
+        self.assertEqual(aliases, 0)
+
     def test_v6_migrates_existing_mapping_candidates_for_embedding_evidence(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "pixiv_xp.db"

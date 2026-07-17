@@ -2,7 +2,7 @@ import asyncio
 import importlib.util
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from tag_relationship_judge import AiRelationshipRecommendation
 
@@ -44,15 +44,15 @@ class ReviewTagMappingAiTests(unittest.TestCase):
                     },
                 )
 
-        get_candidates = AsyncMock(return_value=[self.candidate()])
+        get_candidates = Mock(return_value=[self.candidate()])
         save = AsyncMock(return_value=9)
-        with patch.object(script.db, "get_tag_mapping_candidates", get_candidates), \
+        with patch.object(script.db, "get_tag_mapping_candidates_sync", get_candidates), \
              patch.object(script.db, "save_tag_mapping_ai_recommendation", save):
             result = asyncio.run(script.judge_candidates(
                 limit=1, refresh=False, judge=FakeJudge(), concurrency=1,
             ))
         self.assertEqual(result["judged"], 1)
-        get_candidates.assert_awaited_once_with(limit=500)
+        get_candidates.assert_called_once_with(limit=500)
         save.assert_awaited_once()
         self.assertFalse(hasattr(script.db, "review_tag_mapping_candidate_called"))
 
@@ -81,15 +81,15 @@ class ReviewTagMappingAiTests(unittest.TestCase):
         })
         from tag_relationship_judge import relationship_evidence_hash
         candidate["ai_evidence_hash"] = relationship_evidence_hash(candidate)
-        stage = AsyncMock(return_value=1)
+        stage = Mock(return_value=1)
         with patch.object(
-            script.db, "get_tag_mapping_candidates", new=AsyncMock(return_value=[candidate]),
-        ), patch.object(script.db, "stage_tag_mapping_ai_recommendations", stage):
+            script.db, "get_tag_mapping_candidates_sync", new=Mock(return_value=[candidate]),
+        ), patch.object(script.db, "stage_tag_mapping_ai_recommendations_sync", stage):
             preview = asyncio.run(script.stage_recommendations(0.95, confirm=False))
             confirmed = asyncio.run(script.stage_recommendations(0.95, confirm=True))
         self.assertEqual(preview["eligible"], 1)
         self.assertTrue(preview["dry_run"])
-        stage.assert_awaited_once()
+        stage.assert_called_once()
         self.assertEqual(confirmed["staged"], 1)
 
 

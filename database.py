@@ -567,69 +567,91 @@ async def save_tag_mapping_candidates(candidates) -> int:
     return inserted
 
 
-async def get_tag_mapping_candidates(limit: int = 100, status: str = "pending") -> list[dict]:
-    """Return mapping proposals in human review order."""
+_TAG_MAPPING_CANDIDATES_SQL = """
+    SELECT c.*,
+           COALESCE(po.weight, 0) AS original_weight,
+           COALESCE(pt.weight, 0) AS target_weight,
+           MAX(COALESCE(po.weight, 0), COALESCE(pt.weight, 0)) AS profile_weight,
+           co.classification AS original_classification,
+           ct.classification AS target_classification,
+           ro.explanation AS original_explanation,
+           ro.languages AS original_language,
+           rt.explanation AS target_explanation,
+           rt.languages AS target_language,
+           tro.translated_name AS original_translation,
+           trt.translated_name AS target_translation,
+           recommendation.id AS ai_recommendation_id,
+           recommendation.relation AS ai_relation,
+           recommendation.confidence AS ai_confidence,
+           recommendation.rationale AS ai_rationale,
+           recommendation.canonical_tag AS ai_canonical_tag,
+           recommendation.risk_flags AS ai_risk_flags,
+           recommendation.principle_checks AS ai_principle_checks,
+           recommendation.model AS ai_model,
+           recommendation.principles_version AS ai_principles_version,
+           recommendation.evidence_hash AS ai_evidence_hash,
+           recommendation.staged_decision AS ai_staged_decision,
+           recommendation.staged_at AS ai_staged_at
+    FROM tag_mapping_candidates c
+    LEFT JOIN xp_profile po ON po.tag = c.original_tag
+    LEFT JOIN xp_profile pt ON pt.tag = c.proposed_normalized_tag
+    LEFT JOIN tag_classification_cache co ON co.normalized_tag = c.original_tag
+    LEFT JOIN tag_classification_cache ct ON ct.normalized_tag = c.proposed_normalized_tag
+    LEFT JOIN ai_tag_classification_records ro ON ro.tag = c.original_tag
+    LEFT JOIN ai_tag_classification_records rt ON rt.tag = c.proposed_normalized_tag
+    LEFT JOIN tag_translations tro ON tro.name = c.original_tag
+    LEFT JOIN tag_translations trt ON trt.name = c.proposed_normalized_tag
+    LEFT JOIN tag_mapping_ai_recommendations recommendation
+        ON recommendation.id = (
+            SELECT latest.id
+            FROM tag_mapping_ai_recommendations latest
+            WHERE latest.candidate_id = c.id
+            ORDER BY latest.id DESC
+            LIMIT 1
+        )
+    WHERE c.status = ?
+    ORDER BY profile_weight DESC, c.occurrence_count DESC, c.id ASC
+    LIMIT ?
+"""
+
+
+def _enrich_tag_mapping_candidates(rows) -> list[dict]:
+    items = [dict(row) for row in rows]
+    for item in items:
+        item["ai_is_current"] = bool(
+            item.get("ai_recommendation_id")
+            and item.get("ai_principles_version") == MERGE_PRINCIPLES_VERSION
+            and item.get("ai_evidence_hash") == relationship_evidence_hash(item)
+        )
+    return items
+
+
+def _validate_tag_mapping_candidate_status(status: str) -> None:
     if status not in {"pending", "accepted", "rejected"}:
         raise ValueError(f"不支持的候选状态: {status}")
+
+
+def get_tag_mapping_candidates_sync(limit: int = 100, status: str = "pending") -> list[dict]:
+    """Synchronous candidate read for standalone CLI processes."""
+
+    _validate_tag_mapping_candidate_status(status)
+    with sqlite3.connect(DB_PATH, timeout=10) as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute(_TAG_MAPPING_CANDIDATES_SQL, (status, limit)).fetchall()
+    return _enrich_tag_mapping_candidates(rows)
+
+
+async def get_tag_mapping_candidates(limit: int = 100, status: str = "pending") -> list[dict]:
+    """Return mapping proposals in human review order for async Web/API callers."""
+
+    _validate_tag_mapping_candidate_status(status)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            """
-            SELECT c.*,
-                   COALESCE(po.weight, 0) AS original_weight,
-                   COALESCE(pt.weight, 0) AS target_weight,
-                   MAX(COALESCE(po.weight, 0), COALESCE(pt.weight, 0)) AS profile_weight,
-                   co.classification AS original_classification,
-                   ct.classification AS target_classification,
-                   ro.explanation AS original_explanation,
-                   ro.languages AS original_language,
-                   rt.explanation AS target_explanation,
-                   rt.languages AS target_language,
-                   tro.translated_name AS original_translation,
-                   trt.translated_name AS target_translation,
-                   recommendation.id AS ai_recommendation_id,
-                   recommendation.relation AS ai_relation,
-                   recommendation.confidence AS ai_confidence,
-                   recommendation.rationale AS ai_rationale,
-                   recommendation.canonical_tag AS ai_canonical_tag,
-                   recommendation.risk_flags AS ai_risk_flags,
-                   recommendation.principle_checks AS ai_principle_checks,
-                   recommendation.model AS ai_model,
-                   recommendation.principles_version AS ai_principles_version,
-                   recommendation.evidence_hash AS ai_evidence_hash,
-                   recommendation.staged_decision AS ai_staged_decision,
-                   recommendation.staged_at AS ai_staged_at
-            FROM tag_mapping_candidates c
-            LEFT JOIN xp_profile po ON po.tag = c.original_tag
-            LEFT JOIN xp_profile pt ON pt.tag = c.proposed_normalized_tag
-            LEFT JOIN tag_classification_cache co ON co.normalized_tag = c.original_tag
-            LEFT JOIN tag_classification_cache ct ON ct.normalized_tag = c.proposed_normalized_tag
-            LEFT JOIN ai_tag_classification_records ro ON ro.tag = c.original_tag
-            LEFT JOIN ai_tag_classification_records rt ON rt.tag = c.proposed_normalized_tag
-            LEFT JOIN tag_translations tro ON tro.name = c.original_tag
-            LEFT JOIN tag_translations trt ON trt.name = c.proposed_normalized_tag
-            LEFT JOIN tag_mapping_ai_recommendations recommendation
-                ON recommendation.id = (
-                    SELECT latest.id
-                    FROM tag_mapping_ai_recommendations latest
-                    WHERE latest.candidate_id = c.id
-                    ORDER BY latest.id DESC
-                    LIMIT 1
-                )
-            WHERE c.status = ?
-            ORDER BY profile_weight DESC, c.occurrence_count DESC, c.id ASC
-            LIMIT ?
-            """,
+            _TAG_MAPPING_CANDIDATES_SQL,
             (status, limit),
         )
-        items = [dict(row) for row in await cursor.fetchall()]
-        for item in items:
-            item["ai_is_current"] = bool(
-                item.get("ai_recommendation_id")
-                and item.get("ai_principles_version") == MERGE_PRINCIPLES_VERSION
-                and item.get("ai_evidence_hash") == relationship_evidence_hash(item)
-            )
-        return items
+        return _enrich_tag_mapping_candidates(await cursor.fetchall())
 
 
 async def save_tag_mapping_ai_recommendation(
@@ -674,9 +696,7 @@ async def save_tag_mapping_ai_recommendation(
         return int(cursor.lastrowid)
 
 
-async def stage_tag_mapping_ai_recommendations(decisions) -> int:
-    """Shortlist current recommendations without reviewing candidates or creating aliases."""
-
+def _tag_mapping_ai_stage_rows(decisions) -> list[tuple[int, int, str]]:
     allowed = {"accept_equivalent", "reject"}
     rows = []
     for decision in decisions:
@@ -685,6 +705,49 @@ async def stage_tag_mapping_ai_recommendations(decisions) -> int:
         if staged_decision not in allowed:
             raise ValueError("AI Recommendation 暂存决定无效")
         rows.append((int(read("candidate_id")), int(read("recommendation_id")), staged_decision))
+    return rows
+
+
+_STAGE_TAG_MAPPING_AI_SQL = """
+    UPDATE tag_mapping_ai_recommendations AS recommendation
+    SET staged_decision = ?, staged_at = CURRENT_TIMESTAMP
+    WHERE recommendation.id = ?
+      AND recommendation.candidate_id = ?
+      AND recommendation.id = (
+          SELECT MAX(latest.id)
+          FROM tag_mapping_ai_recommendations latest
+          WHERE latest.candidate_id = recommendation.candidate_id
+      )
+      AND EXISTS (
+          SELECT 1 FROM tag_mapping_candidates candidate
+          WHERE candidate.id = recommendation.candidate_id
+            AND candidate.status = 'pending'
+      )
+"""
+
+
+def stage_tag_mapping_ai_recommendations_sync(decisions) -> int:
+    """Synchronous shortlist write for the standalone CLI."""
+
+    rows = _tag_mapping_ai_stage_rows(decisions)
+    if not rows:
+        return 0
+    with sqlite3.connect(DB_PATH, timeout=10) as db:
+        db.execute("BEGIN IMMEDIATE")
+        for candidate_id, recommendation_id, staged_decision in rows:
+            cursor = db.execute(
+                _STAGE_TAG_MAPPING_AI_SQL,
+                (staged_decision, recommendation_id, candidate_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("AI Recommendation 已过期或候选已经审核")
+    return len(rows)
+
+
+async def stage_tag_mapping_ai_recommendations(decisions) -> int:
+    """Shortlist current recommendations without reviewing candidates or creating aliases."""
+
+    rows = _tag_mapping_ai_stage_rows(decisions)
     if not rows:
         return 0
 
@@ -693,22 +756,7 @@ async def stage_tag_mapping_ai_recommendations(decisions) -> int:
         try:
             for candidate_id, recommendation_id, staged_decision in rows:
                 cursor = await db.execute(
-                    """
-                    UPDATE tag_mapping_ai_recommendations AS recommendation
-                    SET staged_decision = ?, staged_at = CURRENT_TIMESTAMP
-                    WHERE recommendation.id = ?
-                      AND recommendation.candidate_id = ?
-                      AND recommendation.id = (
-                          SELECT MAX(latest.id)
-                          FROM tag_mapping_ai_recommendations latest
-                          WHERE latest.candidate_id = recommendation.candidate_id
-                      )
-                      AND EXISTS (
-                          SELECT 1 FROM tag_mapping_candidates candidate
-                          WHERE candidate.id = recommendation.candidate_id
-                            AND candidate.status = 'pending'
-                      )
-                    """,
+                    _STAGE_TAG_MAPPING_AI_SQL,
                     (staged_decision, recommendation_id, candidate_id),
                 )
                 if cursor.rowcount != 1:
