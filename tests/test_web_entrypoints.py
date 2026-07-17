@@ -206,6 +206,8 @@ class WebEntrypointTests(unittest.TestCase):
         self.assertIn("await loadReviewQueue()", response.text)
         self.assertIn("标签映射候选", response.text)
         self.assertIn("/api/tag-mapping-candidates", response.text)
+        self.assertIn("AI Relationship Recommendation", response.text)
+        self.assertIn("item.ai_relation", response.text)
 
     def test_authenticated_mapping_review_accepts_only_an_explicit_human_decision(self):
         async def authenticated():

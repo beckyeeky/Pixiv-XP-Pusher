@@ -509,6 +509,17 @@ function formatCsvErrors(errors) {
     return (errors || []).map(item => `第 ${item.line || '?'} 行：${item.message || '未知错误'}`).join('；');
 }
 
+function formatAiJson(value, emptyLabel) {
+    if (!value) return emptyLabel;
+    try {
+        const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+        if (Array.isArray(parsed)) return parsed.length ? parsed.join('、') : emptyLabel;
+        return Object.entries(parsed).map(([key, passed]) => `${key}=${passed ? '是' : '否'}`).join('、') || emptyLabel;
+    } catch (_) {
+        return String(value);
+    }
+}
+
 async function uploadReviewCsv() {
     const input = document.getElementById('reviewCsvFile');
     const feedback = document.getElementById('reviewFeedback');
@@ -544,9 +555,15 @@ function renderMappingCandidates(items) {
         const acceptActions = canAccept
             ? `<button type="button" onclick="reviewMappingCandidate(${item.id}, 'accept', 'equivalent')">接受为等价别名</button><button type="button" onclick="reviewMappingCandidate(${item.id}, 'accept', 'search')">仅接受为搜索别名</button>`
             : '';
+        const aiRisks = formatAiJson(item.ai_risk_flags, '无');
+        const aiChecks = formatAiJson(item.ai_principle_checks, '无');
+        const aiRecommendation = item.ai_relation
+            ? `<div class="review-meta"><strong>AI Recommendation${item.ai_is_current ? '' : '（证据或原则已变化，请重新复核）'}：</strong>${escapeHtml(item.ai_relation)} · 置信度 ${escapeHtml(Number(item.ai_confidence || 0).toLocaleString(undefined, {style: 'percent', maximumFractionDigits: 1}))}${item.ai_staged_decision && item.ai_is_current ? ` · 已预选 ${escapeHtml(item.ai_staged_decision)}` : ''}<br>${escapeHtml(item.ai_rationale || '')}${item.ai_canonical_tag ? `<br>建议 canonical：${escapeHtml(item.ai_canonical_tag)}` : ''}<br>风险：${escapeHtml(aiRisks)}<br>原则检查：${escapeHtml(aiChecks)}<br>模型：${escapeHtml(item.ai_model || '')} · 原则：${escapeHtml(item.ai_principles_version || '')}</div>`
+            : '<div class="review-meta">尚无 AI Relationship Recommendation；可先运行 CLI 小批量复核。</div>';
         return `<article class="review-item" data-mapping-id="${item.id}">
-            <div class="review-item-header"><div><div class="review-tag">${escapeHtml(item.original_tag)} → ${escapeHtml(target)}</div><div class="review-meta">来源：${escapeHtml(item.source)} · 建议类型：${escapeHtml(item.kind)} · 影响权重：${escapeHtml(item.profile_weight)} · 历史次数：${escapeHtml(item.occurrence_count)}</div></div></div>
+            <div class="review-item-header"><div><div class="review-tag">${escapeHtml(item.original_tag)} → ${escapeHtml(target)}</div><div class="review-meta">来源：${escapeHtml(item.source)} · 建议类型：${escapeHtml(item.kind)} · 影响权重：${escapeHtml(item.profile_weight)} · Embedding 相似度：${item.embedding_similarity == null ? '无' : escapeHtml(Number(item.embedding_similarity).toFixed(4))} · 历史次数：${escapeHtml(item.occurrence_count)}</div></div></div>
             <p class="review-meta">${escapeHtml(item.explanation || '没有说明')}</p>
+            ${aiRecommendation}
             <div class="review-actions">${acceptActions}<button type="button" onclick="reviewMappingCandidate(${item.id}, 'reject')">拒绝</button></div>
         </article>`;
     }).join('');

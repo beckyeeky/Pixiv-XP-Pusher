@@ -2,6 +2,8 @@
 
 完整配置请以 `config.example.yaml` 为准。以下是常用字段分组。
 
+`tag_mapping` 既负责生成待人工审核候选，也可使用同一 LLM Model 对现有候选生成 AI Relationship Recommendation。候选复核、证据失效规则、CLI 预选和最终 Web 人工确认流程见 [AI 辅助 Tag Mapping 审核](./tag_mapping_ai_review.md)。
+
 配置模板升级后，可将现有值自动填入新版模板：
 
 ```bash

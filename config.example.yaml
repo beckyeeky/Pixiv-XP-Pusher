@@ -38,6 +38,9 @@ tag_mapping:
   # 从 Models 中选择 capabilities=llm 的 Model；凭据与地址从 Provider 解析
   model: deepseek_flash
   batch_size: 50
+  review_concurrency: 3 # Relationship Judge 并发；建议从小批量开始
+  review_temperature: 0.0
+  review_max_output_tokens: 1024
 
 # AI 增强配置 (可选，默认关闭)
 ai:

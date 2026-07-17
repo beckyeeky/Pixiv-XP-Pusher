@@ -298,6 +298,23 @@ def normalize_config(config: dict) -> dict:
         tag_mapping_cfg.get("batch_size", 50), default=50,
         field_name="tag_mapping.batch_size",
     ))
+    tag_mapping_cfg["review_concurrency"] = max(1, _coerce_int(
+        tag_mapping_cfg.get("review_concurrency", 3), default=3,
+        field_name="tag_mapping.review_concurrency",
+    ))
+    tag_mapping_cfg["review_max_output_tokens"] = max(128, _coerce_int(
+        tag_mapping_cfg.get("review_max_output_tokens", 1024), default=1024,
+        field_name="tag_mapping.review_max_output_tokens",
+    ))
+    try:
+        if isinstance(tag_mapping_cfg.get("review_temperature", 0.0), bool):
+            raise ValueError
+        tag_mapping_cfg["review_temperature"] = min(
+            2.0, max(0.0, float(tag_mapping_cfg.get("review_temperature", 0.0)))
+        )
+    except (TypeError, ValueError):
+        logger.warning("配置项 tag_mapping.review_temperature 非法，已回退为 0.0")
+        tag_mapping_cfg["review_temperature"] = 0.0
     for legacy_key in ("filter_meaningless", "merge_synonyms", "concurrency"):
         tag_mapping_cfg.pop(legacy_key, None)
 
