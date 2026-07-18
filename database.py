@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
 SCHEMA_VERSION = 6
 TAG_EVIDENCE_FRESHNESS_DAYS = 60
+TAG_MAPPING_EVIDENCE_HASH_STATE = "tag_mapping_evidence_hash_semantic_v2"
 
 
 async def init_db():
@@ -319,6 +320,34 @@ def _init_db_sync():
             )
             db.commit()
 
+        # v2 hashes only stable semantic context.  Re-hash stored payloads once
+        # so a profile-weight refresh does not force otherwise valid Judge
+        # recommendations to be regenerated.
+        evidence_hash_migrated = db.execute(
+            "SELECT value FROM system_state WHERE key = ?",
+            (TAG_MAPPING_EVIDENCE_HASH_STATE,),
+        ).fetchone()
+        if not evidence_hash_migrated:
+            for recommendation_id, raw_evidence in db.execute(
+                "SELECT id, evidence_payload FROM tag_mapping_ai_recommendations"
+            ).fetchall():
+                try:
+                    evidence_payload = json.loads(raw_evidence)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                db.execute(
+                    "UPDATE tag_mapping_ai_recommendations SET evidence_hash = ? WHERE id = ?",
+                    (hash_relationship_evidence(evidence_payload), recommendation_id),
+                )
+            db.execute(
+                """
+                INSERT INTO system_state (key, value, updated_at)
+                VALUES (?, 'true', CURRENT_TIMESTAMP)
+                """,
+                (TAG_MAPPING_EVIDENCE_HASH_STATE,),
+            )
+            db.commit()
+
         # Quarantine legacy automatic mappings as review candidates exactly once.
         # The source tables remain untouched for rollback/audit and are no longer
         # consumed by runtime identity resolution.
@@ -341,7 +370,7 @@ def _init_db_sync():
                        END,
                        1, 'pending'
                 FROM ai_tag_cache
-                WHERE cleaned_tag IS NULL OR cleaned_tag <> original_tag
+                WHERE cleaned_tag IS NULL OR LOWER(cleaned_tag) <> LOWER(original_tag)
                 """
             )
             db.execute(
@@ -353,8 +382,13 @@ def _init_db_sync():
                 SELECT original_tag, normalized_tag, 'search', 'legacy_tag_mapping_stats',
                        'Legacy reverse-search observation; requires review before reuse.',
                        MAX(frequency, 1), 'pending'
-                FROM tag_mapping_stats
-                WHERE normalized_tag <> original_tag
+                FROM tag_mapping_stats stats
+                WHERE LOWER(normalized_tag) <> LOWER(original_tag)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ai_tag_cache cache
+                      WHERE cache.original_tag = stats.original_tag
+                        AND cache.cleaned_tag = stats.normalized_tag
+                  )
                 """
             )
             db.execute(
@@ -475,20 +509,51 @@ async def get_accepted_tag_aliases(kind: str = "equivalent") -> dict[str, str]:
         return {row[0]: row[1] for row in await cursor.fetchall()}
 
 
-async def list_tag_aliases(limit: int = 500) -> list[dict]:
-    """List active aliases for review and correction."""
+def _tag_alias_search_clause(query: str | None) -> tuple[str, list[str]]:
+    value = str(query or "").strip()
+    if not value:
+        return "", []
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
+    return (
+        "WHERE (original_tag LIKE ? ESCAPE '\\' COLLATE NOCASE "
+        "OR normalized_tag LIKE ? ESCAPE '\\' COLLATE NOCASE)",
+        [pattern, pattern],
+    )
+
+
+async def list_tag_aliases(
+    limit: int = 20,
+    offset: int = 0,
+    query: str | None = None,
+) -> list[dict]:
+    """List one searchable page of active aliases for review and correction."""
+    where_sql, search_params = _tag_alias_search_clause(query)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            """
+            f"""
             SELECT original_tag, normalized_tag, kind, source, priority, updated_at
             FROM tag_aliases
+            {where_sql}
             ORDER BY updated_at DESC, original_tag ASC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (limit,),
+            (*search_params, int(limit), int(offset)),
         )
         return [dict(row) for row in await cursor.fetchall()]
+
+
+async def count_tag_aliases(query: str | None = None) -> int:
+    """Count active aliases matching the same search used by list_tag_aliases."""
+    where_sql, search_params = _tag_alias_search_clause(query)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            f"SELECT COUNT(*) FROM tag_aliases {where_sql}",
+            search_params,
+        )
+        row = await cursor.fetchone()
+        return int(row[0] if row else 0)
 
 
 async def delete_tag_alias(original_tag: str) -> bool:
@@ -535,11 +600,14 @@ async def save_tag_mapping_candidates(candidates) -> int:
             cursor = await db.execute(
                 """
                 SELECT id FROM tag_mapping_candidates
-                WHERE original_tag = ? AND proposed_normalized_tag = ?
-                  AND kind = ? AND source = ?
+                WHERE (
+                    original_tag = ? AND proposed_normalized_tag = ?
+                ) OR (
+                    original_tag = ? AND proposed_normalized_tag = ?
+                )
                 LIMIT 1
                 """,
-                row[:4],
+                (row[0], row[1], row[1], row[0]),
             )
             existing = await cursor.fetchone()
             if existing:
@@ -631,27 +699,70 @@ def _validate_tag_mapping_candidate_status(status: str) -> None:
         raise ValueError(f"不支持的候选状态: {status}")
 
 
+def collapse_tag_mapping_candidate_groups(items: list[dict]) -> list[dict]:
+    """Choose one review item per unordered tag pair without discarding audit rows."""
+
+    grouped: dict[tuple[str, str] | tuple[str, int], list[dict]] = {}
+    for item in items:
+        original = str(item.get("original_tag") or "")
+        target = str(item.get("proposed_normalized_tag") or "")
+        if original and target and original.casefold() == target.casefold():
+            # normalize_tag already folds case, so this cannot create a useful
+            # alias and must not consume a human or AI review.
+            continue
+        if not original or not target:
+            key: tuple[str, str] | tuple[str, int] = ("id", int(item["id"]))
+        else:
+            key = tuple(sorted((original.casefold(), target.casefold())))
+        grouped.setdefault(key, []).append(dict(item))
+
+    collapsed = []
+    for group in grouped.values():
+        primary = min(
+            group,
+            key=lambda item: (
+                # A current recommendation belongs to the unordered tag pair,
+                # even when an older source row owns its audit record.  Keep
+                # that row as the group primary so Judge and staging reuse it.
+                0 if item.get("ai_is_current") else 1,
+                0 if item.get("kind") == "equivalent" else 1,
+                0 if item.get("source") == "legacy_ai_tag_cache" else 1,
+                int(item["id"]),
+            ),
+        )
+        primary["duplicate_candidate_ids"] = sorted(int(item["id"]) for item in group)
+        primary["duplicate_count"] = len(group)
+        primary["duplicate_sources"] = sorted({str(item.get("source") or "") for item in group})
+        primary["duplicate_kinds"] = sorted({str(item.get("kind") or "") for item in group})
+        collapsed.append(primary)
+    return collapsed
+
+
 def get_tag_mapping_candidates_sync(limit: int = 100, status: str = "pending") -> list[dict]:
     """Synchronous candidate read for standalone CLI processes."""
 
     _validate_tag_mapping_candidate_status(status)
+    fetch_limit = max(int(limit), int(limit) * 3)
     with sqlite3.connect(DB_PATH, timeout=10) as db:
         db.row_factory = sqlite3.Row
-        rows = db.execute(_TAG_MAPPING_CANDIDATES_SQL, (status, limit)).fetchall()
-    return _enrich_tag_mapping_candidates(rows)
+        rows = db.execute(_TAG_MAPPING_CANDIDATES_SQL, (status, fetch_limit)).fetchall()
+    return collapse_tag_mapping_candidate_groups(_enrich_tag_mapping_candidates(rows))[:int(limit)]
 
 
 async def get_tag_mapping_candidates(limit: int = 100, status: str = "pending") -> list[dict]:
     """Return mapping proposals in human review order for async Web/API callers."""
 
     _validate_tag_mapping_candidate_status(status)
+    fetch_limit = max(int(limit), int(limit) * 3)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             _TAG_MAPPING_CANDIDATES_SQL,
-            (status, limit),
+            (status, fetch_limit),
         )
-        return _enrich_tag_mapping_candidates(await cursor.fetchall())
+        return collapse_tag_mapping_candidate_groups(
+            _enrich_tag_mapping_candidates(await cursor.fetchall())
+        )[:int(limit)]
 
 
 async def save_tag_mapping_ai_recommendation(
@@ -821,9 +932,26 @@ async def review_tag_mapping_candidate(candidate_id: int, decision: str, kind: s
         else:
             new_status = "rejected"
 
+        duplicate_cursor = await db.execute(
+            """
+            SELECT id FROM tag_mapping_candidates
+            WHERE status = 'pending' AND id != ? AND (
+                (original_tag = ? AND proposed_normalized_tag = ?)
+                OR (original_tag = ? AND proposed_normalized_tag = ?)
+            )
+            """,
+            (
+                candidate_id,
+                row["original_tag"], row["proposed_normalized_tag"],
+                row["proposed_normalized_tag"], row["original_tag"],
+            ),
+        )
+        duplicate_ids = [int(item[0]) for item in await duplicate_cursor.fetchall()]
+        reviewed_ids = [int(candidate_id), *duplicate_ids]
+        placeholders = ", ".join("?" for _ in reviewed_ids)
         await db.execute(
-            "UPDATE tag_mapping_candidates SET status = ?, kind = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (new_status, applied_kind, candidate_id),
+            f"UPDATE tag_mapping_candidates SET status = ?, kind = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+            (new_status, applied_kind, *reviewed_ids),
         )
         await db.commit()
         return {
@@ -832,6 +960,7 @@ async def review_tag_mapping_candidate(candidate_id: int, decision: str, kind: s
             "original_tag": original,
             "normalized_tag": target or None,
             "kind": applied_kind,
+            "duplicate_candidates_resolved": len(duplicate_ids),
         }
 
 
