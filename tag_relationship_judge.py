@@ -311,6 +311,73 @@ def plan_ai_recommendation_staging(
     return AiRecommendationStagingPlan(tuple(decisions), dict(blocked))
 
 
+def plan_high_confidence_ai_actions(
+    candidates: Sequence[Mapping],
+    *,
+    min_confidence: float,
+) -> AiRecommendationStagingPlan:
+    """Plan explicit trust-mode actions for current high-confidence AI advice."""
+
+    threshold = float(min_confidence)
+    if not MIN_AI_BATCH_CONFIDENCE <= threshold <= 1.0:
+        raise ValueError(
+            f"AI batch confidence must be at least {MIN_AI_BATCH_CONFIDENCE:.2f} and at most 1.00"
+        )
+    decisions: list[HumanReviewDraft] = []
+    blocked: Counter[str] = Counter()
+    for candidate in candidates:
+        relation = str(candidate.get("ai_relation") or "")
+        confidence = float(candidate.get("ai_confidence") or 0.0)
+        if confidence < threshold:
+            blocked["below_confidence"] += 1
+            continue
+        if relation not in {"equivalent", "related", "distinct"}:
+            blocked["no_actionable_recommendation"] += 1
+            continue
+        if candidate.get("ai_principles_version") != MERGE_PRINCIPLES_VERSION:
+            blocked["stale_principles"] += 1
+            continue
+        if candidate.get("ai_evidence_hash") != relationship_evidence_hash(candidate):
+            blocked["stale_evidence"] += 1
+            continue
+        recommendation_id = int(candidate.get("ai_recommendation_id") or 0)
+        if not recommendation_id:
+            blocked["missing_recommendation"] += 1
+            continue
+        if relation in {"related", "distinct"}:
+            decisions.append(HumanReviewDraft(
+                int(candidate["id"]), recommendation_id, "reject",
+            ))
+            continue
+        if candidate.get("original_tag") == candidate.get("proposed_normalized_tag"):
+            blocked["self_mapping"] += 1
+            continue
+        flags = _json_value(candidate, "ai_risk_flags", ["other"])
+        if flags:
+            blocked["risk_flags"] += 1
+            continue
+        checks = _json_value(candidate, "ai_principle_checks", {})
+        if (
+            not isinstance(checks, Mapping)
+            or set(checks) != PRINCIPLE_CHECK_NAMES
+            or checks.get("same_identity") is not True
+            or any(checks.get(name) is not False for name in (
+                "broader_narrower", "entity_franchise", "modifier_variant",
+            ))
+        ):
+            blocked["principle_checks"] += 1
+            continue
+        if candidate.get("ai_canonical_tag") not in {
+            candidate.get("original_tag"), candidate.get("proposed_normalized_tag"),
+        }:
+            blocked["canonical_not_in_pair"] += 1
+            continue
+        decisions.append(HumanReviewDraft(
+            int(candidate["id"]), recommendation_id, "accept_equivalent",
+        ))
+    return AiRecommendationStagingPlan(tuple(decisions), dict(blocked))
+
+
 def _extract_json_object(content: str) -> dict:
     content = str(content or "").strip()
     if content.startswith("```"):

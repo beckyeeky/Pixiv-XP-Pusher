@@ -428,18 +428,22 @@ class DatabaseInitTests(unittest.TestCase):
                         "SELECT id FROM tag_mapping_candidates ORDER BY id"
                     )
                 ]
-                for candidate_id, relation in zip(candidate_ids, ("equivalent", "distinct")):
+                for candidate_id, relation, canonical_tag in zip(
+                    candidate_ids,
+                    ("equivalent", "distinct"),
+                    ("white_hair", None),
+                ):
                     conn.execute(
                         """
                         INSERT INTO tag_mapping_ai_recommendations (
-                            candidate_id, relation, confidence, rationale,
+                            candidate_id, relation, confidence, rationale, canonical_tag,
                             risk_flags, principle_checks, model,
                             principles_version, evidence_hash,
                             evidence_payload, recommendation_payload
-                        ) VALUES (?, ?, 0.99, 'test', '[]', '{}', 'test',
+                        ) VALUES (?, ?, 0.99, 'test', ?, '[]', '{}', 'test',
                                   'tag-alias-review-v1', 'hash', '{}', '{}')
                         """,
-                        (candidate_id, relation),
+                        (candidate_id, relation, canonical_tag),
                     )
                 recommendation_ids = [
                     row[0] for row in conn.execute(
@@ -483,11 +487,57 @@ class DatabaseInitTests(unittest.TestCase):
             "rejected": 1,
             "aliases_created": 1,
             "aliases_already_active": 0,
+            "aliases_reversed_to_ai_canonical": 0,
             "duplicate_candidates_resolved": 0,
         })
         self.assertEqual(statuses, ["accepted", "rejected"])
         self.assertEqual(aliases, [("しろかみ", "white_hair")])
         self.assertEqual(staged, ["accept_equivalent", "reject"])
+
+    def test_confirmed_ai_batch_uses_the_ai_canonical_direction(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "pixiv_xp.db"
+            with patch.object(database, "DB_PATH", db_path):
+                database._init_db_sync()
+                conn = sqlite3.connect(db_path)
+                cursor = conn.execute(
+                    """
+                    INSERT INTO tag_mapping_candidates (
+                        original_tag, proposed_normalized_tag, source, status
+                    ) VALUES ('ストラップシューズ', 'strap_shoes', 'test', 'pending')
+                    """
+                )
+                candidate_id = cursor.lastrowid
+                cursor = conn.execute(
+                    """
+                    INSERT INTO tag_mapping_ai_recommendations (
+                        candidate_id, relation, confidence, rationale, canonical_tag,
+                        risk_flags, principle_checks, model, principles_version,
+                        evidence_hash, evidence_payload, recommendation_payload
+                    ) VALUES (?, 'equivalent', 1.0, 'same identity', 'ストラップシューズ',
+                              '[]', '{}', 'test', 'tag-alias-review-v1',
+                              'hash', '{}', '{}')
+                    """,
+                    (candidate_id,),
+                )
+                recommendation_id = cursor.lastrowid
+                conn.commit()
+                conn.close()
+
+                result = database.apply_tag_mapping_ai_batch_sync([{
+                    "candidate_id": candidate_id,
+                    "recommendation_id": recommendation_id,
+                    "decision": "accept_equivalent",
+                }])
+
+                conn = sqlite3.connect(db_path)
+                alias = conn.execute(
+                    "SELECT original_tag, normalized_tag FROM tag_aliases"
+                ).fetchone()
+                conn.close()
+
+        self.assertEqual(alias, ("strap_shoes", "ストラップシューズ"))
+        self.assertEqual(result["aliases_reversed_to_ai_canonical"], 1)
 
     def test_high_weight_unclassified_profile_tags_include_missing_and_unresolved(self):
         async def _run(db_path):
