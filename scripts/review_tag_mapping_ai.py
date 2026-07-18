@@ -18,6 +18,7 @@ from config import load_config, resolve_tag_mapping_config
 from tag_relationship_judge import (
     MERGE_PRINCIPLES_VERSION,
     OpenAICompatibleRelationshipJudge,
+    RelationshipJudgeResponseError,
     plan_ai_recommendation_staging,
     relationship_evidence,
     relationship_evidence_hash,
@@ -47,7 +48,9 @@ async def judge_candidates(
         judge, configured_concurrency = relationship_judge_from_config()
         concurrency = concurrency or configured_concurrency
     concurrency = max(1, int(concurrency or 1))
-    pending = db.get_tag_mapping_candidates_sync(limit=500)
+    pending = db.collapse_tag_mapping_candidate_groups(
+        db.get_tag_mapping_candidates_sync(limit=500)
+    )
     selected = [
         candidate for candidate in pending
         if refresh
@@ -69,7 +72,11 @@ async def judge_candidates(
     judged = 0
     for candidate, recommendation, error in outcomes:
         if error is not None:
-            failures.append({"candidate_id": candidate["id"], "error": str(error)})
+            failure = {"candidate_id": candidate["id"], "error": str(error)}
+            if isinstance(error, RelationshipJudgeResponseError):
+                failure["finish_reason"] = error.finish_reason
+                failure["response_excerpt"] = error.response_excerpt
+            failures.append(failure)
             continue
         await db.save_tag_mapping_ai_recommendation(
             candidate["id"], recommendation.as_dict(),

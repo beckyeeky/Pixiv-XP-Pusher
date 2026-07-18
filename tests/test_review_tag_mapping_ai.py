@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
-from tag_relationship_judge import AiRelationshipRecommendation
+from tag_relationship_judge import AiRelationshipRecommendation, RelationshipJudgeResponseError
 
 
 SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "review_tag_mapping_ai.py"
@@ -55,6 +55,92 @@ class ReviewTagMappingAiTests(unittest.TestCase):
         get_candidates.assert_called_once_with(limit=500)
         save.assert_awaited_once()
         self.assertFalse(hasattr(script.db, "review_tag_mapping_candidate_called"))
+
+    def test_judge_collapses_duplicate_candidate_pairs_before_calling_the_model(self):
+        class FakeJudge:
+            identity = "deepseek:model"
+
+            async def judge(self, candidate):
+                return AiRelationshipRecommendation(
+                    "equivalent", 0.98, "same", "white_hair", (),
+                    {
+                        "same_identity": True, "broader_narrower": False,
+                        "entity_franchise": False, "modifier_variant": False,
+                    },
+                )
+
+        equivalent = self.candidate()
+        search = {**self.candidate(), "id": 8, "kind": "search", "source": "legacy_tag_mapping_stats"}
+        save = AsyncMock(return_value=9)
+        with patch.object(script.db, "get_tag_mapping_candidates_sync", return_value=[equivalent, search]), \
+             patch.object(script.db, "save_tag_mapping_ai_recommendation", save):
+            result = asyncio.run(script.judge_candidates(
+                limit=20, refresh=False, judge=FakeJudge(), concurrency=1,
+            ))
+        self.assertEqual(result["selected"], 1)
+        self.assertEqual(result["judged"], 1)
+        self.assertEqual(save.await_count, 1)
+
+    def test_judge_reuses_current_review_owned_by_duplicate_candidate(self):
+        class FakeJudge:
+            identity = "deepseek:model"
+
+            async def judge(self, _candidate):
+                raise AssertionError("current pair must not be judged again")
+
+        preferred = self.candidate()
+        duplicate = {
+            **self.candidate(),
+            "id": 8,
+            "kind": "search",
+            "source": "legacy_tag_mapping_stats",
+            "ai_recommendation_id": 21,
+            "ai_model": "deepseek:model",
+            "ai_principles_version": "tag-alias-review-v1",
+        }
+        from tag_relationship_judge import relationship_evidence_hash
+        duplicate["ai_evidence_hash"] = relationship_evidence_hash(duplicate)
+        duplicate["ai_is_current"] = True
+
+        with patch.object(
+            script.db,
+            "get_tag_mapping_candidates_sync",
+            return_value=[preferred, duplicate],
+        ), patch.object(
+            script.db,
+            "save_tag_mapping_ai_recommendation",
+            new=AsyncMock(),
+        ) as save:
+            result = asyncio.run(script.judge_candidates(
+                limit=20, refresh=False, judge=FakeJudge(), concurrency=1,
+            ))
+
+        self.assertEqual(result["selected"], 0)
+        self.assertEqual(result["judged"], 0)
+        save.assert_not_awaited()
+
+    def test_judge_reports_safe_response_diagnostics_for_malformed_json(self):
+        class FakeJudge:
+            identity = "deepseek:model"
+
+            async def judge(self, candidate):
+                raise RelationshipJudgeResponseError(
+                    "Relationship Judge returned invalid JSON",
+                    finish_reason="length",
+                    response_excerpt='{"relation":"equivalent"',
+                )
+
+        with patch.object(script.db, "get_tag_mapping_candidates_sync", return_value=[self.candidate()]):
+            result = asyncio.run(script.judge_candidates(
+                limit=1, refresh=False, judge=FakeJudge(), concurrency=1,
+            ))
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["failures"], [{
+            "candidate_id": 7,
+            "error": "Relationship Judge returned invalid JSON",
+            "finish_reason": "length",
+            "response_excerpt": '{"relation":"equivalent"',
+        }])
 
     def test_zero_limit_fails_before_loading_a_provider(self):
         with patch.object(script, "relationship_judge_from_config") as factory:

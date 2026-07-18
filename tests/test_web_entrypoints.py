@@ -209,6 +209,35 @@ class WebEntrypointTests(unittest.TestCase):
         self.assertIn("AI Relationship Recommendation", response.text)
         self.assertIn("item.ai_relation", response.text)
 
+    def test_tags_page_contains_paginated_alias_manager(self):
+        template = (Path(web_app_module.TEMPLATES_DIR) / "tags.html").read_text(encoding="utf-8")
+        self.assertIn('id="activeAliasSearch"', template)
+        self.assertIn('id="activeAliasCount"', template)
+        self.assertIn('id="loadMoreAliases"', template)
+        self.assertIn("activeAliasPageSize = 20", template)
+
+    def test_authenticated_alias_api_returns_searchable_page_and_total(self):
+        aliases = [{
+            "original_tag": "原神", "normalized_tag": "genshin_impact",
+            "kind": "equivalent", "source": "manual", "priority": 1,
+            "updated_at": "2026-07-18 10:00:00",
+        }]
+        with patch.object(
+            web_app_module.db, "list_tag_aliases", new=AsyncMock(return_value=aliases),
+        ) as list_aliases, patch.object(
+            web_app_module.db, "count_tag_aliases", new=AsyncMock(return_value=17),
+        ) as count_aliases:
+            payload = asyncio.run(web_app_module.api_tag_aliases(
+                limit=20, offset=20, q=" 原神 ", _=None,
+            ))
+
+        self.assertEqual(payload, {
+            "items": aliases, "total": 17, "limit": 20, "offset": 20,
+            "query": "原神",
+        })
+        list_aliases.assert_awaited_once_with(limit=20, offset=20, query="原神")
+        count_aliases.assert_awaited_once_with(query="原神")
+
     def test_authenticated_mapping_review_accepts_only_an_explicit_human_decision(self):
         async def authenticated():
             return None

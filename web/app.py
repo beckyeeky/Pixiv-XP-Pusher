@@ -828,9 +828,23 @@ async def api_tag_mapping_candidates(
 
 
 @app.get("/api/tag-aliases")
-async def api_tag_aliases(limit: int = Query(500, ge=1, le=2000), _=Depends(require_auth)):
-    """Return active human-reviewed aliases."""
-    return {"items": await db.list_tag_aliases(limit=limit)}
+async def api_tag_aliases(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    q: str = Query("", max_length=100),
+    _=Depends(require_auth),
+):
+    """Return one searchable page of active human-reviewed aliases."""
+    query = q.strip()
+    items = await db.list_tag_aliases(limit=limit, offset=offset, query=query)
+    total = await db.count_tag_aliases(query=query)
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "query": query,
+    }
 
 
 @app.delete("/api/tag-aliases")

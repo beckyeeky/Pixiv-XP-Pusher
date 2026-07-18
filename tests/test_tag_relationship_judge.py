@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from tag_relationship_judge import (
     MERGE_PRINCIPLES_VERSION,
     OpenAICompatibleRelationshipJudge,
+    RelationshipJudgeResponseError,
     build_relationship_prompt,
     plan_ai_recommendation_staging,
     relationship_evidence_hash,
@@ -61,6 +62,24 @@ class TagRelationshipJudgeTests(unittest.TestCase):
         self.assertIn('"embedding_similarity": 0.94', prompt)
         self.assertIn("character and its franchise", prompt)
         self.assertIn(MERGE_PRINCIPLES_VERSION, prompt)
+        self.assertIn('"白髪" or "white_hair"', prompt)
+        self.assertIn('Never return the literal strings "tag_a.tag" or "tag_b.tag"', prompt)
+
+    def test_evidence_hash_ignores_profile_weights_but_tracks_semantic_context(self):
+        baseline = self.candidate()
+        changed_weights = self.candidate(original_weight=99.0, target_weight=-3.0)
+        changed_explanation = self.candidate(
+            original_explanation="A different semantic description.",
+        )
+
+        self.assertEqual(
+            relationship_evidence_hash(baseline),
+            relationship_evidence_hash(changed_weights),
+        )
+        self.assertNotEqual(
+            relationship_evidence_hash(baseline),
+            relationship_evidence_hash(changed_explanation),
+        )
 
     def test_validation_requires_exact_checks_and_pair_canonical_tag(self):
         with self.assertRaisesRegex(ValueError, "exact principle_checks"):
@@ -86,9 +105,34 @@ class TagRelationshipJudgeTests(unittest.TestCase):
             "provider_name": "deepseek",
             "model": "deepseek-chat",
         }, client=client)
-        with self.assertRaisesRegex(ValueError, "invalid JSON"):
+        with self.assertRaisesRegex(RelationshipJudgeResponseError, "invalid JSON") as error:
             import asyncio
             asyncio.run(judge.judge(self.candidate()))
+        self.assertEqual(error.exception.finish_reason, None)
+        self.assertEqual(error.exception.response_excerpt, "not json")
+
+    def test_openai_compatible_adapter_requests_json_output(self):
+        requests = []
+
+        class Completions:
+            async def create(self, **kwargs):
+                requests.append(kwargs)
+                return SimpleNamespace(choices=[SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(content=json.dumps(self_recommendation)),
+                )])
+
+        self_recommendation = self.recommendation()
+        client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+        judge = OpenAICompatibleRelationshipJudge({
+            "provider": "openai_compatible",
+            "provider_name": "deepseek",
+            "model": "deepseek-chat",
+        }, client=client)
+        import asyncio
+        result = asyncio.run(judge.judge(self.candidate()))
+        self.assertEqual(result.relation, "equivalent")
+        self.assertEqual(requests[0]["response_format"], {"type": "json_object"})
 
     def test_staging_plans_safe_equivalence_and_distinct_rejection_only(self):
         equivalent = self.candidate(
