@@ -509,6 +509,17 @@ async def get_accepted_tag_aliases(kind: str = "equivalent") -> dict[str, str]:
         return {row[0]: row[1] for row in await cursor.fetchall()}
 
 
+def get_tag_aliases_sync() -> dict[str, str]:
+    """Return every active alias for standalone CLI conflict preflight."""
+
+    with sqlite3.connect(DB_PATH, timeout=10) as db:
+        return {
+            row[0]: row[1] for row in db.execute(
+                "SELECT original_tag, normalized_tag FROM tag_aliases"
+            ).fetchall()
+        }
+
+
 def _tag_alias_search_clause(query: str | None) -> tuple[str, list[str]]:
     value = str(query or "").strip()
     if not value:
@@ -864,6 +875,7 @@ def apply_tag_mapping_ai_batch_sync(decisions) -> dict:
         "rejected": 0,
         "aliases_created": 0,
         "aliases_already_active": 0,
+        "aliases_reversed_to_ai_canonical": 0,
         "duplicate_candidates_resolved": 0,
     }
     if not rows:
@@ -883,7 +895,7 @@ def apply_tag_mapping_ai_batch_sync(decisions) -> dict:
             ).fetchone()
             recommendation = db.execute(
                 """
-                SELECT id FROM tag_mapping_ai_recommendations
+                SELECT id, relation, canonical_tag FROM tag_mapping_ai_recommendations
                 WHERE id = ? AND candidate_id = ?
                   AND id = (
                       SELECT MAX(id) FROM tag_mapping_ai_recommendations
@@ -903,11 +915,23 @@ def apply_tag_mapping_ai_batch_sync(decisions) -> dict:
                 (staged_decision, recommendation_id),
             )
 
-            original = normalize_tag(candidate["original_tag"])
-            target = normalize_tag(candidate["proposed_normalized_tag"] or "")
+            candidate_original = normalize_tag(candidate["original_tag"])
+            candidate_target = normalize_tag(candidate["proposed_normalized_tag"] or "")
             if staged_decision == "accept_equivalent":
-                if not original or not target or original == target:
+                if recommendation["relation"] != "equivalent":
+                    raise ValueError("只有 equivalent Recommendation 可以建立 Tag Alias")
+                canonical = normalize_tag(recommendation["canonical_tag"] or "")
+                if (
+                    not candidate_original or not candidate_target
+                    or candidate_original == candidate_target
+                    or canonical not in {candidate_original, candidate_target}
+                ):
                     raise ValueError("该候选没有可接受的目标 Normalized Tag")
+                if canonical == candidate_original:
+                    original, target = candidate_target, candidate_original
+                    result["aliases_reversed_to_ai_canonical"] += 1
+                else:
+                    original, target = candidate_original, candidate_target
                 existing_target = aliases.get(original)
                 reverse_target = aliases.get(target)
                 if existing_target and existing_target != target:
