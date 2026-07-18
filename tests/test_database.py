@@ -368,6 +368,127 @@ class DatabaseInitTests(unittest.TestCase):
         self.assertEqual(after, {"ブルアカ": "blue_archive"})
         self.assertEqual(search_term, "ブルアカ")
 
+    def test_accepting_reverse_candidate_closes_it_when_alias_is_already_active(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                await database.save_tag_mapping_candidates([{
+                    "original_tag": "明日方舟",
+                    "proposed_normalized_tag": "アークナイツ",
+                    "kind": "equivalent",
+                    "source": "first",
+                }])
+                forward = (await database.get_tag_mapping_candidates(limit=10))[0]
+                await database.review_tag_mapping_candidate(
+                    forward["id"], "accept", kind="equivalent",
+                )
+                conn = sqlite3.connect(db_path)
+                conn.execute(
+                    """
+                    INSERT INTO tag_mapping_candidates (
+                        original_tag, proposed_normalized_tag, kind, source, status
+                    ) VALUES ('アークナイツ', '明日方舟', 'equivalent', 'second', 'pending')
+                    """
+                )
+                reverse_id = conn.execute(
+                    "SELECT id FROM tag_mapping_candidates WHERE source='second'"
+                ).fetchone()[0]
+                conn.commit()
+                conn.close()
+
+                result = await database.review_tag_mapping_candidate(
+                    reverse_id, "accept", kind="equivalent",
+                )
+                aliases = await database.get_accepted_tag_aliases()
+                return result, aliases
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, aliases = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
+
+        self.assertEqual(result["status"], "accepted")
+        self.assertTrue(result["alias_already_active"])
+        self.assertEqual(aliases, {"明日方舟": "アークナイツ"})
+
+    def test_confirmed_ai_batch_atomically_accepts_aliases_and_rejects_distinct_tags(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "pixiv_xp.db"
+            with patch.object(database, "DB_PATH", db_path):
+                database._init_db_sync()
+                conn = sqlite3.connect(db_path)
+                conn.executemany(
+                    """
+                    INSERT INTO tag_mapping_candidates (
+                        original_tag, proposed_normalized_tag, source, status
+                    ) VALUES (?, ?, 'test', 'pending')
+                    """,
+                    [("しろかみ", "white_hair"), ("clorinde", "genshin_impact")],
+                )
+                candidate_ids = [
+                    row[0] for row in conn.execute(
+                        "SELECT id FROM tag_mapping_candidates ORDER BY id"
+                    )
+                ]
+                for candidate_id, relation in zip(candidate_ids, ("equivalent", "distinct")):
+                    conn.execute(
+                        """
+                        INSERT INTO tag_mapping_ai_recommendations (
+                            candidate_id, relation, confidence, rationale,
+                            risk_flags, principle_checks, model,
+                            principles_version, evidence_hash,
+                            evidence_payload, recommendation_payload
+                        ) VALUES (?, ?, 0.99, 'test', '[]', '{}', 'test',
+                                  'tag-alias-review-v1', 'hash', '{}', '{}')
+                        """,
+                        (candidate_id, relation),
+                    )
+                recommendation_ids = [
+                    row[0] for row in conn.execute(
+                        "SELECT id FROM tag_mapping_ai_recommendations ORDER BY id"
+                    )
+                ]
+                conn.commit()
+                conn.close()
+
+                result = database.apply_tag_mapping_ai_batch_sync([
+                    {
+                        "candidate_id": candidate_ids[0],
+                        "recommendation_id": recommendation_ids[0],
+                        "decision": "accept_equivalent",
+                    },
+                    {
+                        "candidate_id": candidate_ids[1],
+                        "recommendation_id": recommendation_ids[1],
+                        "decision": "reject",
+                    },
+                ])
+
+                conn = sqlite3.connect(db_path)
+                statuses = [
+                    row[0] for row in conn.execute(
+                        "SELECT status FROM tag_mapping_candidates ORDER BY id"
+                    )
+                ]
+                aliases = conn.execute(
+                    "SELECT original_tag, normalized_tag FROM tag_aliases"
+                ).fetchall()
+                staged = [
+                    row[0] for row in conn.execute(
+                        "SELECT staged_decision FROM tag_mapping_ai_recommendations ORDER BY id"
+                    )
+                ]
+                conn.close()
+
+        self.assertEqual(result, {
+            "accepted_equivalent": 1,
+            "rejected": 1,
+            "aliases_created": 1,
+            "aliases_already_active": 0,
+            "duplicate_candidates_resolved": 0,
+        })
+        self.assertEqual(statuses, ["accepted", "rejected"])
+        self.assertEqual(aliases, [("しろかみ", "white_hair")])
+        self.assertEqual(staged, ["accept_equivalent", "reject"])
+
     def test_high_weight_unclassified_profile_tags_include_missing_and_unresolved(self):
         async def _run(db_path):
             with patch.object(database, "DB_PATH", db_path):
