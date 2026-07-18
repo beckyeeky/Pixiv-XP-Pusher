@@ -22,14 +22,14 @@ def _is_feature_classification(classification) -> bool:
     return is_feature_category(classification)
 
 
-def _build_match_breakdown(
-    illust: Illust,
+def _build_tag_match_breakdown(
+    tags: list[str],
     xp_profile: dict[str, float],
     negative_profile: dict[str, float] = None,
     tag_classifications: Optional[dict] = None,
     tag_resolver: Optional[TagIdentityResolver] = None,
 ) -> dict[str, float | int]:
-    if not illust.tags or not xp_profile:
+    if not tags or not xp_profile:
         return {
             "max_weight": 1.0,
             "matched_count": 0,
@@ -56,7 +56,7 @@ def _build_match_breakdown(
     seen_negative_tags: set[str] = set()
     resolver = tag_resolver or TagIdentityResolver()
 
-    for tag in illust.tags:
+    for tag in tags:
         normalized_tag = resolver.resolve(tag)
         tag_key = normalized_tag or tag.lower().strip()
 
@@ -157,8 +157,26 @@ def calculate_match_score(
     Returns:
         0.0 ~ 1.0 归一化分数
     """
-    breakdown = _build_match_breakdown(
-        illust,
+    return calculate_tag_match_score(
+        illust.tags,
+        xp_profile,
+        negative_profile,
+        tag_classifications=tag_classifications,
+        tag_resolver=tag_resolver,
+    )
+
+
+def calculate_tag_match_score(
+    tags: list[str],
+    xp_profile: dict[str, float],
+    negative_profile: dict[str, float] = None,
+    tag_classifications: Optional[dict] = None,
+    tag_resolver: Optional[TagIdentityResolver] = None,
+) -> float:
+    """Calculate the production Tag score from cached work tags only."""
+
+    breakdown = _build_tag_match_breakdown(
+        tags,
         xp_profile,
         negative_profile,
         tag_classifications=tag_classifications,
@@ -434,10 +452,9 @@ class ContentFilter:
         
         if self.embedder and self.embedder.enabled and xp_profile and user_id > 0:
             try:
-                import hashlib
                 # 计算 XP Profile 哈希，判断是否需要更新用户 Embedding
-                profile_str = str(sorted(list(xp_profile.items())[:20]))  # 只取 Top 20
-                profile_hash = hashlib.md5(profile_str.encode()).hexdigest()[:16]
+                from embedder import profile_embedding_hash
+                profile_hash = profile_embedding_hash(xp_profile)
                 
                 # 获取或更新用户 Embedding
                 cached = await db.get_user_embedding(user_id)
@@ -466,8 +483,8 @@ class ContentFilter:
         
         for illust in unique_result:
             if xp_profile:
-                breakdown = _build_match_breakdown(
-                    illust,
+                breakdown = _build_tag_match_breakdown(
+                    illust.tags,
                     xp_profile,
                     negative_profile,
                     tag_classifications=tag_classifications,
