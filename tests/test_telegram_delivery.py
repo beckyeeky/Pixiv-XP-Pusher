@@ -66,6 +66,29 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("当前待人工决定标签：*7* 个", query.edit_message_text.await_args.args[0])
 
+    async def test_tag_review_menu_lists_common_tags_alongside_gemini_actions(self):
+        notifier = TelegramNotifier.__new__(TelegramNotifier)
+        query = SimpleNamespace(edit_message_text=AsyncMock(), answer=AsyncMock())
+        sections = {
+            "feature": [("white_hair", 4.0), ("glasses", 2.0)],
+            "identity": [("blue_archive", 3.0)],
+        }
+
+        with patch(
+            "database.get_xp_profile_display_sections",
+            new=AsyncMock(return_value=sections),
+        ) as get_sections:
+            await notifier._handle_menu_callback(query, "menu:tag_review:common")
+
+        get_sections.assert_awaited_once()
+        text = query.edit_message_text.await_args.args[0]
+        self.assertIn("常用 Tag", text)
+        self.assertIn("white\\_hair", text)
+        self.assertIn("blue\\_archive", text)
+        labels = [button.text for row in query.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard for button in row]
+        self.assertIn("🤖 Gemini 批量判定全部", labels)
+        self.assertIn("⭐ 查看常用 Tag", labels)
+
     async def test_tag_review_menu_requires_candidate_preview_before_high_weight_classification(self):
         notifier = TelegramNotifier.__new__(TelegramNotifier)
         notifier._tag_review_batch_running = False
