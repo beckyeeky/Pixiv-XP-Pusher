@@ -855,6 +855,121 @@ def stage_tag_mapping_ai_recommendations_sync(decisions) -> int:
     return len(rows)
 
 
+def apply_tag_mapping_ai_batch_sync(decisions) -> dict:
+    """Atomically apply one explicitly human-confirmed safe AI batch."""
+
+    rows = _tag_mapping_ai_stage_rows(decisions)
+    result = {
+        "accepted_equivalent": 0,
+        "rejected": 0,
+        "aliases_created": 0,
+        "aliases_already_active": 0,
+        "duplicate_candidates_resolved": 0,
+    }
+    if not rows:
+        return result
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        db.row_factory = sqlite3.Row
+        db.execute("BEGIN IMMEDIATE")
+        aliases = {
+            row[0]: row[1] for row in db.execute(
+                "SELECT original_tag, normalized_tag FROM tag_aliases WHERE kind = 'equivalent'"
+            ).fetchall()
+        }
+        for candidate_id, recommendation_id, staged_decision in rows:
+            candidate = db.execute(
+                "SELECT * FROM tag_mapping_candidates WHERE id = ? AND status = 'pending'",
+                (candidate_id,),
+            ).fetchone()
+            recommendation = db.execute(
+                """
+                SELECT id FROM tag_mapping_ai_recommendations
+                WHERE id = ? AND candidate_id = ?
+                  AND id = (
+                      SELECT MAX(id) FROM tag_mapping_ai_recommendations
+                      WHERE candidate_id = ?
+                  )
+                """,
+                (recommendation_id, candidate_id, candidate_id),
+            ).fetchone()
+            if not candidate or not recommendation:
+                raise ValueError("AI Recommendation 已过期或候选已经审核")
+            db.execute(
+                """
+                UPDATE tag_mapping_ai_recommendations
+                SET staged_decision = ?, staged_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (staged_decision, recommendation_id),
+            )
+
+            original = normalize_tag(candidate["original_tag"])
+            target = normalize_tag(candidate["proposed_normalized_tag"] or "")
+            if staged_decision == "accept_equivalent":
+                if not original or not target or original == target:
+                    raise ValueError("该候选没有可接受的目标 Normalized Tag")
+                existing_target = aliases.get(original)
+                reverse_target = aliases.get(target)
+                if existing_target and existing_target != target:
+                    raise ValueError(f"{original} 已映射到另一个 Normalized Tag")
+                if existing_target == target or reverse_target == original:
+                    result["aliases_already_active"] += 1
+                else:
+                    if would_create_alias_cycle(aliases, original, target):
+                        raise ValueError("Tag Alias 不能形成循环")
+                    db.execute(
+                        """
+                        INSERT INTO tag_aliases (
+                            original_tag, normalized_tag, kind, source, priority, updated_at
+                        ) VALUES (?, ?, 'equivalent', 'manual', ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(original_tag) DO UPDATE SET
+                            normalized_tag = excluded.normalized_tag,
+                            kind = 'equivalent', source = 'manual',
+                            priority = excluded.priority, updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (original, target, int(candidate["occurrence_count"] or 1)),
+                    )
+                    aliases[original] = target
+                    result["aliases_created"] += 1
+                status = "accepted"
+                applied_kind = "equivalent"
+                result["accepted_equivalent"] += 1
+            else:
+                status = "rejected"
+                applied_kind = candidate["kind"]
+                result["rejected"] += 1
+
+            duplicate_ids = [
+                int(row[0]) for row in db.execute(
+                    """
+                    SELECT id FROM tag_mapping_candidates
+                    WHERE status = 'pending' AND id != ? AND (
+                        (original_tag = ? AND proposed_normalized_tag = ?)
+                        OR (original_tag = ? AND proposed_normalized_tag = ?)
+                    )
+                    """,
+                    (
+                        candidate_id,
+                        candidate["original_tag"], candidate["proposed_normalized_tag"],
+                        candidate["proposed_normalized_tag"], candidate["original_tag"],
+                    ),
+                ).fetchall()
+            ]
+            reviewed_ids = [candidate_id, *duplicate_ids]
+            placeholders = ", ".join("?" for _ in reviewed_ids)
+            db.execute(
+                f"""
+                UPDATE tag_mapping_candidates
+                SET status = ?, kind = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders})
+                """,
+                (status, applied_kind, *reviewed_ids),
+            )
+            result["duplicate_candidates_resolved"] += len(duplicate_ids)
+        db.commit()
+    return result
+
+
 async def stage_tag_mapping_ai_recommendations(decisions) -> int:
     """Shortlist current recommendations without reviewing candidates or creating aliases."""
 
@@ -901,6 +1016,9 @@ async def review_tag_mapping_candidate(candidate_id: int, decision: str, kind: s
             raise ValueError("Tag Alias 类型必须是 equivalent 或 search")
         original = normalize_tag(row["original_tag"])
         target = normalize_tag(row["proposed_normalized_tag"] or "")
+        alias_already_active = False
+        active_alias_original = None
+        active_normalized_tag = None
 
         if decision == "accept":
             if not original or not target or original == target:
@@ -911,23 +1029,32 @@ async def review_tag_mapping_candidate(candidate_id: int, decision: str, kind: s
                     "SELECT original_tag, normalized_tag FROM tag_aliases WHERE kind = 'equivalent'"
                 )
                 aliases = {item[0]: item[1] for item in await aliases_cursor.fetchall()}
-                if would_create_alias_cycle(aliases, original, target):
+                if aliases.get(original) == target:
+                    alias_already_active = True
+                    active_alias_original = original
+                    active_normalized_tag = target
+                elif aliases.get(target) == original:
+                    alias_already_active = True
+                    active_alias_original = target
+                    active_normalized_tag = original
+                elif would_create_alias_cycle(aliases, original, target):
                     await db.rollback()
                     raise ValueError("Tag Alias 不能形成循环")
-            await db.execute(
-                """
-                INSERT INTO tag_aliases (
-                    original_tag, normalized_tag, kind, source, priority, updated_at
-                ) VALUES (?, ?, ?, 'manual', ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(original_tag) DO UPDATE SET
-                    normalized_tag = excluded.normalized_tag,
-                    kind = excluded.kind,
-                    source = 'manual',
-                    priority = excluded.priority,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (original, target, applied_kind, int(row["occurrence_count"] or 1)),
-            )
+            if not alias_already_active:
+                await db.execute(
+                    """
+                    INSERT INTO tag_aliases (
+                        original_tag, normalized_tag, kind, source, priority, updated_at
+                    ) VALUES (?, ?, ?, 'manual', ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(original_tag) DO UPDATE SET
+                        normalized_tag = excluded.normalized_tag,
+                        kind = excluded.kind,
+                        source = 'manual',
+                        priority = excluded.priority,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (original, target, applied_kind, int(row["occurrence_count"] or 1)),
+                )
             new_status = "accepted"
         else:
             new_status = "rejected"
@@ -960,6 +1087,9 @@ async def review_tag_mapping_candidate(candidate_id: int, decision: str, kind: s
             "original_tag": original,
             "normalized_tag": target or None,
             "kind": applied_kind,
+            "alias_already_active": alias_already_active,
+            "active_alias_original": active_alias_original,
+            "active_normalized_tag": active_normalized_tag,
             "duplicate_candidates_resolved": len(duplicate_ids),
         }
 

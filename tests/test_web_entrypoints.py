@@ -1,5 +1,6 @@
 import re
 import asyncio
+import json
 import tempfile
 import unittest
 from inspect import signature
@@ -7,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import yaml
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
@@ -19,6 +21,7 @@ from web.app import (
     submit_tag_review,
 )
 from web.app_v2 import app as compat_app
+from tag_relationship_judge import MERGE_PRINCIPLES_VERSION, relationship_evidence_hash
 
 
 class WebEntrypointTests(unittest.TestCase):
@@ -216,6 +219,15 @@ class WebEntrypointTests(unittest.TestCase):
         self.assertIn('id="loadMoreAliases"', template)
         self.assertIn("activeAliasPageSize = 20", template)
 
+    def test_tags_page_contains_preview_first_ai_batch_controls(self):
+        template = (Path(web_app_module.TEMPLATES_DIR) / "tags.html").read_text(encoding="utf-8")
+        self.assertIn('id="previewAiMappingBatchButton"', template)
+        self.assertIn('id="aiMappingBatchPreview"', template)
+        self.assertIn("预览 AI 安全建议", template)
+        self.assertIn("确认批量应用", template)
+        self.assertIn("/api/tag-mapping-ai-batch-preview", template)
+        self.assertIn("/api/tag-mapping-ai-batch-apply", template)
+
     def test_authenticated_alias_api_returns_searchable_page_and_total(self):
         aliases = [{
             "original_tag": "原神", "normalized_tag": "genshin_impact",
@@ -269,6 +281,113 @@ class WebEntrypointTests(unittest.TestCase):
         self.assertEqual(decision_response.status_code, 200)
         get_candidates.assert_awaited_once_with(limit=100)
         review_candidate.assert_awaited_once_with(7, "accept", kind="equivalent")
+
+    def test_authenticated_ai_batch_preview_returns_only_safe_actions_and_confirmation_token(self):
+        checks = json.dumps({
+            "same_identity": True,
+            "broader_narrower": False,
+            "entity_franchise": False,
+            "modifier_variant": False,
+        })
+        equivalent = {
+            "id": 7, "original_tag": "白髪", "proposed_normalized_tag": "white_hair",
+            "source": "test", "explanation": "translation", "occurrence_count": 2,
+            "embedding_similarity": None, "original_classification": "feature",
+            "target_classification": "feature", "original_weight": 2.0,
+            "target_weight": 3.0, "ai_recommendation_id": 17,
+            "ai_relation": "equivalent", "ai_confidence": 0.98,
+            "ai_rationale": "same hair colour", "ai_canonical_tag": "white_hair",
+            "ai_risk_flags": "[]", "ai_principle_checks": checks,
+            "ai_principles_version": MERGE_PRINCIPLES_VERSION,
+        }
+        equivalent["ai_evidence_hash"] = relationship_evidence_hash(equivalent)
+        distinct = {
+            **equivalent, "id": 8, "original_tag": "clorinde",
+            "proposed_normalized_tag": "genshin_impact", "ai_recommendation_id": 18,
+            "ai_relation": "distinct", "ai_confidence": 0.99,
+            "ai_rationale": "character is not franchise", "ai_canonical_tag": None,
+        }
+        distinct["ai_evidence_hash"] = relationship_evidence_hash(distinct)
+        uncertain = {
+            **equivalent, "id": 9, "original_tag": "ambiguous",
+            "proposed_normalized_tag": "other", "ai_recommendation_id": 19,
+            "ai_relation": "uncertain", "ai_confidence": 0.99,
+        }
+        uncertain["ai_evidence_hash"] = relationship_evidence_hash(uncertain)
+
+        with patch.object(
+            web_app_module.db,
+            "get_tag_mapping_candidates_sync",
+            return_value=[equivalent, distinct, uncertain],
+        ):
+            payload = asyncio.run(web_app_module.preview_tag_mapping_ai_batch(
+                min_confidence=0.95, _=None,
+            ))
+
+        self.assertEqual(payload["summary"], {
+            "eligible": 2, "accept_equivalent": 1, "reject": 1,
+        })
+        self.assertEqual(
+            [(item["candidate_id"], item["decision"]) for item in payload["items"]],
+            [(7, "accept_equivalent"), (8, "reject")],
+        )
+        self.assertEqual(payload["blocked"], {"no_actionable_recommendation": 1})
+        self.assertGreater(len(payload["preview_token"]), 20)
+
+    def test_authenticated_ai_batch_apply_requires_matching_preview_token(self):
+        candidate = {
+            "id": 7, "original_tag": "白髪", "proposed_normalized_tag": "white_hair",
+            "source": "test", "explanation": "translation", "occurrence_count": 2,
+            "embedding_similarity": None, "original_classification": "feature",
+            "target_classification": "feature", "original_weight": 2.0,
+            "target_weight": 3.0, "ai_recommendation_id": 17,
+            "ai_relation": "equivalent", "ai_confidence": 0.98,
+            "ai_rationale": "same hair colour", "ai_canonical_tag": "white_hair",
+            "ai_risk_flags": "[]", "ai_principle_checks": json.dumps({
+                "same_identity": True, "broader_narrower": False,
+                "entity_franchise": False, "modifier_variant": False,
+            }),
+            "ai_principles_version": MERGE_PRINCIPLES_VERSION,
+        }
+        candidate["ai_evidence_hash"] = relationship_evidence_hash(candidate)
+        applied = {
+            "accepted_equivalent": 1, "rejected": 0, "aliases_created": 1,
+            "aliases_already_active": 0, "duplicate_candidates_resolved": 0,
+        }
+
+        with patch.object(
+            web_app_module.db,
+            "get_tag_mapping_candidates_sync",
+            return_value=[candidate],
+        ), patch.object(
+            web_app_module.db,
+            "apply_tag_mapping_ai_batch_sync",
+            return_value=applied,
+        ) as apply_batch:
+            preview = asyncio.run(web_app_module.preview_tag_mapping_ai_batch(
+                min_confidence=0.95, _=None,
+            ))
+            with self.assertRaises(HTTPException) as stale:
+                asyncio.run(web_app_module.apply_tag_mapping_ai_batch(
+                    web_app_module.TagMappingAiBatchApplyRequest(
+                        min_confidence=0.95,
+                        preview_token="stale-token-long-enough",
+                        confirm=True,
+                    ),
+                    _=None,
+                ))
+            confirmed = asyncio.run(web_app_module.apply_tag_mapping_ai_batch(
+                web_app_module.TagMappingAiBatchApplyRequest(
+                    min_confidence=0.95,
+                    preview_token=preview["preview_token"],
+                    confirm=True,
+                ),
+                _=None,
+            ))
+
+        self.assertEqual(stale.exception.status_code, 409)
+        self.assertEqual(confirmed, {"success": True, **applied})
+        apply_batch.assert_called_once()
 
     def test_authenticated_csv_review_flow_exports_and_applies_only_filled_rows(self):
         async def authenticated():
