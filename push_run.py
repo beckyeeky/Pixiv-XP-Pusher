@@ -15,6 +15,12 @@ from filter import ContentFilter
 from pixiv_client import PixivClient
 from profiler import XPProfiler
 from push_stats import PushStats
+from semantic_vector_explorer import (
+    SemanticVectorExplorer,
+    VectorExplorationBatch,
+    duplicate_semantic_rate,
+    slate_profile_concentration,
+)
 from tag_classifier import TagClassifier
 
 logger = logging.getLogger(__name__)
@@ -197,6 +203,30 @@ class PushRun:
                 xp_tags=top_tags,
                 total_limit=fetcher_cfg.get("discovery_limit", 200),
             )
+
+            embedder = self._build_embedder()
+            vector_batch = VectorExplorationBatch(None, [])
+            vector_cfg = fetcher_cfg.get("semantic_vector_exploration") or {}
+            daily_slate_enabled = bool(
+                (self.config.get("filter", {}).get("daily_slate") or {}).get("enabled", False)
+            )
+            if vector_cfg.get("enabled", False) and not daily_slate_enabled:
+                logger.warning("跳过 semantic vector Exploration：必须启用 filter.daily_slate")
+            elif embedder is not None and embedder.enabled and vector_cfg.get("enabled", False):
+                try:
+                    explorer = SemanticVectorExplorer(
+                        vector_cfg,
+                        model=embedder.model,
+                        detail_loader=self.client.get_illust_detail,
+                    )
+                    vector_batch = await explorer.retrieve(
+                        user_id=self.config.get("pixiv", {}).get("user_id", 0),
+                        profile=xp_profile,
+                        exclude_ids={illust.id for illust in all_illusts},
+                    )
+                    all_illusts.extend(vector_batch.candidates)
+                except Exception as exc:
+                    logger.warning("semantic vector Exploration 候选源失败，跳过本次: %s", exc)
             logger.info(f"共获取 {len(all_illusts)} 个候选作品")
 
             source_counts = Counter(getattr(ill, "source", "unknown") for ill in all_illusts)
@@ -212,7 +242,6 @@ class PushRun:
                 filter_cfg["min_create_days"] = 0
                 logger.info("📚 历史补充模式：min_create_days 临时设为 0")
 
-            embedder = self._build_embedder()
             ai_scorer = self._build_ai_scorer()
 
             content_filter = ContentFilter(
@@ -243,6 +272,31 @@ class PushRun:
             pixiv_uid = self.config.get("pixiv", {}).get("user_id", 0)
             filtered = await content_filter.filter(all_illusts, xp_profile=xp_profile, user_id=pixiv_uid)
             logger.info(f"过滤后 {len(filtered)} 个作品")
+
+            if vector_batch.run_id:
+                try:
+                    selected_embeddings = await db_module.get_illust_embeddings_batch(
+                        [illust.id for illust in filtered]
+                    )
+                    await db_module.complete_vector_exploration_run(
+                        vector_batch.run_id,
+                        ranked_ids=[
+                            illust.id
+                            for illust in getattr(content_filter, "_last_ranked_illusts", [])
+                        ],
+                        selected_ids={illust.id for illust in filtered},
+                        slate_profile_concentration=slate_profile_concentration(
+                            filtered,
+                            xp_profile,
+                            resolve_tag=content_filter.tag_resolver.resolve,
+                        ),
+                        duplicate_semantic_rate=duplicate_semantic_rate(
+                            list(selected_embeddings.values()),
+                            vector_batch.duplicate_similarity,
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning("记录 semantic vector Exploration 验收指标失败: %s", exc)
 
             self.stats.record_filter_end(len(filtered))
 

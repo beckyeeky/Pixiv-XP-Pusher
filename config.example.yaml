@@ -222,6 +222,16 @@ filter:
     engagement_artists: 1.2 # 互动画师 (新策略, 高加成)
 
 fetcher:
+  # 默认关闭、独立发布的 semantic vector Exploration 候选来源。
+  # 仅扫描同模型的现有作品向量缓存，并要求当前画像向量缓存仍有效；
+  # 相似度不会创建 Tag Alias，也不会修改 Normalized Tag。
+  semantic_vector_exploration:
+    enabled: false
+    pool_limit: 1000 # 单次最多在进程内比较多少条最近缓存向量
+    candidate_limit: 40 # 最多 hydrate 并送入统一 Filter 的候选数
+    min_similarity: 0.60
+    detail_concurrency: 5
+    duplicate_similarity: 0.90 # 评估重复语义率的 pairwise 阈值
   bookmark_threshold:
     search: 1000 # 搜索结果的最低收藏数要求
     subscription: 0

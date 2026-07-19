@@ -39,12 +39,30 @@ class DailySlateComposer:
 
         inherent = {illust.id: self._motive(illust) for illust in ranked}
         for motive in ("feature", "character", "copyright"):
-            add((illust for illust in ranked if inherent[illust.id] == motive), motive, quotas[motive])
+            add(
+                (
+                    illust for illust in ranked
+                    if not getattr(illust, "exploration_only", False)
+                    and inherent[illust.id] == motive
+                ),
+                motive,
+                quotas[motive],
+            )
 
         feature_shortfall = quotas["feature"] - sum(getattr(item, "recommendation_motive", None) == "feature" for item in selected)
         exploration_target = min(int(limit * 0.40), quotas["exploration"] + max(feature_shortfall, 0))
-        # Exploration intentionally draws outside ordinary top-ranked picks.
-        exploration_pool = [illust for illust in ranked[limit:] if inherent[illust.id] in {"feature", "exploration"}]
+        # Explicit Exploration retrieval candidates are eligible only for this
+        # lane. Ordinary candidates still need to sit outside the normal Top N.
+        vector_exploration = [
+            illust for illust in ranked
+            if getattr(illust, "exploration_only", False)
+        ]
+        ordinary_exploration = [
+            illust for illust in ranked[limit:]
+            if not getattr(illust, "exploration_only", False)
+            and inherent[illust.id] in {"feature", "exploration"}
+        ]
+        exploration_pool = vector_exploration + ordinary_exploration
         add(exploration_pool, "exploration", exploration_target)
 
         # Only after exploration reaches its policy ceiling may identity lanes fill remaining capacity.
@@ -53,11 +71,16 @@ class DailySlateComposer:
                 break
             if illust.id in used_ids or not self._within_caps(illust, classifications, profile, identity_counts):
                 continue
-            if inherent[illust.id] == "exploration" and sum(
+            final_motive = (
+                "exploration"
+                if getattr(illust, "exploration_only", False)
+                else inherent[illust.id]
+            )
+            if final_motive == "exploration" and sum(
                 getattr(item, "recommendation_motive", None) == "exploration" for item in selected
             ) >= int(limit * 0.40):
                 continue
-            illust.recommendation_motive = inherent[illust.id]
+            illust.recommendation_motive = final_motive
             selected.append(illust)
             used_ids.add(illust.id)
             identity_counts.update(self._identity_keys(illust, classifications, profile))
@@ -90,7 +113,9 @@ class DailySlateComposer:
             category = get_classification_category(classifications.get(normalized))
             if category in strongest:
                 weight = float(profile.get(normalized, profile.get(tag.lower(), 0.0)))
-                if weight > strongest[category][0]:
+                # Identity Caps apply even when Exploration introduces an
+                # identity absent from the current Preference Profile.
+                if strongest[category][1] is None or weight > strongest[category][0]:
                     strongest[category] = (weight, normalized)
         return [f"{category}:{tag}" for category, (_, tag) in strongest.items() if tag]
 
