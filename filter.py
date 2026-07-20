@@ -714,6 +714,10 @@ class ContentFilter:
         else:
             # 8. 每日上限
             final_result = diverse_result[:self.daily_limit]
+
+        # Candidate-source audit reads the same post-filter ranking that fed
+        # Daily Slate composition; this does not affect selection.
+        self._last_ranked_illusts = list(diverse_result)
         
         # 记录匹配度日志
         if xp_profile and scored_result:

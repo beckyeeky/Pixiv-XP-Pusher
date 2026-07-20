@@ -85,6 +85,16 @@ Telegram 的 `🏷️ 标签审核` 菜单提供同一流程：先点 `📋 查�
 ## fetcher
 - `search_limit`、`date_range_days`
 - `bookmark_threshold.search` / `subscription` / `related`
+- `semantic_vector_exploration`：默认关闭的独立 Exploration 候选来源，启用时要求 `filter.daily_slate.enabled=true`。它只读取与当前 Model 匹配的画像/作品 Embedding 缓存，在 `pool_limit` 内做进程内余弦相似度比较，再将最多 `candidate_limit` 个详情完整的作品送入统一 Filter。候选只能参与 Daily Slate 的 Exploration lane，仍受过滤规则与 Identity Cap 限制；相似度不会创建 Tag Alias 或修改 Normalized Tag。
+
+启用后，每次检索会在 schema v7 的 `exploration_vector_runs` 与 `exploration_vector_candidates` 中记录来源、相似度、Model、检索排名、最终排名和是否入选。只读验收报告：
+
+```bash
+python3 scripts/evaluate_vector_exploration.py
+python3 scripts/evaluate_vector_exploration.py --json
+```
+
+报告聚合入选候选的反馈覆盖/like rate、检索到最终排序的排名移动、运行时 Preference Profile 权重分布的 HHI 集中度，以及入选 Daily Slate 作品缓存向量的 pairwise 重复语义率；另附 Slate 对画像标签支持的 HHI 作为诊断项。不同配置或上线窗口应使用 `--since` / `--model` 分开比较，避免与 `semantic_weight` 校准混为同一次发布。
 
 ## notifier
 - `types`：可启用多个通知器

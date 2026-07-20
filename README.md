@@ -197,6 +197,15 @@ python3 scripts/calibrate_embedding_weight.py --json
 
 指标、样本门槛和隔离工作树运行方式见 [作品级 Embedding 权重校准](docs/embedding_weight_calibration.md)。
 
+独立评估 semantic vector Exploration 候选来源（只读）：
+
+```bash
+python3 scripts/evaluate_vector_exploration.py
+python3 scripts/evaluate_vector_exploration.py --json
+```
+
+该候选源默认关闭，配置、审计字段与四类验收指标见 [配置说明](docs/configuration.md#fetcher)。
+
 同步 Danbooru IP 标签：
 
 ```bash

@@ -94,7 +94,8 @@ class PushStats:
             'subscription': '订阅',
             'ranking': '排行榜',
             'related': '关联推荐',
-            'engagement_artists': '互动画师'
+            'engagement_artists': '互动画师',
+            'semantic_vector_exploration': '语义向量探索',
         }
         for source, count in sorted(self.fetch_counts.items(), key=lambda x: -x[1]):
             if count > 0:

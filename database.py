@@ -26,7 +26,7 @@ from utils import normalize_tag
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 TAG_EVIDENCE_FRESHNESS_DAYS = 60
 TAG_MAPPING_EVIDENCE_HASH_STATE = "tag_mapping_evidence_hash_semantic_v2"
 
@@ -308,6 +308,44 @@ def _init_db_sync():
                 profile_hash TEXT,  -- XP Profile 的哈希，用于判断是否需要更新
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            -- Semantic vector Exploration retrieval audit.  Similarity is
+            -- retrieval evidence only; these rows never activate Tag Aliases.
+            CREATE TABLE IF NOT EXISTS exploration_vector_runs (
+                run_id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                source TEXT NOT NULL DEFAULT 'semantic_vector_exploration',
+                model TEXT NOT NULL,
+                profile_hash TEXT NOT NULL,
+                pool_limit INTEGER NOT NULL,
+                pool_size INTEGER NOT NULL DEFAULT 0,
+                candidate_limit INTEGER NOT NULL,
+                similarity_threshold REAL NOT NULL,
+                duplicate_threshold REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'started',
+                profile_concentration REAL,
+                slate_profile_concentration REAL,
+                duplicate_semantic_rate REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS exploration_vector_candidates (
+                run_id TEXT NOT NULL,
+                illust_id INTEGER NOT NULL,
+                source TEXT NOT NULL DEFAULT 'semantic_vector_exploration',
+                similarity REAL NOT NULL,
+                model TEXT NOT NULL,
+                retrieval_rank INTEGER NOT NULL,
+                final_rank INTEGER,
+                selected INTEGER NOT NULL DEFAULT 0,
+                tags TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY (run_id, illust_id),
+                FOREIGN KEY (run_id) REFERENCES exploration_vector_runs(run_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_exploration_vector_candidates_illust
+                ON exploration_vector_candidates(illust_id);
         """)
         db.commit()
 
@@ -2673,6 +2711,163 @@ async def get_user_embedding(user_id: int) -> Optional[tuple[list[float], str]]:
         if row and row[0]:
             return (json.loads(row[0]), row[1])
         return None
+
+
+async def get_current_user_embedding(
+    user_id: int,
+    model: str,
+    profile_hash: str,
+) -> Optional[list[float]]:
+    """Return a model-compatible, current cached Preference Profile vector."""
+    with sqlite3.connect(DB_PATH) as db:
+        row = db.execute(
+            """
+            SELECT embedding
+            FROM user_embedding
+            WHERE user_id = ? AND model = ? AND profile_hash = ?
+            """,
+            (user_id, model, profile_hash),
+        ).fetchone()
+        if row and row[0]:
+            try:
+                return json.loads(row[0])
+            except (TypeError, json.JSONDecodeError):
+                logger.warning("忽略损坏的用户画像 Embedding 缓存: user_id=%s", user_id)
+        return None
+
+
+async def get_vector_exploration_pool(
+    model: str,
+    limit: int,
+    exclude_ids: Optional[set[int]] = None,
+) -> list[tuple[int, list[float]]]:
+    """Load a bounded recent cache slice; similarity is computed in-process."""
+    bounded_limit = max(0, min(int(limit), 10000))
+    if bounded_limit == 0:
+        return []
+    excluded = set(exclude_ids or ())
+    # Fetch a small bounded surplus so current-run duplicates do not consume
+    # the configured pool. Pushed works are never eligible for retrieval.
+    query_limit = min(10000, bounded_limit + len(excluded))
+    with sqlite3.connect(DB_PATH) as db:
+        rows = db.execute(
+            """
+            SELECT ie.illust_id, ie.embedding
+            FROM illust_embeddings AS ie
+            WHERE ie.model = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM push_history AS ph
+                  WHERE ph.illust_id = ie.illust_id
+              )
+            ORDER BY ie.created_at DESC, ie.illust_id DESC
+            LIMIT ?
+            """,
+            (model, query_limit),
+        ).fetchall()
+    result = []
+    for illust_id, raw_embedding in rows:
+        if illust_id in excluded or not raw_embedding:
+            continue
+        try:
+            result.append((illust_id, json.loads(raw_embedding)))
+        except (TypeError, json.JSONDecodeError):
+            logger.warning("忽略损坏的作品 Embedding 缓存: illust_id=%s", illust_id)
+        if len(result) >= bounded_limit:
+            break
+    return result
+
+
+async def start_vector_exploration_run(
+    *,
+    run_id: str,
+    user_id: int,
+    model: str,
+    profile_hash: str,
+    pool_limit: int,
+    pool_size: int,
+    candidate_limit: int,
+    similarity_threshold: float,
+    duplicate_threshold: float,
+    profile_concentration: float,
+) -> None:
+    with sqlite3.connect(DB_PATH) as db:
+        db.execute(
+            """
+            INSERT INTO exploration_vector_runs (
+                run_id, user_id, model, profile_hash, pool_limit, pool_size,
+                candidate_limit, similarity_threshold, duplicate_threshold,
+                profile_concentration
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id, user_id, model, profile_hash, pool_limit, pool_size,
+                candidate_limit, similarity_threshold, duplicate_threshold,
+                profile_concentration,
+            ),
+        )
+        db.commit()
+
+
+async def record_vector_exploration_candidates(
+    run_id: str,
+    candidates: list[dict],
+) -> None:
+    if not candidates:
+        return
+    with sqlite3.connect(DB_PATH) as db:
+        db.executemany(
+            """
+            INSERT INTO exploration_vector_candidates (
+                run_id, illust_id, source, similarity, model, retrieval_rank, tags
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    run_id,
+                    item["illust_id"],
+                    item["source"],
+                    item["similarity"],
+                    item["model"],
+                    item["retrieval_rank"],
+                    json.dumps(item.get("tags") or [], ensure_ascii=False),
+                )
+                for item in candidates
+            ],
+        )
+        db.commit()
+
+
+async def complete_vector_exploration_run(
+    run_id: str,
+    *,
+    ranked_ids: list[int],
+    selected_ids: set[int],
+    slate_profile_concentration: float,
+    duplicate_semantic_rate: float,
+) -> None:
+    final_ranks = {illust_id: rank for rank, illust_id in enumerate(ranked_ids, 1)}
+    with sqlite3.connect(DB_PATH) as db:
+        db.executemany(
+            """
+            UPDATE exploration_vector_candidates
+            SET final_rank = ?, selected = ?
+            WHERE run_id = ? AND illust_id = ?
+            """,
+            [
+                (final_ranks.get(illust_id), int(illust_id in selected_ids), run_id, illust_id)
+                for illust_id in final_ranks
+            ],
+        )
+        db.execute(
+            """
+            UPDATE exploration_vector_runs
+            SET status = 'completed', slate_profile_concentration = ?,
+                duplicate_semantic_rate = ?, completed_at = CURRENT_TIMESTAMP
+            WHERE run_id = ?
+            """,
+            (slate_profile_concentration, duplicate_semantic_rate, run_id),
+        )
+        db.commit()
 
 
 async def save_user_embedding(user_id: int, embedding: list[float], model: str, profile_hash: str):
