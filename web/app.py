@@ -20,7 +20,7 @@ from fastapi import FastAPI, Request, HTTPException, Depends, Form, Query, Respo
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import aiohttp
 
 import yaml
@@ -35,6 +35,7 @@ from proxy_utils import normalize_proxy_url
 from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
 from classification_maintenance import classify_and_activate_tag
 from tag_mapping import AITagMappingCandidateGenerator
+from tag_relationship_judge import plan_ai_recommendation_staging
 from utils import normalize_tag
 from web.settings_editor import (
     apply_settings_payload,
@@ -399,6 +400,59 @@ class TagMappingReviewRequest(BaseModel):
 
 class TagAliasDeleteRequest(BaseModel):
     original_tag: str
+
+
+class TagMappingAiBatchApplyRequest(BaseModel):
+    min_confidence: float = Field(default=0.95, ge=0.90, le=1.0)
+    preview_token: str = Field(min_length=20)
+    confirm: bool = False
+
+
+def _tag_mapping_ai_batch_preview(min_confidence: float) -> dict:
+    candidates = db.get_tag_mapping_candidates_sync(limit=500)
+    plan = plan_ai_recommendation_staging(
+        candidates, min_confidence=min_confidence,
+    )
+    by_id = {int(candidate["id"]): candidate for candidate in candidates}
+    items = []
+    token_rows = []
+    for decision in plan.decisions:
+        candidate = by_id[decision.candidate_id]
+        items.append({
+            "candidate_id": decision.candidate_id,
+            "recommendation_id": decision.recommendation_id,
+            "original_tag": candidate.get("original_tag"),
+            "proposed_normalized_tag": candidate.get("proposed_normalized_tag"),
+            "decision": decision.decision,
+            "confidence": float(candidate.get("ai_confidence") or 0.0),
+            "rationale": candidate.get("ai_rationale") or "",
+        })
+        token_rows.append([
+            decision.candidate_id,
+            decision.recommendation_id,
+            decision.decision,
+        ])
+    token_payload = {
+        "min_confidence": float(min_confidence),
+        "decisions": token_rows,
+    }
+    preview_token = hashlib.sha256(json.dumps(
+        token_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return {
+        "min_confidence": float(min_confidence),
+        "preview_token": preview_token,
+        "summary": {
+            "eligible": len(items),
+            "accept_equivalent": sum(
+                item["decision"] == "accept_equivalent" for item in items
+            ),
+            "reject": sum(item["decision"] == "reject" for item in items),
+        },
+        "blocked": plan.blocked,
+        "items": items,
+        "decisions": plan.decisions,
+    }
 
 
 TAG_REVIEW_CSV_MAX_BYTES = 2 * 1024 * 1024
@@ -827,10 +881,56 @@ async def api_tag_mapping_candidates(
     return {"items": await db.get_tag_mapping_candidates(limit=limit)}
 
 
+@app.get("/api/tag-mapping-ai-batch-preview")
+async def preview_tag_mapping_ai_batch(
+    min_confidence: float = Query(0.95, ge=0.90, le=1.0),
+    _=Depends(require_auth),
+):
+    """Preview the exact safe AI actions that one human may approve as a batch."""
+    preview = _tag_mapping_ai_batch_preview(min_confidence)
+    preview.pop("decisions", None)
+    return preview
+
+
+@app.post("/api/tag-mapping-ai-batch-apply")
+async def apply_tag_mapping_ai_batch(
+    req: TagMappingAiBatchApplyRequest,
+    _=Depends(require_auth),
+):
+    """Apply exactly the safe batch which the human just previewed and confirmed."""
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="必须明确确认批量应用")
+    preview = _tag_mapping_ai_batch_preview(req.min_confidence)
+    if not secrets.compare_digest(req.preview_token, preview["preview_token"]):
+        raise HTTPException(
+            status_code=409,
+            detail="候选或 AI Recommendation 已变化，请重新预览后确认",
+        )
+    try:
+        applied = db.apply_tag_mapping_ai_batch_sync(preview["decisions"])
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True, **applied}
+
+
 @app.get("/api/tag-aliases")
-async def api_tag_aliases(limit: int = Query(500, ge=1, le=2000), _=Depends(require_auth)):
-    """Return active human-reviewed aliases."""
-    return {"items": await db.list_tag_aliases(limit=limit)}
+async def api_tag_aliases(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    q: str = Query("", max_length=100),
+    _=Depends(require_auth),
+):
+    """Return one searchable page of active human-reviewed aliases."""
+    query = q.strip()
+    items = await db.list_tag_aliases(limit=limit, offset=offset, query=query)
+    total = await db.count_tag_aliases(query=query)
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "query": query,
+    }
 
 
 @app.delete("/api/tag-aliases")

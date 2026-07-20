@@ -363,10 +363,20 @@ class TelegramNotifier(BaseNotifier):
         """Build the tag-review menu without exposing Gemini credentials to Telegram."""
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 刷新待人工数", callback_data="menu:tag_review")],
+            [InlineKeyboardButton("⭐ 查看常用 Tag", callback_data="menu:tag_review:common")],
             [InlineKeyboardButton("📋 查看高权重候选", callback_data="menu:tag_review:high_weight")],
             [InlineKeyboardButton("🤖 Gemini 批量判定全部", callback_data="menu:tag_review:run")],
             [InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")],
         ])
+
+    @staticmethod
+    def _tag_review_overview_text(count: int, high_weight_count: int) -> str:
+        return (
+            "🏷️ *标签管理与审核*\n\n"
+            f"当前待人工决定标签：*{count}* 个\n"
+            f"高权重未分类候选：*{high_weight_count}* 个（最多 40 个，权重 ≥ 1.0）\n\n"
+            "可查看常用 Tag、预览高权重候选后确认 Gemini 分类，或批量判定当前待人工队列。"
+        )
 
     def _build_high_weight_tag_confirmation_menu(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
@@ -598,14 +608,25 @@ class TelegramNotifier(BaseNotifier):
                 high_weight_candidates = await db.get_high_weight_unclassified_profile_tags(
                     limit=40, min_profile_weight=1.0,
                 )
-                text = (
-                    "🏷️ *标签审核*\n\n"
-                    f"当前待人工决定标签：*{count}* 个\n"
-                    f"高权重未分类候选：*{len(high_weight_candidates)}* 个（最多 40 个，权重 ≥ 1.0）\n\n"
-                    "可查看高权重候选后确认分类；也可一键判定当前待人工队列。失败或无法确定的标签会保留在队列中。"
-                )
+                text = self._tag_review_overview_text(count, len(high_weight_candidates))
                 await query.edit_message_text(
                     text, reply_markup=self._build_tag_review_menu(), parse_mode="Markdown"
+                )
+            elif sub_action == "common":
+                sections = await db.get_xp_profile_display_sections()
+                lines = format_xp_profile_lines(
+                    sections["feature"], "⭐ *常用 Tag · 特征 Top 15*", markdown=True,
+                )
+                if sections["identity"]:
+                    lines.extend([""] + format_xp_profile_lines(
+                        sections["identity"], "🧩 *常用 Tag · 角色 / 作品 Top 5*", markdown=True,
+                    ))
+                if not lines:
+                    lines = ["⭐ 暂无已分类的常用 Tag，请先完成标签分类。"]
+                await query.edit_message_text(
+                    "\n".join(lines),
+                    reply_markup=self._build_tag_review_menu(),
+                    parse_mode="Markdown",
                 )
             elif sub_action == "high_weight":
                 chat_id = getattr(getattr(query, "message", None), "chat_id", 0)
@@ -3249,11 +3270,35 @@ class TelegramNotifier(BaseNotifier):
                 "`/block_artist <id>` - 🚫 屏蔽画师\n"
                 "`/unblock_artist <id>` - ✅ 取消屏蔽画师\n"
                 "`/batch` - 📦 批量模式设置\n"
+                "`/tags` - 🏷️ 标签管理与审核\n"
                 "`/rich` - ✨ Rich Message 设置\n"
                 "`/help` - ℹ️ 显示此帮助\n\n"
                 "*💡 推荐使用 /menu 菜单操作*"
             )
             await update.message.reply_text(help_text, parse_mode="Markdown")
+
+        # /tags 指令 - 统一的常用 Tag 与 Gemini 审核菜单
+        async def cmd_tags(update, context):
+            user_id = update.message.from_user.id
+            if self.allowed_users and user_id not in self.allowed_users:
+                await update.message.reply_text(f"❌ 无权限 (ID: `{user_id}`)", parse_mode="Markdown")
+                return
+            chat_id = update.message.chat_id
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+            except Exception as exc:
+                logger.debug(f"删除 /tags 命令失败: {exc}")
+
+            from database import get_high_weight_unclassified_profile_tags, get_tag_review_count
+            count = await get_tag_review_count()
+            high_weight_candidates = await get_high_weight_unclassified_profile_tags(
+                limit=40, min_profile_weight=1.0,
+            )
+            await update.message.reply_text(
+                self._tag_review_overview_text(count, len(high_weight_candidates)),
+                reply_markup=self._build_tag_review_menu(),
+                parse_mode="Markdown",
+            )
 
         # /menu 和 /start 指令 - 打开控制面板
         async def cmd_menu(update, context):
@@ -3664,6 +3709,7 @@ class TelegramNotifier(BaseNotifier):
         self._app.add_handler(CommandHandler("batch", cmd_batch))
         self._app.add_handler(CommandHandler("rich", cmd_rich))
         self._app.add_handler(CommandHandler("search", cmd_search))
+        self._app.add_handler(CommandHandler("tags", cmd_tags))
         self._app.add_handler(CommandHandler("menu", cmd_menu))
         self._app.add_handler(CommandHandler("start", cmd_menu))  # /start 也打开菜单
         self._app.add_handler(CommandHandler("help", cmd_help))
@@ -3698,6 +3744,7 @@ class TelegramNotifier(BaseNotifier):
                 BotCommand("unmute", "🔔 取消静音"),
                 BotCommand("block_artist", "🎨 屏蔽画师"),
                 BotCommand("batch", "📦 批量模式"),
+                BotCommand("tags", "🏷️ 标签管理与审核"),
                 BotCommand("rich", "✨ Rich Message"),
                 BotCommand("restart", "🔄 重启服务"),
                 BotCommand("help", "ℹ️ 帮助信息"),

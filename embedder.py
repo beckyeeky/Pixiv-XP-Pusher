@@ -10,12 +10,23 @@ AI Embedding 模块
 """
 import logging
 import asyncio
+import hashlib
 import json
 import numpy as np
 from typing import Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+def profile_embedding_hash(xp_profile: dict[str, float]) -> str:
+    """Return the stable cache identity for the profile text sent to Embedding."""
+
+    top_items = sorted(
+        ((str(tag), float(weight)) for tag, weight in xp_profile.items()),
+        key=lambda item: (-item[1], item[0]),
+    )[:20]
+    return hashlib.md5(repr(top_items).encode("utf-8")).hexdigest()[:16]
 
 # 尝试导入 OpenAI 客户端
 try:

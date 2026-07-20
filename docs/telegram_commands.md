@@ -13,7 +13,8 @@
 - `/mute`, `/unmute`：标签静音
 - `/block_artist`, `/unblock_artist`：画师屏蔽
 - `/batch`：批量模式设置
-- `/menu` → `🏷️ 标签审核`：查看待人工决定标签数与高权重未分类候选；可先查看候选、再确认后用 Gemini 搜索分类，也可一键判定当前待人工队列
+- `/tags`：打开 `🏷️ 标签管理与审核`；查看常用 Tag（Preference Profile 的已分类 Top Tag）、待人工决定数与高权重未分类候选，并可预览后确认 Gemini 分类或批量判定当前待人工队列
+- `/menu` → `🏷️ 标签审核`：与 `/tags` 打开同一标签管理与审核菜单
 - `/rich`：Rich Message 模式设置（inline 按钮，或 `on` / `off` / `fallback on|off` / `mode photo|rich_card|hybrid` / `test`）
 - `/help`：帮助
 - `/restart`：通过 systemd 同时重启 `pixiv-pusher.service` 与 `pixiv-web.service`（需部署环境支持）
