@@ -942,6 +942,13 @@ async def delete_tag_alias(req: TagAliasDeleteRequest, _=Depends(require_auth)):
     return {"success": True, "original_tag": req.original_tag}
 
 
+@app.post("/api/tag-mapping-candidates/reject-legacy-filtered")
+async def reject_legacy_filtered_tag_mapping_candidates(_=Depends(require_auth)):
+    """Reject only legacy filter rows with no possible alias target."""
+    rejected = await db.reject_legacy_filtered_tag_mapping_candidates()
+    return {"success": True, "rejected": rejected}
+
+
 @app.post("/api/tag-mapping-candidates/{candidate_id:int}")
 async def review_tag_mapping_candidate(
     candidate_id: int,

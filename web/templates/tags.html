@@ -337,6 +337,7 @@
             <p class="review-meta">旧自动映射与 LLM 建议都只作为候选；只有人工接受的 Tag Alias 才会影响画像和搜索。</p>
         </div>
         <div class="review-actions">
+            <button type="button" onclick="rejectLegacyFilteredCandidates()">拒绝旧系统无目标候选</button>
             <button id="previewAiMappingBatchButton" type="button" onclick="previewAiMappingBatch()">预览 AI 安全建议</button>
             <button type="button" onclick="generateMappingCandidates()">生成新候选</button>
             <button type="button" onclick="loadMappingCandidates()">刷新</button>
@@ -714,6 +715,25 @@ async function reviewMappingCandidate(id, decision, kind = null) {
         if (!document.querySelector('#mappingQueue .review-item')) renderMappingCandidates([]);
     } catch (error) {
         feedback.textContent = `无法保存映射审核：${error.message}`;
+    }
+}
+
+async function rejectLegacyFilteredCandidates() {
+    const feedback = document.getElementById('mappingFeedback');
+    if (!confirm('仅拒绝旧系统曾标记为“建议过滤”、且没有映射目标的候选；不会过滤作品、不会创建 Tag Alias。继续吗？')) return;
+    feedback.textContent = '正在关闭旧系统无目标候选…';
+    try {
+        const response = await fetch('/api/tag-mapping-candidates/reject-legacy-filtered', {
+            method: 'POST',
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || '批量拒绝失败');
+        await loadMappingCandidates();
+        feedback.textContent = payload.rejected
+            ? `已拒绝 ${payload.rejected} 条旧系统无目标候选；不会影响运行时过滤或画像。`
+            : '没有待处理的旧系统无目标候选。';
+    } catch (error) {
+        feedback.textContent = `无法批量拒绝旧系统候选：${error.message}`;
     }
 }
 
