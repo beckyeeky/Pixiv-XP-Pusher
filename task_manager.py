@@ -253,7 +253,8 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                 logger.error(f"API 回退获取失败: {e}")
         
         if not illust:
-            logger.error(f"无法获取作品信息: {illust_id}，反馈处理中止")
+            # 已删除、私密或受限作品属于单条反馈的正常终止，不应触发服务巡检告警。
+            logger.warning(f"无法获取作品信息: {illust_id}，反馈处理中止")
             return
 
         # 3. 执行核心反馈逻辑

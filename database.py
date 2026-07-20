@@ -1156,6 +1156,27 @@ async def review_tag_mapping_candidate(candidate_id: int, decision: str, kind: s
         }
 
 
+async def reject_legacy_filtered_tag_mapping_candidates() -> int:
+    """Close legacy ``meaningless`` rows that have no mapping target.
+
+    These rows came from the retired AITagProcessor's filter decision.  They
+    cannot be accepted as an alias, and rejecting them preserves the imported
+    audit record without giving the old automatic decision any runtime effect.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            UPDATE tag_mapping_candidates
+            SET status = 'rejected', updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'pending'
+              AND source = 'legacy_ai_tag_cache'
+              AND (proposed_normalized_tag IS NULL OR TRIM(proposed_normalized_tag) = '')
+            """
+        )
+        await db.commit()
+        return cursor.rowcount
+
+
 async def get_tag_mapping_candidate_inputs(limit: int = 100) -> list[str]:
     """Select impactful tags which have neither an alias nor a pending proposal."""
     async with aiosqlite.connect(DB_PATH) as db:

@@ -368,6 +368,49 @@ class DatabaseInitTests(unittest.TestCase):
         self.assertEqual(after, {"ブルアカ": "blue_archive"})
         self.assertEqual(search_term, "ブルアカ")
 
+    def test_reject_legacy_filtered_candidates_closes_only_targetless_legacy_rows(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                conn = sqlite3.connect(db_path)
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO tag_mapping_candidates (
+                            original_tag, proposed_normalized_tag, source, status
+                        ) VALUES (?, ?, ?, 'pending')
+                        """,
+                        [
+                            ("legacy_noise", None, "legacy_ai_tag_cache"),
+                            ("legacy_target", "usable_target", "legacy_ai_tag_cache"),
+                            ("new_noise", None, "ai_candidate"),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                rejected = await database.reject_legacy_filtered_tag_mapping_candidates()
+                conn = sqlite3.connect(db_path)
+                try:
+                    rows = conn.execute(
+                        "SELECT original_tag, status FROM tag_mapping_candidates ORDER BY id"
+                    ).fetchall()
+                    aliases = conn.execute("SELECT COUNT(*) FROM tag_aliases").fetchone()[0]
+                finally:
+                    conn.close()
+                return rejected, rows, aliases
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rejected, rows, aliases = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
+
+        self.assertEqual(rejected, 1)
+        self.assertEqual(rows, [
+            ("legacy_noise", "rejected"),
+            ("legacy_target", "pending"),
+            ("new_noise", "pending"),
+        ])
+        self.assertEqual(aliases, 0)
+
     def test_accepting_reverse_candidate_closes_it_when_alias_is_already_active(self):
         async def _run(db_path):
             with patch.object(database, "DB_PATH", db_path):

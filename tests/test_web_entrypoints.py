@@ -282,6 +282,28 @@ class WebEntrypointTests(unittest.TestCase):
         get_candidates.assert_awaited_once_with(limit=100)
         review_candidate.assert_awaited_once_with(7, "accept", kind="equivalent")
 
+    def test_authenticated_legacy_filter_batch_rejects_only_the_quarantined_rows(self):
+        async def authenticated():
+            return None
+
+        canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
+        try:
+            with patch.object(
+                web_app_module.db,
+                "reject_legacy_filtered_tag_mapping_candidates",
+                new=AsyncMock(return_value=4),
+            ) as reject_legacy:
+                with TestClient(canonical_app) as client:
+                    response = client.post(
+                        "/api/tag-mapping-candidates/reject-legacy-filtered",
+                    )
+        finally:
+            canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"success": True, "rejected": 4})
+        reject_legacy.assert_awaited_once()
+
     def test_authenticated_ai_batch_preview_returns_only_safe_actions_and_confirmation_token(self):
         checks = json.dumps({
             "same_identity": True,
