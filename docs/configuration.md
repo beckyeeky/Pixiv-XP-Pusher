@@ -74,6 +74,8 @@ python scripts/maintain_high_weight_tags.py --apply --reviewed-tags /tmp/reviewe
 
 Telegram 的 `🏷️ 标签审核` 菜单提供同一流程：先点 `📋 查看高权重候选`，确认列表后才会出现并执行分类按钮。候选快照会在确认前重新校验，避免分类已不再符合当前条件的 Tag。
 
+作品级 `semantic_weight` 不应凭感觉调整。运行 `python3 scripts/calibrate_embedding_weight.py` 可用历史 like/dislike 和当前缓存向量生成只读离线对照；样本不足时不会给出建议，也不会自动修改配置。指标与解释见 [作品级 Embedding 权重校准](./embedding_weight_calibration.md)。
+
 启用后会影响三处行为：
 - 匹配度计算里 `feature` 标签按 `1.3x` 加权，`ip` 标签不额外加成
 - 推送消息中的 `display_tags` 按 feature-first 排序

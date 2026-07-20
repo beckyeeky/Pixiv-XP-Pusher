@@ -65,6 +65,28 @@ class AiRecommendationStagingPlan:
     blocked: dict[str, int]
 
 
+class RelationshipJudgeResponseError(ValueError):
+    """A malformed or invalid remote Judge response with safe diagnostics."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        response_excerpt: str | None,
+        finish_reason: str | None,
+    ) -> None:
+        super().__init__(message)
+        self.response_excerpt = response_excerpt
+        self.finish_reason = finish_reason
+
+
+def _response_excerpt(content, limit: int = 600) -> str | None:
+    text = " ".join(str(content or "").split())
+    if not text:
+        return None
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
 def relationship_evidence(candidate: Mapping) -> dict:
     """Return the complete auditable evidence sent for one candidate review."""
 
@@ -99,8 +121,15 @@ def relationship_evidence(candidate: Mapping) -> dict:
 
 
 def hash_relationship_evidence(evidence: Mapping) -> str:
+    """Hash stable semantic evidence, excluding volatile ranking weights."""
+
+    stable_evidence = json.loads(json.dumps(evidence, ensure_ascii=False))
+    for tag_key in ("tag_a", "tag_b"):
+        tag_evidence = stable_evidence.get(tag_key)
+        if isinstance(tag_evidence, dict):
+            tag_evidence.pop("profile_weight", None)
     encoded = json.dumps(
-        evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        stable_evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -111,6 +140,8 @@ def relationship_evidence_hash(candidate: Mapping) -> str:
 
 def build_relationship_prompt(candidate: Mapping) -> str:
     evidence = json.dumps(relationship_evidence(candidate), ensure_ascii=False, indent=2)
+    tag_a = json.dumps(str(candidate.get("original_tag") or ""), ensure_ascii=False)
+    tag_b = json.dumps(str(candidate.get("proposed_normalized_tag") or ""), ensure_ascii=False)
     return f"""Review one existing Pixiv Tag Mapping Candidate.
 Merge principles version: {MERGE_PRINCIPLES_VERSION}
 
@@ -131,7 +162,7 @@ Return one JSON object only with exactly these fields:
 - relation: equivalent, related, distinct, or uncertain
 - confidence: number from 0 to 1
 - rationale: concise evidence-based explanation
-- canonical_tag: tag_a.tag or tag_b.tag when equivalent, otherwise null
+- canonical_tag: when relation is equivalent, exactly one literal tag value from this pair: {tag_a} or {tag_b}; otherwise null. Never return the literal strings "tag_a.tag" or "tag_b.tag".
 - risk_flags: zero or more of category_conflict, broader_narrower, entity_franchise, modifier_variant, ambiguous_identity, insufficient_evidence, other
 - principle_checks: object with boolean same_identity, broader_narrower, entity_franchise, modifier_variant
 """
@@ -280,6 +311,73 @@ def plan_ai_recommendation_staging(
     return AiRecommendationStagingPlan(tuple(decisions), dict(blocked))
 
 
+def plan_high_confidence_ai_actions(
+    candidates: Sequence[Mapping],
+    *,
+    min_confidence: float,
+) -> AiRecommendationStagingPlan:
+    """Plan explicit trust-mode actions for current high-confidence AI advice."""
+
+    threshold = float(min_confidence)
+    if not MIN_AI_BATCH_CONFIDENCE <= threshold <= 1.0:
+        raise ValueError(
+            f"AI batch confidence must be at least {MIN_AI_BATCH_CONFIDENCE:.2f} and at most 1.00"
+        )
+    decisions: list[HumanReviewDraft] = []
+    blocked: Counter[str] = Counter()
+    for candidate in candidates:
+        relation = str(candidate.get("ai_relation") or "")
+        confidence = float(candidate.get("ai_confidence") or 0.0)
+        if confidence < threshold:
+            blocked["below_confidence"] += 1
+            continue
+        if relation not in {"equivalent", "related", "distinct"}:
+            blocked["no_actionable_recommendation"] += 1
+            continue
+        if candidate.get("ai_principles_version") != MERGE_PRINCIPLES_VERSION:
+            blocked["stale_principles"] += 1
+            continue
+        if candidate.get("ai_evidence_hash") != relationship_evidence_hash(candidate):
+            blocked["stale_evidence"] += 1
+            continue
+        recommendation_id = int(candidate.get("ai_recommendation_id") or 0)
+        if not recommendation_id:
+            blocked["missing_recommendation"] += 1
+            continue
+        if relation in {"related", "distinct"}:
+            decisions.append(HumanReviewDraft(
+                int(candidate["id"]), recommendation_id, "reject",
+            ))
+            continue
+        if candidate.get("original_tag") == candidate.get("proposed_normalized_tag"):
+            blocked["self_mapping"] += 1
+            continue
+        flags = _json_value(candidate, "ai_risk_flags", ["other"])
+        if flags:
+            blocked["risk_flags"] += 1
+            continue
+        checks = _json_value(candidate, "ai_principle_checks", {})
+        if (
+            not isinstance(checks, Mapping)
+            or set(checks) != PRINCIPLE_CHECK_NAMES
+            or checks.get("same_identity") is not True
+            or any(checks.get(name) is not False for name in (
+                "broader_narrower", "entity_franchise", "modifier_variant",
+            ))
+        ):
+            blocked["principle_checks"] += 1
+            continue
+        if candidate.get("ai_canonical_tag") not in {
+            candidate.get("original_tag"), candidate.get("proposed_normalized_tag"),
+        }:
+            blocked["canonical_not_in_pair"] += 1
+            continue
+        decisions.append(HumanReviewDraft(
+            int(candidate["id"]), recommendation_id, "accept_equivalent",
+        ))
+    return AiRecommendationStagingPlan(tuple(decisions), dict(blocked))
+
+
 def _extract_json_object(content: str) -> dict:
     content = str(content or "").strip()
     if content.startswith("```"):
@@ -309,6 +407,7 @@ class OpenAICompatibleRelationshipJudge:
         self.identity = f"{config.get('provider_name') or provider}:{self.model}"
         self.temperature = float(config.get("review_temperature", 0.0))
         self.max_output_tokens = max(128, int(config.get("review_max_output_tokens", 1024)))
+        self.timeout_seconds = max(5.0, float(config.get("review_timeout_seconds", 60)))
         if client is not None:
             self.client = client
         else:
@@ -320,6 +419,7 @@ class OpenAICompatibleRelationshipJudge:
             self.client = AsyncOpenAI(
                 api_key=api_key,
                 base_url=str(config.get("base_url") or "").strip() or None,
+                timeout=self.timeout_seconds,
             )
 
     async def judge(self, candidate: Mapping) -> AiRelationshipRecommendation:
@@ -331,6 +431,16 @@ class OpenAICompatibleRelationshipJudge:
             ],
             temperature=self.temperature,
             max_tokens=self.max_output_tokens,
+            response_format={"type": "json_object"},
         )
-        raw = _extract_json_object(response.choices[0].message.content)
-        return validate_relationship_recommendation(raw, candidate)
+        choice = response.choices[0]
+        content = choice.message.content
+        try:
+            raw = _extract_json_object(content)
+            return validate_relationship_recommendation(raw, candidate)
+        except ValueError as exc:
+            raise RelationshipJudgeResponseError(
+                str(exc),
+                response_excerpt=_response_excerpt(content),
+                finish_reason=getattr(choice, "finish_reason", None),
+            ) from exc

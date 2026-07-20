@@ -226,6 +226,15 @@
     .review-actions button:hover { border-color: var(--accent); }
     .review-actions button:disabled { cursor: wait; opacity: 0.6; }
     .review-feedback { min-height: 1.3rem; margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.85rem; }
+    .ai-batch-preview { margin: 0.7rem 0 1rem; padding: 0.9rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-secondary); }
+    .ai-batch-preview h3 { margin: 0 0 0.4rem; font-size: 0.95rem; }
+    .ai-batch-preview ul { margin: 0.55rem 0; padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.84rem; }
+    .alias-toolbar { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.75rem; }
+    .alias-toolbar input { flex: 1 1 240px; min-width: 0; border: 1px solid var(--border); border-radius: 6px; padding: 0.48rem 0.65rem; background: var(--bg-primary); color: var(--text-primary); }
+    .alias-toolbar button, .alias-footer button { border: 1px solid var(--border); border-radius: 5px; padding: 0.4rem 0.65rem; background: var(--bg-primary); color: var(--text-primary); cursor: pointer; }
+    .alias-toolbar button:hover, .alias-footer button:hover { border-color: var(--accent); }
+    .alias-count { color: var(--text-secondary); font-size: 0.82rem; white-space: nowrap; }
+    .alias-footer { display: flex; justify-content: center; margin-top: 0.75rem; }
     .review-csv-tools { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin: 0.8rem 0; }
     .review-csv-tools input[type="file"] { max-width: 260px; color: var(--text-secondary); }
     .review-csv-hint { color: var(--text-secondary); font-size: 0.82rem; margin-bottom: 0.8rem; }
@@ -328,13 +337,29 @@
             <p class="review-meta">旧自动映射与 LLM 建议都只作为候选；只有人工接受的 Tag Alias 才会影响画像和搜索。</p>
         </div>
         <div class="review-actions">
+            <button id="previewAiMappingBatchButton" type="button" onclick="previewAiMappingBatch()">预览 AI 安全建议</button>
             <button type="button" onclick="generateMappingCandidates()">生成新候选</button>
             <button type="button" onclick="loadMappingCandidates()">刷新</button>
         </div>
     </div>
     <div id="mappingFeedback" class="review-feedback" role="status" aria-live="polite"></div>
-    <div class="section-header"><span class="section-title">已生效 Tag Alias</span></div>
+    <div id="aiMappingBatchPreview" class="ai-batch-preview" hidden>
+        <h3>批量处理预览</h3>
+        <div id="aiMappingBatchSummary" class="review-meta"></div>
+        <ul id="aiMappingBatchItems"></ul>
+        <div id="aiMappingBatchBlockers" class="review-meta"></div>
+        <div class="review-actions" style="margin-top: 0.7rem;">
+            <button id="applyAiMappingBatchButton" type="button" onclick="applyAiMappingBatch()">确认批量应用</button>
+            <button type="button" onclick="cancelAiMappingBatchPreview()">取消</button>
+        </div>
+    </div>
+    <div class="section-header"><span class="section-title">已生效 Tag Alias</span><span id="activeAliasCount" class="alias-count">正在统计…</span></div>
+    <div class="alias-toolbar" role="search">
+        <input id="activeAliasSearch" type="search" placeholder="搜索原始标签或 Normalized Tag" autocomplete="off" oninput="scheduleActiveAliasSearch()">
+        <button id="clearAliasSearch" type="button" onclick="clearActiveAliasSearch()" hidden>清除</button>
+    </div>
     <div id="activeTagAliases" class="tag-list"><span class="empty-state">正在加载已生效别名…</span></div>
+    <div class="alias-footer"><button id="loadMoreAliases" type="button" onclick="loadActiveTagAliases({reset: false})" hidden>加载更多</button></div>
     <div class="section-header" style="margin-top: 1rem;"><span class="section-title">待审核候选</span></div>
     <div id="mappingQueue" class="review-queue" aria-live="polite">正在加载映射候选…</div>
 </div>
@@ -353,6 +378,8 @@ document.addEventListener('DOMContentLoaded', () => {
 const tagCategoryLabels = {
     feature: '特征', character: '角色', copyright: '作品', artist: '作者', non_preference: '非偏好'
 };
+
+let aiMappingBatchPreviewState = null;
 
 function escapeHtml(value) {
     const element = document.createElement('div');
@@ -563,8 +590,10 @@ function renderMappingCandidates(items) {
         const aiRecommendation = item.ai_relation
             ? `<div class="review-meta"><strong>AI Recommendation${item.ai_is_current ? '' : '（证据或原则已变化，请重新复核）'}：</strong>${escapeHtml(item.ai_relation)} · 置信度 ${escapeHtml(Number(item.ai_confidence || 0).toLocaleString(undefined, {style: 'percent', maximumFractionDigits: 1}))}${item.ai_staged_decision && item.ai_is_current ? ` · 已预选 ${escapeHtml(item.ai_staged_decision)}` : ''}<br>${escapeHtml(item.ai_rationale || '')}${item.ai_canonical_tag ? `<br>建议 canonical：${escapeHtml(item.ai_canonical_tag)}` : ''}<br>风险：${escapeHtml(aiRisks)}<br>原则检查：${escapeHtml(aiChecks)}<br>模型：${escapeHtml(item.ai_model || '')} · 原则：${escapeHtml(item.ai_principles_version || '')}</div>`
             : '<div class="review-meta">尚无 AI Relationship Recommendation；可先运行 CLI 小批量复核。</div>';
+        const duplicates = Number(item.duplicate_count || 1);
+        const duplicateMeta = duplicates > 1 ? ` · 已合并 ${duplicates} 条重复候选（#${escapeHtml((item.duplicate_candidate_ids || []).join(', #'))}）` : '';
         return `<article class="review-item" data-mapping-id="${item.id}">
-            <div class="review-item-header"><div><div class="review-tag">${escapeHtml(item.original_tag)} → ${escapeHtml(target)}</div><div class="review-meta">来源：${escapeHtml(item.source)} · 建议类型：${escapeHtml(item.kind)} · 影响权重：${escapeHtml(item.profile_weight)} · Embedding 相似度：${item.embedding_similarity == null ? '无' : escapeHtml(Number(item.embedding_similarity).toFixed(4))} · 历史次数：${escapeHtml(item.occurrence_count)}</div></div></div>
+            <div class="review-item-header"><div><div class="review-tag">#${escapeHtml(item.id)} · ${escapeHtml(item.original_tag)} → ${escapeHtml(target)}</div><div class="review-meta">来源：${escapeHtml(item.source)} · 建议类型：${escapeHtml(item.kind)} · 影响权重：${escapeHtml(item.profile_weight)} · Embedding 相似度：${item.embedding_similarity == null ? '无' : escapeHtml(Number(item.embedding_similarity).toFixed(4))} · 历史次数：${escapeHtml(item.occurrence_count)}${duplicateMeta}</div></div></div>
             <p class="review-meta">${escapeHtml(item.explanation || '没有说明')}</p>
             ${aiRecommendation}
             <div class="review-actions">${acceptActions}<button type="button" onclick="reviewMappingCandidate(${item.id}, 'reject')">拒绝</button></div>
@@ -588,23 +617,58 @@ async function loadMappingCandidates() {
     }
 }
 
-async function loadActiveTagAliases() {
+const activeAliasPageSize = 20;
+let activeAliasOffset = 0;
+let activeAliasSearchTimer = null;
+
+function scheduleActiveAliasSearch() {
+    clearTimeout(activeAliasSearchTimer);
+    activeAliasSearchTimer = setTimeout(() => loadActiveTagAliases({reset: true}), 250);
+}
+
+function clearActiveAliasSearch() {
+    document.getElementById('activeAliasSearch').value = '';
+    loadActiveTagAliases({reset: true});
+}
+
+function renderActiveAlias(item) {
+    const encoded = encodeURIComponent(item.original_tag).replace(/'/g, '%27');
+    return `<button type="button" class="tag-chip" title="点击撤销" onclick="deleteTagAlias(decodeURIComponent('${encoded}'))">${escapeHtml(item.original_tag)} → ${escapeHtml(item.normalized_tag)} (${escapeHtml(item.kind)}) <span class="remove-icon">✕</span></button>`;
+}
+
+async function loadActiveTagAliases({reset = true} = {}) {
     const container = document.getElementById('activeTagAliases');
+    const count = document.getElementById('activeAliasCount');
+    const loadMore = document.getElementById('loadMoreAliases');
+    const searchInput = document.getElementById('activeAliasSearch');
+    const clearSearch = document.getElementById('clearAliasSearch');
+    const query = searchInput.value.trim();
+    const offset = reset ? 0 : activeAliasOffset;
+    clearSearch.hidden = !query;
+    loadMore.disabled = true;
+    if (reset) container.innerHTML = '<span class="empty-state">正在加载已生效别名…</span>';
     try {
-        const response = await fetch('/api/tag-aliases');
+        const params = new URLSearchParams({limit: activeAliasPageSize, offset});
+        if (query) params.set('q', query);
+        const response = await fetch(`/api/tag-aliases?${params}`);
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || '无法读取已生效别名');
         const items = payload.items || [];
-        if (!items.length) {
-            container.innerHTML = '<span class="empty-state">暂无人工接受的 Tag Alias。</span>';
-            return;
+        const total = Number(payload.total || 0);
+        count.textContent = query ? `匹配 ${total} 条` : `共 ${total} 条`;
+        if (reset) container.innerHTML = '';
+        if (!items.length && reset) {
+            container.innerHTML = `<span class="empty-state">${query ? '没有匹配的 Tag Alias。' : '暂无人工接受的 Tag Alias。'}</span>`;
+        } else if (items.length) {
+            container.insertAdjacentHTML('beforeend', items.map(renderActiveAlias).join(''));
         }
-        container.innerHTML = items.map(item => {
-            const encoded = encodeURIComponent(item.original_tag).replace(/'/g, '%27');
-            return `<button type="button" class="tag-chip" title="点击撤销" onclick="deleteTagAlias(decodeURIComponent('${encoded}'))">${escapeHtml(item.original_tag)} → ${escapeHtml(item.normalized_tag)} (${escapeHtml(item.kind)}) <span class="remove-icon">✕</span></button>`;
-        }).join('');
+        activeAliasOffset = offset + items.length;
+        loadMore.hidden = activeAliasOffset >= total;
     } catch (error) {
-        container.innerHTML = '<span class="empty-state">已生效别名加载失败。</span>';
+        if (reset) container.innerHTML = '<span class="empty-state">已生效别名加载失败。</span>';
+        count.textContent = '加载失败';
+    } finally {
+        loadMore.disabled = false;
     }
 }
 
@@ -619,7 +683,7 @@ async function deleteTagAlias(originalTag) {
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || '撤销失败');
-        await loadActiveTagAliases();
+        await loadActiveTagAliases({reset: true});
         feedback.textContent = `${originalTag} 的 Tag Alias 已撤销；审核历史仍被保留。`;
     } catch (error) {
         feedback.textContent = `无法撤销 Tag Alias：${error.message}`;
@@ -638,13 +702,96 @@ async function reviewMappingCandidate(id, decision, kind = null) {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || '保存失败');
         document.querySelector(`[data-mapping-id="${id}"]`)?.remove();
-        if (decision === 'accept') await loadActiveTagAliases();
-        feedback.textContent = decision === 'accept'
-            ? `${payload.original_tag} 已接受为 ${payload.kind} Tag Alias；下次画像构建将使用该决定。`
-            : '候选已拒绝，不会影响运行时。';
+        if (decision === 'accept') await loadActiveTagAliases({reset: true});
+        if (decision === 'accept' && payload.alias_already_active) {
+            feedback.textContent = `已有 Tag Alias ${payload.active_alias_original} → ${payload.active_normalized_tag}，本候选已按现有方向关闭。`;
+        } else {
+            feedback.textContent = decision === 'accept'
+                ? `${payload.original_tag} 已接受为 ${payload.kind} Tag Alias；下次画像构建将使用该决定。`
+                : '候选已拒绝，不会影响运行时。';
+        }
+        if (payload.duplicate_candidates_resolved) feedback.textContent += ` 已同步处理 ${payload.duplicate_candidates_resolved} 条重复候选。`;
         if (!document.querySelector('#mappingQueue .review-item')) renderMappingCandidates([]);
     } catch (error) {
         feedback.textContent = `无法保存映射审核：${error.message}`;
+    }
+}
+
+function cancelAiMappingBatchPreview() {
+    aiMappingBatchPreviewState = null;
+    document.getElementById('aiMappingBatchPreview').hidden = true;
+}
+
+async function previewAiMappingBatch() {
+    const button = document.getElementById('previewAiMappingBatchButton');
+    const panel = document.getElementById('aiMappingBatchPreview');
+    const feedback = document.getElementById('mappingFeedback');
+    button.disabled = true;
+    feedback.textContent = '正在按严格规则计算可批量处理的 AI 建议…';
+    try {
+        const response = await fetch('/api/tag-mapping-ai-batch-preview?min_confidence=0.95');
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || '无法生成批量预览');
+        aiMappingBatchPreviewState = payload;
+        const summary = payload.summary || {};
+        document.getElementById('aiMappingBatchSummary').textContent =
+            `可处理 ${summary.eligible || 0} 条：接受等价别名 ${summary.accept_equivalent || 0} 条，拒绝非同义项 ${summary.reject || 0} 条。`;
+        document.getElementById('applyAiMappingBatchButton').disabled = !(summary.eligible > 0);
+        const items = (payload.items || []).slice(0, 10);
+        document.getElementById('aiMappingBatchItems').innerHTML = items.length
+            ? items.map(item => `<li>#${escapeHtml(item.candidate_id)} ${escapeHtml(item.original_tag)} → ${escapeHtml(item.proposed_normalized_tag || '无目标')}：${item.decision === 'accept_equivalent' ? '接受等价别名' : '拒绝'}（AI 置信度 ${escapeHtml(Number(item.confidence || 0).toLocaleString(undefined, {style: 'percent', maximumFractionDigits: 1}))}）</li>`).join('')
+            : '<li>当前没有符合自动批量规则的建议。</li>';
+        const blocked = payload.blocked || {};
+        const blockedLabels = {
+            no_actionable_recommendation: 'AI 未给出可执行关系',
+            below_confidence: '置信度不足',
+            stale_principles: '判断原则已更新',
+            stale_evidence: '语义证据已变化',
+            missing_recommendation: '缺少 AI 建议',
+            self_mapping: '自身映射',
+            risk_flags: '带风险标记',
+            unresolved_category: '分类未解决',
+            category_conflict: '分类冲突',
+            principle_checks: '原则检查未通过',
+            canonical_direction: 'canonical 方向不一致',
+        };
+        const blockedText = Object.entries(blocked).map(([reason, count]) => `${blockedLabels[reason] || reason} ${count} 条`).join('；');
+        document.getElementById('aiMappingBatchBlockers').textContent = blockedText
+            ? `其余建议被规则拦截，继续保留人工审核：${blockedText}`
+            : '没有额外被拦截的 AI 建议。';
+        panel.hidden = false;
+        feedback.textContent = '预览已生成。请核对数量和样例，再确认批量应用。';
+    } catch (error) {
+        cancelAiMappingBatchPreview();
+        feedback.textContent = `无法生成批量预览：${error.message}`;
+    } finally {
+        button.disabled = false;
+    }
+}
+
+async function applyAiMappingBatch() {
+    const preview = aiMappingBatchPreviewState;
+    const feedback = document.getElementById('mappingFeedback');
+    if (!preview) {
+        feedback.textContent = '预览已失效，请重新预览。';
+        return;
+    }
+    const summary = preview.summary || {};
+    if (!confirm(`确认批量处理 ${summary.eligible || 0} 条？其中接受等价别名 ${summary.accept_equivalent || 0} 条，拒绝 ${summary.reject || 0} 条。`)) return;
+    feedback.textContent = '正在原子应用这批 AI 建议…';
+    try {
+        const response = await fetch('/api/tag-mapping-ai-batch-apply', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({min_confidence: preview.min_confidence, preview_token: preview.preview_token, confirm: true}),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || '批量应用失败');
+        cancelAiMappingBatchPreview();
+        await Promise.all([loadMappingCandidates(), loadActiveTagAliases({reset: true})]);
+        feedback.textContent = `批量处理完成：接受 ${payload.accepted_equivalent || 0} 条，拒绝 ${payload.rejected || 0} 条；新建 ${payload.aliases_created || 0} 个别名，复用 ${payload.aliases_already_active || 0} 个已有别名，关闭 ${payload.duplicate_candidates_resolved || 0} 条重复候选。`;
+    } catch (error) {
+        feedback.textContent = `批量应用失败：${error.message} 请重新预览后再试。`;
     }
 }
 

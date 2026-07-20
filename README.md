@@ -188,6 +188,15 @@ python scripts/evaluate_recommendation.py
 python scripts/evaluate_recommendation.py --json
 ```
 
+作品级 Embedding 权重校准（只读，不自动修改配置）：
+
+```bash
+python3 scripts/calibrate_embedding_weight.py
+python3 scripts/calibrate_embedding_weight.py --json
+```
+
+指标、样本门槛和隔离工作树运行方式见 [作品级 Embedding 权重校准](docs/embedding_weight_calibration.md)。
+
 同步 Danbooru IP 标签：
 
 ```bash
