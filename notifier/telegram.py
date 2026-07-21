@@ -2,6 +2,7 @@
 Telegram 推送实现
 """
 import asyncio
+import json
 import logging
 import re
 from io import BytesIO
@@ -16,7 +17,7 @@ from classification_maintenance import run_scheduled_maintenance
 from config import load_config
 from pixiv_client import Illust, PixivClient
 from proxy_utils import normalize_proxy_url
-from utils import format_xp_profile_lines, get_pixiv_cat_url
+from utils import escape_telegram_markdown, format_xp_profile_lines, get_pixiv_cat_url
 from telegram_rich import build_input_rich_message, normalize_rich_message_config
 
 try:
@@ -37,6 +38,28 @@ PIXIV_URL_PATTERNS = {
         re.compile(r"(?:https?://)?(?:www\.)?pixiv\.net/(?:[a-z]{2}/)?users/(\d+)", re.IGNORECASE),
         re.compile(r"(?:https?://)?(?:www\.)?pixiv\.net/(?:[a-z]{2}/)?member\.php\?[^\\s#]*id=(\d+)", re.IGNORECASE),
     ],
+}
+
+
+TAG_MAPPING_REVIEW_ACTIONS = {
+    "e": {
+        "confirmation": "确认建立 Tag Alias",
+        "decision": "accept",
+        "kind": "equivalent",
+        "success": "已接受为 Tag Alias",
+    },
+    "s": {
+        "confirmation": "确认建立 Search Alias",
+        "decision": "accept",
+        "kind": "search",
+        "success": "已接受为 Search Alias",
+    },
+    "r": {
+        "confirmation": "确认拒绝该候选",
+        "decision": "reject",
+        "kind": None,
+        "success": "已拒绝候选",
+    },
 }
 
 
@@ -237,6 +260,7 @@ class TelegramNotifier(BaseNotifier):
         self._pending_input = None  # 等待用户输入的状态
         self._tag_review_batch_running = False
         self._high_weight_tag_review_snapshots: dict[int, list[dict]] = {}
+        self._tag_mapping_review_snapshots: dict[int, dict] = {}
 
         # 日志
         logger.info(f"Telegram 推送目标: {', '.join(self.chat_ids) or '无'}")
@@ -365,9 +389,186 @@ class TelegramNotifier(BaseNotifier):
             [InlineKeyboardButton("🔄 刷新待人工数", callback_data="menu:tag_review")],
             [InlineKeyboardButton("⭐ 查看常用 Tag", callback_data="menu:tag_review:common")],
             [InlineKeyboardButton("📋 查看高权重候选", callback_data="menu:tag_review:high_weight")],
+            [InlineKeyboardButton("🔗 语义映射审核", callback_data="menu:tag_review:mapping")],
             [InlineKeyboardButton("🤖 Gemini 批量判定全部", callback_data="menu:tag_review:run")],
             [InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")],
         ])
+
+    @staticmethod
+    def _tag_mapping_review_text(candidate: dict, offset: int, total: int) -> str:
+        def escaped(value, limit: int = 500) -> str:
+            text = str(value or "—")
+            if len(text) > limit:
+                text = f"{text[:limit - 1]}…"
+            return escape_telegram_markdown(text)
+
+        relation = str(candidate.get("ai_relation") or "").strip().title()
+        confidence = candidate.get("ai_confidence")
+        if relation and candidate.get("ai_is_current"):
+            confidence_text = (
+                f" ({float(confidence):.0%})" if confidence is not None else ""
+            )
+            advice = f"*{escaped(relation)}*{confidence_text}"
+        elif relation:
+            advice = f"{escaped(relation)}（建议已过期）"
+        else:
+            advice = "无当前建议"
+
+        try:
+            risk_flags = json.loads(candidate.get("ai_risk_flags") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            risk_flags = []
+        risks = "、".join(str(item) for item in risk_flags) if risk_flags else "无"
+
+        return "\n".join([
+            f"🔗 *语义映射审核*  {offset + 1} / {total}",
+            "",
+            f"原始 Tag：{escaped(candidate.get('original_tag'))}",
+            f"目标 Normalized Tag：{escaped(candidate.get('proposed_normalized_tag'))}",
+            f"候选类型：{escaped(candidate.get('kind'))}",
+            f"来源：{escaped(candidate.get('source'))}",
+            f"分类：{escaped(candidate.get('original_classification'))} → "
+            f"{escaped(candidate.get('target_classification'))}",
+            f"翻译：{escaped(candidate.get('original_translation'))} → "
+            f"{escaped(candidate.get('target_translation'))}",
+            f"AI Relationship Recommendation：{advice}",
+            f"建议 canonical：{escaped(candidate.get('ai_canonical_tag'))}",
+            f"理由：{escaped(candidate.get('ai_rationale'))}",
+            f"风险：{escaped(risks)}",
+            f"合并来源行：{int(candidate.get('duplicate_count') or 1)}",
+        ])
+
+    @staticmethod
+    def _build_tag_mapping_review_menu(candidate_id: int, offset: int) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "✅ Tag Alias",
+                    callback_data=f"menu:tag_review:mapping:preview_e:{candidate_id}",
+                ),
+                InlineKeyboardButton(
+                    "🔎 Search Alias",
+                    callback_data=f"menu:tag_review:mapping:preview_s:{candidate_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "❌ 拒绝",
+                    callback_data=f"menu:tag_review:mapping:preview_r:{candidate_id}",
+                ),
+                InlineKeyboardButton(
+                    "⏭ 跳过",
+                    callback_data=f"menu:tag_review:mapping:next:{offset + 1}",
+                ),
+            ],
+            [InlineKeyboardButton("⬅️ 返回标签审核", callback_data="menu:tag_review")],
+        ])
+
+    @staticmethod
+    def _build_tag_mapping_confirmation_menu(
+        candidate_id: int,
+        action_code: str,
+        offset: int,
+    ) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "✅ 确认",
+                callback_data=(
+                    f"menu:tag_review:mapping:confirm_{action_code}:{candidate_id}"
+                ),
+            )],
+            [InlineKeyboardButton(
+                "取消",
+                callback_data=f"menu:tag_review:mapping:next:{offset}",
+            )],
+        ])
+
+    @staticmethod
+    def _tag_mapping_confirmation_text(candidate: dict, action_code: str) -> str:
+        action = TAG_MAPPING_REVIEW_ACTIONS[action_code]
+        original = escape_telegram_markdown(str(candidate.get("original_tag") or "—"))
+        target = escape_telegram_markdown(
+            str(candidate.get("proposed_normalized_tag") or "—")
+        )
+        return "\n".join([
+            f"⚠️ *{action['confirmation']}*",
+            "",
+            f"{original} → {target}",
+            "",
+            "确认时会重新读取候选；候选已变化时不会写入。",
+        ])
+
+    @staticmethod
+    def _tag_mapping_candidate_version(candidate: dict) -> tuple:
+        scalar_version = tuple(candidate.get(key) for key in (
+            "id",
+            "original_tag",
+            "proposed_normalized_tag",
+            "kind",
+            "updated_at",
+            "ai_recommendation_id",
+            "ai_evidence_hash",
+            "ai_is_current",
+        ))
+        group_version = tuple(
+            tuple(candidate.get(key) or ())
+            for key in (
+                "duplicate_candidate_ids",
+                "duplicate_sources",
+                "duplicate_kinds",
+            )
+        )
+        return scalar_version + group_version
+
+    async def _show_tag_mapping_review(
+        self,
+        query,
+        db,
+        *,
+        offset: int,
+        notice: str | None = None,
+    ) -> None:
+        chat_id = getattr(getattr(query, "message", None), "chat_id", 0)
+        snapshots = getattr(self, "_tag_mapping_review_snapshots", None)
+        if snapshots is None:
+            snapshots = self._tag_mapping_review_snapshots = {}
+        total = await db.count_tag_mapping_candidate_groups()
+        if not total:
+            snapshots.pop(chat_id, None)
+            text = "🔗 当前没有待审核的语义映射候选。"
+            if notice:
+                text = f"{notice}\n\n{text}"
+            await query.edit_message_text(
+                text,
+                reply_markup=self._build_tag_review_menu(),
+            )
+            return
+        offset = max(0, int(offset))
+        if offset >= total:
+            offset = 0
+        candidates = await db.get_tag_mapping_candidates(limit=1, offset=offset)
+        if not candidates:
+            snapshots.pop(chat_id, None)
+            await query.edit_message_text(
+                "候选列表已变化，请重新打开语义映射审核。",
+                reply_markup=self._build_tag_review_menu(),
+            )
+            return
+        candidate = candidates[0]
+        snapshots[chat_id] = {
+            "candidate": dict(candidate),
+            "offset": offset,
+        }
+        text = self._tag_mapping_review_text(candidate, offset, total)
+        if notice:
+            text = f"{notice}\n\n{text}"
+        await query.edit_message_text(
+            text,
+            reply_markup=self._build_tag_mapping_review_menu(
+                int(candidate["id"]), offset,
+            ),
+            parse_mode="Markdown",
+        )
 
     @staticmethod
     def _tag_review_overview_text(count: int, high_weight_count: int) -> str:
@@ -627,6 +828,131 @@ class TelegramNotifier(BaseNotifier):
                     "\n".join(lines),
                     reply_markup=self._build_tag_review_menu(),
                     parse_mode="Markdown",
+                )
+            elif sub_action == "mapping":
+                chat_id = getattr(getattr(query, "message", None), "chat_id", 0)
+                snapshots = getattr(self, "_tag_mapping_review_snapshots", None)
+                if snapshots is None:
+                    snapshots = self._tag_mapping_review_snapshots = {}
+                if detail_action in {"preview_e", "preview_s", "preview_r"}:
+                    try:
+                        candidate_id = int(parts[4])
+                    except (IndexError, ValueError):
+                        await query.answer("候选参数无效", show_alert=True)
+                        return
+                    snapshot = snapshots.get(chat_id)
+                    if not snapshot or int(snapshot["candidate"]["id"]) != candidate_id:
+                        await query.answer("请先打开当前候选", show_alert=True)
+                        return
+                    action_code = detail_action[-1]
+                    snapshot["action_code"] = action_code
+                    await query.edit_message_text(
+                        self._tag_mapping_confirmation_text(
+                            snapshot["candidate"], action_code,
+                        ),
+                        reply_markup=self._build_tag_mapping_confirmation_menu(
+                            candidate_id, action_code, int(snapshot["offset"]),
+                        ),
+                        parse_mode="Markdown",
+                    )
+                    return
+                if detail_action in {"confirm_e", "confirm_s", "confirm_r"}:
+                    try:
+                        candidate_id = int(parts[4])
+                    except (IndexError, ValueError):
+                        await query.answer("候选参数无效", show_alert=True)
+                        return
+                    action_code = detail_action[-1]
+                    snapshot = snapshots.get(chat_id)
+                    if not snapshot or int(snapshot["candidate"]["id"]) != candidate_id:
+                        current_status = await db.get_tag_mapping_candidate_status(
+                            candidate_id
+                        )
+                        if current_status and current_status.get("status") != "pending":
+                            if current_status["status"] == "rejected":
+                                status_text = "候选已经拒绝"
+                            elif current_status.get("kind") == "search":
+                                status_text = "候选已经接受为 Search Alias"
+                            else:
+                                status_text = "候选已经接受为 Tag Alias"
+                            await query.edit_message_text(
+                                f"ℹ️ {status_text}。",
+                                reply_markup=self._build_tag_review_menu(),
+                            )
+                            return
+                        await query.answer("确认已失效，请重新预览", show_alert=True)
+                        return
+                    if snapshot.get("action_code") != action_code:
+                        await query.answer("确认已失效，请重新预览", show_alert=True)
+                        return
+                    current = await db.get_tag_mapping_candidate_group(candidate_id)
+                    if (
+                        not current
+                        or self._tag_mapping_candidate_version(current)
+                        != self._tag_mapping_candidate_version(snapshot["candidate"])
+                    ):
+                        snapshots.pop(chat_id, None)
+                        await query.edit_message_text(
+                            "候选或 AI 建议已变化，请重新打开后再决定。",
+                            reply_markup=self._build_tag_review_menu(),
+                        )
+                        return
+                    action = TAG_MAPPING_REVIEW_ACTIONS[action_code]
+                    decision = action["decision"]
+                    kind = action["kind"] or str(
+                        current.get("kind") or "equivalent"
+                    )
+                    try:
+                        result = await db.review_tag_mapping_candidate(
+                            candidate_id,
+                            decision,
+                            kind=kind,
+                            expected_candidate_ids=tuple(
+                                current.get("duplicate_candidate_ids")
+                                or [current["id"]]
+                            ),
+                        )
+                    except ValueError as exc:
+                        snapshots.pop(chat_id, None)
+                        await query.edit_message_text(
+                            f"❌ 审核未写入：{escape_telegram_markdown(str(exc))}",
+                            reply_markup=self._build_tag_review_menu(),
+                            parse_mode="Markdown",
+                        )
+                        return
+                    except Exception:
+                        logger.exception(
+                            "Telegram semantic mapping review failed: candidate_id=%s",
+                            candidate_id,
+                        )
+                        snapshots.pop(chat_id, None)
+                        await query.edit_message_text(
+                            "❌ 审核状态未知。请先在 Web 中检查候选状态，再重新操作。",
+                            reply_markup=self._build_tag_review_menu(),
+                        )
+                        return
+                    snapshots.pop(chat_id, None)
+                    action_label = action["success"]
+                    duplicate_count = int(result.get("duplicate_candidates_resolved") or 0)
+                    duplicate_text = (
+                        f"；同时关闭 {duplicate_count} 条重复候选"
+                        if duplicate_count else ""
+                    )
+                    await self._show_tag_mapping_review(
+                        query,
+                        db,
+                        offset=int(snapshot["offset"]),
+                        notice=f"✅ {action_label}{duplicate_text}。",
+                    )
+                    return
+                offset = 0
+                if detail_action == "next" and len(parts) > 4:
+                    try:
+                        offset = max(0, int(parts[4]))
+                    except ValueError:
+                        offset = 0
+                await self._show_tag_mapping_review(
+                    query, db, offset=offset,
                 )
             elif sub_action == "high_weight":
                 chat_id = getattr(getattr(query, "message", None), "chat_id", 0)

@@ -24,6 +24,11 @@ class CalibrationDataset:
     embedding_model: str
     profile_hash: str
     cached_profile_hash: str | None
+    stored_like: int
+    stored_dislike: int
+    stored_follow: int
+    first_feedback_at: str | None
+    latest_feedback_at: str | None
 
 
 def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
@@ -99,6 +104,24 @@ def load_calibration_dataset(
         ).fetchall()
         total_feedback = len(feedback_rows)
 
+        action_counts = _read_map(
+            connection, "SELECT action, COUNT(*) FROM feedback GROUP BY action"
+        )
+        time_row = connection.execute(
+            """
+            SELECT MIN(created_at), MAX(created_at)
+            FROM feedback
+            WHERE action IN ('like', 'dislike', 'follow')
+            """
+        ).fetchone()
+        feedback_meta = {
+            "stored_like": int(action_counts.get("like") or 0),
+            "stored_dislike": int(action_counts.get("dislike") or 0),
+            "stored_follow": int(action_counts.get("follow") or 0),
+            "first_feedback_at": time_row[0],
+            "latest_feedback_at": time_row[1],
+        }
+
         if user_id is None:
             user_row = connection.execute(
                 """
@@ -125,7 +148,7 @@ def load_calibration_dataset(
         if user_row is None:
             missing["missing_user_embedding"] = total_feedback
             return CalibrationDataset(
-                samples=(), total_feedback=total_feedback, missing=dict(missing),
+                samples=(), total_feedback=total_feedback, missing=dict(missing), **feedback_meta,
                 user_id=user_id, embedding_model=embedding_model,
                 profile_hash=current_profile_hash, cached_profile_hash=None,
             )
@@ -134,14 +157,14 @@ def load_calibration_dataset(
         if user_row["model"] != embedding_model:
             missing["user_embedding_model_mismatch"] = total_feedback
             return CalibrationDataset(
-                samples=(), total_feedback=total_feedback, missing=dict(missing),
+                samples=(), total_feedback=total_feedback, missing=dict(missing), **feedback_meta,
                 user_id=resolved_user_id, embedding_model=embedding_model,
                 profile_hash=current_profile_hash, cached_profile_hash=cached_profile_hash,
             )
         if cached_profile_hash != current_profile_hash:
             missing["stale_user_embedding"] = total_feedback
             return CalibrationDataset(
-                samples=(), total_feedback=total_feedback, missing=dict(missing),
+                samples=(), total_feedback=total_feedback, missing=dict(missing), **feedback_meta,
                 user_id=resolved_user_id, embedding_model=embedding_model,
                 profile_hash=current_profile_hash, cached_profile_hash=cached_profile_hash,
             )
@@ -152,7 +175,7 @@ def load_calibration_dataset(
         except (TypeError, json.JSONDecodeError, ValueError):
             missing["invalid_user_embedding"] = total_feedback
             return CalibrationDataset(
-                samples=(), total_feedback=total_feedback, missing=dict(missing),
+                samples=(), total_feedback=total_feedback, missing=dict(missing), **feedback_meta,
                 user_id=resolved_user_id, embedding_model=embedding_model,
                 profile_hash=current_profile_hash, cached_profile_hash=cached_profile_hash,
             )
@@ -192,7 +215,7 @@ def load_calibration_dataset(
             ))
 
         return CalibrationDataset(
-            samples=tuple(samples), total_feedback=total_feedback, missing=dict(missing),
+            samples=tuple(samples), total_feedback=total_feedback, missing=dict(missing), **feedback_meta,
             user_id=resolved_user_id, embedding_model=embedding_model,
             profile_hash=current_profile_hash, cached_profile_hash=cached_profile_hash,
         )

@@ -537,3 +537,108 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([illust.id for illust in ranked], [12])
         self.assertIn("blue_archive", content_filter.blacklist_tags)
         self.assertIn(99, content_filter.blocked_artist_ids)
+
+
+class StubEmbedder:
+    def __init__(self):
+        self.enabled = True
+        self.model = "embed-v1"
+        self.semantic_weight = 0.3
+        self.embed_tags = AsyncMock(return_value=[1.0, 0.0])
+
+    def cosine_similarity(self, left, right):
+        return 1.0
+
+    def normalize_similarity(self, similarity):
+        return (similarity + 1.0) / 2.0
+
+
+class UserEmbeddingRefreshTests(unittest.IsolatedAsyncioTestCase):
+    def _illust(self, illust_id):
+        return Illust(
+            id=illust_id, title=str(illust_id), user_id=illust_id, user_name="artist",
+            tags=["white_hair"], bookmark_count=100, view_count=1000,
+            page_count=1, image_urls=["https://example.com/a.jpg"], is_r18=False,
+            ai_type=0, create_date=datetime.now(),
+        )
+
+    def _build_filter(self, embedder):
+        return ContentFilter(
+            daily_limit=5, max_per_artist=10, exclude_ai=False,
+            tag_classifier=StubTagClassifier(), embedder=embedder,
+        )
+
+    def _patch_db(self, content_filter, **overrides):
+        from unittest.mock import patch as _patch
+
+        patches = [
+            _patch("filter.db.get_pushed_ids_batch", new=AsyncMock(return_value=set())),
+            _patch("filter.db.get_muted_tags", new=AsyncMock(return_value=[])),
+            _patch("filter.db.get_negative_profile", new=AsyncMock(return_value={})),
+            _patch("filter.db.get_blocked_tags", new=AsyncMock(return_value=[])),
+            _patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[])),
+            _patch(
+                "filter.db.get_illust_embeddings_batch",
+                new=AsyncMock(return_value={1: [1.0, 0.0]}),
+            ),
+            _patch.object(
+                content_filter, "_classify_tags_for_illusts",
+                new=AsyncMock(return_value={
+                    "white_hair": TagClassification("feature", "manual"),
+                }),
+            ),
+        ]
+        patches.extend(overrides.get("extra", []))
+        return patches
+
+    async def test_stale_model_cache_is_refreshed_with_current_model(self):
+        from embedder import profile_embedding_hash
+
+        xp_profile = {"white_hair": 2.0}
+        embedder = StubEmbedder()
+        content_filter = self._build_filter(embedder)
+        save = AsyncMock()
+        # 缓存的画像向量来自旧模型（profile_hash 匹配但 model 不匹配）
+        stale_cache = AsyncMock(return_value=None)
+        patches = self._patch_db(
+            content_filter,
+            extra=[
+                patch("filter.db.get_current_user_embedding", new=stale_cache),
+                patch("filter.db.save_user_embedding", new=save),
+            ],
+        )
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        await content_filter.filter([self._illust(1)], xp_profile=xp_profile, user_id=7)
+
+        stale_cache.assert_called_once_with(7, "embed-v1", profile_embedding_hash(xp_profile))
+        embedder.embed_tags.assert_awaited_once()
+        save.assert_awaited_once_with(
+            7, [1.0, 0.0], "embed-v1", profile_embedding_hash(xp_profile)
+        )
+
+    async def test_current_model_cache_is_reused_without_recompute(self):
+        embedder = StubEmbedder()
+        content_filter = self._build_filter(embedder)
+        save = AsyncMock()
+        current_cache = unittest.mock.Mock(return_value=[1.0, 0.0])
+        patches = self._patch_db(
+            content_filter,
+            extra=[
+                patch("filter.db.get_current_user_embedding", new=current_cache),
+                patch("filter.db.save_user_embedding", new=save),
+            ],
+        )
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        await content_filter.filter(
+            [self._illust(1)], xp_profile={"white_hair": 2.0}, user_id=7
+        )
+
+        current_cache.assert_called_once()
+        embedder.embed_tags.assert_not_awaited()
+        save.assert_not_awaited()

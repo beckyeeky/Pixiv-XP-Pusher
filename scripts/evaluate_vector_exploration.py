@@ -18,7 +18,7 @@ import database
 from exploration_vector_evaluation import load_vector_exploration_evaluation
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="只读评估 semantic vector Exploration 候选来源。"
     )
@@ -26,7 +26,7 @@ def main() -> int:
     parser.add_argument("--model")
     parser.add_argument("--since", help="只统计此 ISO 时间之后开始的运行")
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         report = load_vector_exploration_evaluation(
             args.db, model=args.model, since=args.since,
@@ -48,6 +48,7 @@ def main() -> int:
     )
     for label, key in (
         ("Like rate", "like_rate"),
+        ("平均排名移动（带符号）", "mean_signed_rank_movement"),
         ("平均绝对排名移动", "mean_absolute_rank_movement"),
         ("平均 Preference Profile 集中度", "mean_profile_concentration"),
         ("平均 Slate 画像支持集中度", "mean_slate_profile_concentration"),

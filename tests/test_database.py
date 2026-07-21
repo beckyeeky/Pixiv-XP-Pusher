@@ -368,6 +368,79 @@ class DatabaseInitTests(unittest.TestCase):
         self.assertEqual(after, {"ブルアカ": "blue_archive"})
         self.assertEqual(search_term, "ブルアカ")
 
+    def test_count_tag_mapping_candidate_groups_collapses_pairs_and_skips_reviewed(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                await database.save_tag_mapping_candidates([
+                    {
+                        "original_tag": "ブルアカ",
+                        "proposed_normalized_tag": "blue_archive",
+                        "kind": "equivalent",
+                        "source": "first",
+                    },
+                    {
+                        "original_tag": "着物ビキニ",
+                        "proposed_normalized_tag": "kimono",
+                        "kind": "search",
+                        "source": "second",
+                    },
+                ])
+                conn = sqlite3.connect(db_path)
+                conn.execute(
+                    """
+                    INSERT INTO tag_mapping_candidates (
+                        original_tag, proposed_normalized_tag, kind, source, status
+                    ) VALUES ('blue_archive', 'ブルアカ', 'equivalent', 'reverse', 'pending')
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO tag_mapping_candidates (
+                        original_tag, proposed_normalized_tag, kind, source, status
+                    ) VALUES ('done_a', 'done_b', 'equivalent', 'reviewed', 'rejected')
+                    """
+                )
+                conn.commit()
+                conn.close()
+                return await database.count_tag_mapping_candidate_groups()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            count = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
+
+        self.assertEqual(count, 2)
+
+    def test_mapping_group_pagination_is_applied_after_complete_pair_collapse(self):
+        duplicates = [
+            {
+                "id": candidate_id,
+                "original_tag": "白髪",
+                "proposed_normalized_tag": "white_hair",
+                "kind": "equivalent",
+                "source": f"source-{candidate_id}",
+                "ai_is_current": candidate_id == 5,
+            }
+            for candidate_id in range(1, 6)
+        ]
+        second_group = {
+            "id": 6,
+            "original_tag": "眼鏡",
+            "proposed_normalized_tag": "glasses",
+            "kind": "equivalent",
+            "source": "second",
+            "ai_is_current": False,
+        }
+
+        first_page = database.paginate_tag_mapping_candidate_groups(
+            [*duplicates, second_group], limit=1, offset=0,
+        )
+        second_page = database.paginate_tag_mapping_candidate_groups(
+            [*duplicates, second_group], limit=1, offset=1,
+        )
+
+        self.assertEqual(first_page[0]["id"], 5)
+        self.assertEqual(second_page[0]["id"], 6)
+
     def test_reject_legacy_filtered_candidates_closes_only_targetless_legacy_rows(self):
         async def _run(db_path):
             with patch.object(database, "DB_PATH", db_path):
@@ -451,6 +524,50 @@ class DatabaseInitTests(unittest.TestCase):
         self.assertEqual(result["status"], "accepted")
         self.assertTrue(result["alias_already_active"])
         self.assertEqual(aliases, {"明日方舟": "アークナイツ"})
+
+    def test_review_rejects_a_group_that_changed_after_confirmation(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                await database.save_tag_mapping_candidates([{
+                    "original_tag": "白髪",
+                    "proposed_normalized_tag": "white_hair",
+                    "kind": "equivalent",
+                    "source": "first",
+                }])
+                candidate = (await database.get_tag_mapping_candidates(limit=1))[0]
+                conn = sqlite3.connect(db_path)
+                conn.execute(
+                    """
+                    INSERT INTO tag_mapping_candidates (
+                        original_tag, proposed_normalized_tag, kind, source, status
+                    ) VALUES ('WHITE_HAIR', '白髪', 'equivalent', 'late', 'pending')
+                    """
+                )
+                conn.commit()
+                conn.close()
+
+                with self.assertRaisesRegex(ValueError, "候选组已变化"):
+                    await database.review_tag_mapping_candidate(
+                        candidate["id"],
+                        "accept",
+                        kind="equivalent",
+                        expected_candidate_ids=(candidate["id"],),
+                    )
+
+                conn = sqlite3.connect(db_path)
+                statuses = conn.execute(
+                    "SELECT status FROM tag_mapping_candidates ORDER BY id"
+                ).fetchall()
+                aliases = conn.execute("SELECT COUNT(*) FROM tag_aliases").fetchone()[0]
+                conn.close()
+                return statuses, aliases
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            statuses, aliases = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
+
+        self.assertEqual(statuses, [("pending",), ("pending",)])
+        self.assertEqual(aliases, 0)
 
     def test_confirmed_ai_batch_atomically_accepts_aliases_and_rejects_distinct_tags(self):
         with tempfile.TemporaryDirectory() as tmpdir:

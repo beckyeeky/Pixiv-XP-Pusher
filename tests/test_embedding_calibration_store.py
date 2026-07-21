@@ -21,7 +21,7 @@ class EmbeddingCalibrationStoreTests(unittest.TestCase):
                 CREATE TABLE tag_classification_cache(
                     normalized_tag TEXT PRIMARY KEY, classification TEXT, source TEXT, updated_at TEXT
                 );
-                CREATE TABLE feedback(illust_id INTEGER PRIMARY KEY, action TEXT);
+                CREATE TABLE feedback(illust_id INTEGER PRIMARY KEY, action TEXT, created_at TEXT);
                 CREATE TABLE illust_cache(illust_id INTEGER PRIMARY KEY, tags TEXT, source TEXT);
                 CREATE TABLE illust_embeddings(
                     illust_id INTEGER PRIMARY KEY, embedding TEXT, model TEXT, created_at TEXT
@@ -43,7 +43,13 @@ class EmbeddingCalibrationStoreTests(unittest.TestCase):
                 "INSERT INTO tag_classification_cache VALUES ('white_hair', 'feature', 'manual', CURRENT_TIMESTAMP)"
             )
             connection.executemany(
-                "INSERT INTO feedback VALUES (?, ?)", [(1, "like"), (2, "dislike"), (3, "like")]
+                "INSERT INTO feedback VALUES (?, ?, ?)", [
+                    (1, "like", "2026-07-01 10:00:00"),
+                    (2, "dislike", "2026-07-10 10:00:00"),
+                    (3, "like", "2026-07-20 10:00:00"),
+                    (4, "follow", "2026-07-15 10:00:00"),
+                    (5, "skip", "2026-07-21 10:00:00"),
+                ]
             )
             connection.executemany(
                 "INSERT INTO illust_cache VALUES (?, ?, 'xp_search')",
@@ -71,6 +77,31 @@ class EmbeddingCalibrationStoreTests(unittest.TestCase):
         self.assertGreater(dataset.samples[0].tag_score, 0.0)
         self.assertEqual(dataset.samples[0].semantic_score, 1.0)
         self.assertEqual(dataset.samples[1].tag_score, 0.0)
+
+    def test_feedback_counts_and_time_range_are_reported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "calibration.db"
+            self.prepare(path)
+            dataset = load_calibration_dataset(path, embedding_model="embed-v1", user_id=7)
+
+        self.assertEqual(dataset.stored_like, 2)
+        self.assertEqual(dataset.stored_dislike, 1)
+        self.assertEqual(dataset.stored_follow, 1)
+        self.assertEqual(dataset.total_feedback, 3)
+        self.assertEqual(dataset.first_feedback_at, "2026-07-01 10:00:00")
+        self.assertEqual(dataset.latest_feedback_at, "2026-07-20 10:00:00")
+
+    def test_stale_profile_still_reports_feedback_counts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "calibration.db"
+            self.prepare(path, stale_profile=True)
+            dataset = load_calibration_dataset(path, embedding_model="embed-v1", user_id=7)
+
+        self.assertEqual(dataset.samples, ())
+        self.assertEqual(dataset.stored_like, 2)
+        self.assertEqual(dataset.stored_dislike, 1)
+        self.assertEqual(dataset.stored_follow, 1)
+        self.assertEqual(dataset.latest_feedback_at, "2026-07-20 10:00:00")
 
     def test_stale_user_embedding_is_not_used(self):
         with tempfile.TemporaryDirectory() as tmpdir:

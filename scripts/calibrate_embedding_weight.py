@@ -90,6 +90,13 @@ def _payload(args: argparse.Namespace) -> dict:
         "cached_profile_hash": dataset.cached_profile_hash,
         "read_only": True,
     }
+    report["feedback"] = {
+        "like": dataset.stored_like,
+        "dislike": dataset.stored_dislike,
+        "follow": dataset.stored_follow,
+        "first_at": dataset.first_feedback_at,
+        "latest_at": dataset.latest_feedback_at,
+    }
     return report
 
 
@@ -102,6 +109,13 @@ def print_human(report: dict) -> None:
     dataset = report["dataset"]
     print("作品级 Embedding 权重离线校准（只读）")
     print(f"模型: {dataset['embedding_model']}  用户: {dataset['user_id'] or '自动'}")
+    feedback = report.get("feedback") or {}
+    if feedback:
+        print(
+            f"存储反馈: like={feedback['like']}  dislike={feedback['dislike']}  "
+            f"follow={feedback['follow']}（不参与校准）"
+        )
+        print(f"反馈时间: {feedback['first_at'] or '—'} ~ {feedback['latest_at'] or '—'}")
     print(
         f"反馈: {counts['feedback']}  可用: {counts['eligible']} "
         f"({report['coverage']:.1%})  like: {counts['like']}  dislike: {counts['dislike']}"

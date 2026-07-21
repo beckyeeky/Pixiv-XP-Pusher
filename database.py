@@ -684,7 +684,7 @@ async def save_tag_mapping_candidates(candidates) -> int:
     return inserted
 
 
-_TAG_MAPPING_CANDIDATES_SQL = """
+_TAG_MAPPING_CANDIDATES_SELECT_SQL = """
     SELECT c.*,
            COALESCE(po.weight, 0) AS original_weight,
            COALESCE(pt.weight, 0) AS target_weight,
@@ -726,9 +726,12 @@ _TAG_MAPPING_CANDIDATES_SQL = """
             ORDER BY latest.id DESC
             LIMIT 1
         )
+"""
+
+
+_TAG_MAPPING_CANDIDATES_SQL = _TAG_MAPPING_CANDIDATES_SELECT_SQL + """
     WHERE c.status = ?
     ORDER BY profile_weight DESC, c.occurrence_count DESC, c.id ASC
-    LIMIT ?
 """
 
 
@@ -787,31 +790,112 @@ def collapse_tag_mapping_candidate_groups(items: list[dict]) -> list[dict]:
     return collapsed
 
 
+def paginate_tag_mapping_candidate_groups(
+    items: list[dict],
+    *,
+    limit: int,
+    offset: int = 0,
+) -> list[dict]:
+    """Collapse the complete row set before applying a review-group page."""
+
+    limit = max(1, int(limit))
+    offset = max(0, int(offset))
+    groups = collapse_tag_mapping_candidate_groups(items)
+    return groups[offset:offset + limit]
+
+
 def get_tag_mapping_candidates_sync(limit: int = 100, status: str = "pending") -> list[dict]:
     """Synchronous candidate read for standalone CLI processes."""
 
     _validate_tag_mapping_candidate_status(status)
-    fetch_limit = max(int(limit), int(limit) * 3)
     with sqlite3.connect(DB_PATH, timeout=10) as db:
         db.row_factory = sqlite3.Row
-        rows = db.execute(_TAG_MAPPING_CANDIDATES_SQL, (status, fetch_limit)).fetchall()
-    return collapse_tag_mapping_candidate_groups(_enrich_tag_mapping_candidates(rows))[:int(limit)]
+        rows = db.execute(_TAG_MAPPING_CANDIDATES_SQL, (status,)).fetchall()
+    return paginate_tag_mapping_candidate_groups(
+        _enrich_tag_mapping_candidates(rows), limit=limit,
+    )
 
 
-async def get_tag_mapping_candidates(limit: int = 100, status: str = "pending") -> list[dict]:
+async def _load_tag_mapping_candidate_rows(status: str) -> list[dict]:
+    _validate_tag_mapping_candidate_status(status)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(_TAG_MAPPING_CANDIDATES_SQL, (status,))
+        rows = await cursor.fetchall()
+    return _enrich_tag_mapping_candidates(rows)
+
+
+async def get_tag_mapping_candidates(
+    limit: int = 100,
+    status: str = "pending",
+    offset: int = 0,
+) -> list[dict]:
     """Return mapping proposals in human review order for async Web/API callers."""
 
+    rows = await _load_tag_mapping_candidate_rows(status)
+    return paginate_tag_mapping_candidate_groups(
+        rows, limit=limit, offset=offset,
+    )
+
+
+async def get_tag_mapping_candidate_group(
+    candidate_id: int,
+    status: str = "pending",
+) -> dict | None:
+    """Return the complete collapsed group containing one candidate row."""
+
+    groups = collapse_tag_mapping_candidate_groups(
+        await _load_tag_mapping_candidate_rows(status)
+    )
+    candidate_id = int(candidate_id)
+    return next(
+        (
+            group for group in groups
+            if candidate_id in (group.get("duplicate_candidate_ids") or [group["id"]])
+        ),
+        None,
+    )
+
+
+async def get_tag_mapping_candidate_status(candidate_id: int) -> dict | None:
+    """Return current review status for an idempotent repeated confirmation."""
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT status, kind, original_tag, proposed_normalized_tag
+            FROM tag_mapping_candidates
+            WHERE id = ?
+            """,
+            (int(candidate_id),),
+        )
+        row = await cursor.fetchone()
+    if row is None:
+        return None
+    return {
+        "status": row[0],
+        "kind": row[1],
+        "original_tag": row[2],
+        "proposed_normalized_tag": row[3],
+    }
+
+
+async def count_tag_mapping_candidate_groups(status: str = "pending") -> int:
+    """Count collapsed review groups (unordered tag pairs) for queue summaries."""
+
     _validate_tag_mapping_candidate_status(status)
-    fetch_limit = max(int(limit), int(limit) * 3)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            _TAG_MAPPING_CANDIDATES_SQL,
-            (status, fetch_limit),
+            """
+            SELECT id, original_tag, proposed_normalized_tag, kind, source
+            FROM tag_mapping_candidates
+            WHERE status = ?
+            """,
+            (status,),
         )
-        return collapse_tag_mapping_candidate_groups(
-            _enrich_tag_mapping_candidates(await cursor.fetchall())
-        )[:int(limit)]
+        rows = [dict(row) for row in await cursor.fetchall()]
+    return len(collapse_tag_mapping_candidate_groups(rows))
 
 
 async def save_tag_mapping_ai_recommendation(
@@ -1056,7 +1140,13 @@ async def stage_tag_mapping_ai_recommendations(decisions) -> int:
     return len(rows)
 
 
-async def review_tag_mapping_candidate(candidate_id: int, decision: str, kind: str | None = None) -> dict:
+async def review_tag_mapping_candidate(
+    candidate_id: int,
+    decision: str,
+    kind: str | None = None,
+    *,
+    expected_candidate_ids: tuple[int, ...] | list[int] | None = None,
+) -> dict:
     """Apply one human decision; only acceptance creates a runtime Tag Alias."""
     if decision not in {"accept", "reject"}:
         raise ValueError("decision 必须是 accept 或 reject")
@@ -1071,6 +1161,38 @@ async def review_tag_mapping_candidate(candidate_id: int, decision: str, kind: s
         if not row:
             await db.rollback()
             raise ValueError("映射候选不存在或已经审核")
+
+        original_group_tag = str(row["original_tag"] or "")
+        target_group_tag = str(row["proposed_normalized_tag"] or "")
+        if original_group_tag and target_group_tag:
+            pair_key = tuple(sorted((
+                original_group_tag.casefold(), target_group_tag.casefold(),
+            )))
+            group_cursor = await db.execute(
+                """
+                SELECT id, original_tag, proposed_normalized_tag
+                FROM tag_mapping_candidates
+                WHERE status = 'pending'
+                """
+            )
+            pending_rows = await group_cursor.fetchall()
+            reviewed_ids = sorted(
+                int(item["id"])
+                for item in pending_rows
+                if item["original_tag"] and item["proposed_normalized_tag"]
+                and tuple(sorted((
+                    str(item["original_tag"]).casefold(),
+                    str(item["proposed_normalized_tag"]).casefold(),
+                ))) == pair_key
+            )
+        else:
+            reviewed_ids = [int(candidate_id)]
+
+        if expected_candidate_ids is not None and reviewed_ids != sorted(
+            int(item) for item in expected_candidate_ids
+        ):
+            await db.rollback()
+            raise ValueError("映射候选组已变化，请重新审核")
 
         applied_kind = kind or row["kind"]
         if applied_kind not in {"equivalent", "search"}:
@@ -1121,22 +1243,7 @@ async def review_tag_mapping_candidate(candidate_id: int, decision: str, kind: s
         else:
             new_status = "rejected"
 
-        duplicate_cursor = await db.execute(
-            """
-            SELECT id FROM tag_mapping_candidates
-            WHERE status = 'pending' AND id != ? AND (
-                (original_tag = ? AND proposed_normalized_tag = ?)
-                OR (original_tag = ? AND proposed_normalized_tag = ?)
-            )
-            """,
-            (
-                candidate_id,
-                row["original_tag"], row["proposed_normalized_tag"],
-                row["proposed_normalized_tag"], row["original_tag"],
-            ),
-        )
-        duplicate_ids = [int(item[0]) for item in await duplicate_cursor.fetchall()]
-        reviewed_ids = [int(candidate_id), *duplicate_ids]
+        duplicate_ids = [item for item in reviewed_ids if item != int(candidate_id)]
         placeholders = ", ".join("?" for _ in reviewed_ids)
         await db.execute(
             f"UPDATE tag_mapping_candidates SET status = ?, kind = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",

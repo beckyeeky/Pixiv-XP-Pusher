@@ -456,10 +456,11 @@ class ContentFilter:
                 from embedder import profile_embedding_hash
                 profile_hash = profile_embedding_hash(xp_profile)
                 
-                # 获取或更新用户 Embedding
-                cached = await db.get_user_embedding(user_id)
-                if cached and cached[1] == profile_hash:
-                    user_embedding = cached[0]
+                # 获取或更新用户 Embedding（仅接受与当前模型、画像哈希一致的缓存）
+                user_embedding = await db.get_current_user_embedding(
+                    user_id, self.embedder.model, profile_hash
+                )
+                if user_embedding:
                     logger.debug("使用缓存的用户 Embedding")
                 else:
                     # 重新计算
