@@ -166,6 +166,12 @@ def normalize_config(config: dict) -> dict:
     """对常见错误配置做非破坏性规范化，避免运行实例因格式问题崩溃。"""
     normalized = copy.deepcopy(config or {})
 
+    scheduler_cfg = normalized.get("scheduler")
+    if isinstance(scheduler_cfg, dict):
+        # Main push times are database-owned so live bot changes do not drift
+        # from a second cron value in config.yaml.
+        scheduler_cfg.pop("cron", None)
+
     filter_cfg = normalized.setdefault("filter", {})
     raw_daily_limit = filter_cfg.get("daily_limit", 20)
     if not isinstance(raw_daily_limit, int):

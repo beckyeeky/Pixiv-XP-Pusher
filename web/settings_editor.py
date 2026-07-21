@@ -33,7 +33,6 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
     },
     "strategies": ["xp_search", "related", "ranking", "subscription"],
     "scheduler": {
-        "cron": "0 12 * * *",
         "coalesce": True,
         "daily_report_cron": "0 0 * * *",
     },
@@ -224,6 +223,10 @@ def build_settings_snapshot(raw_config: Any) -> dict:
         raw_config if isinstance(raw_config, dict) else {},
     )
 
+    scheduler_cfg = merged.setdefault("scheduler", {})
+    if isinstance(scheduler_cfg, dict):
+        scheduler_cfg.pop("cron", None)
+
     network_cfg = merged.setdefault("network", {})
     random_delay = network_cfg.get("random_delay", [1.0, 3.0])
     if not isinstance(random_delay, list) or len(random_delay) < 2:
@@ -293,6 +296,12 @@ def apply_settings_payload(
     _preserve_masked_secrets(current, payload)
     _preserve_or_delete_provider_credentials(current, payload)
     merged = merge_config_replace_lists(current, payload)
+    # The main push schedule belongs to system_state so Telegram and OneBot
+    # update one live, durable schedule. Keep only maintenance settings in
+    # config.yaml and accept old clients that still submit cron.
+    scheduler = merged.get("scheduler")
+    if isinstance(scheduler, dict):
+        scheduler.pop("cron", None)
     # Providers/Models are whole maps in Settings: omitting an entry deletes it,
     # but each retained entry still deep-merges with the previous value.
     if isinstance(payload.get("providers"), dict):

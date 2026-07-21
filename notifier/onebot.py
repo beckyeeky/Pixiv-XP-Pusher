@@ -481,13 +481,10 @@ class OneBotNotifier(BaseNotifier):
             # --- /schedule ---
             elif cmd == "/schedule":
                 try:
-                    from database import get_state
+                    from database import get_or_initialize_push_schedule
                     import re
                     
-                    current_cron = await get_state("schedule_cron")
-                    if not current_cron:
-                         # Fallback unknown (usually from config)
-                         current_cron = "未配置(使用默认)"
+                    current_cron = await get_or_initialize_push_schedule()
                     
                     if not args:
                         await self._send_message(f"⏰ 当前定时: {current_cron}\n修改: /schedule 9:30,21:00", "private", sender_id)

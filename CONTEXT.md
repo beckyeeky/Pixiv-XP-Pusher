@@ -52,6 +52,24 @@ A Recommendation Motive where affinity for a franchise, series, game, anime, man
 **Exploration**:
 A Recommendation Motive for works intentionally selected without relying on an established strong identity preference. Exploration may still include familiar Characters or Copyrights when the dominant reason is a new transferable feature or deliberate taste expansion rather than identity affinity.
 
+## Vector Retrieval
+
+**Cached-Vector Scan**:
+The bounded retrieval source that compares a current Preference Profile vector with recent cached work vectors to find Exploration candidates.
+_Avoid_: Full vector search, vector index
+
+**Retrieval Sufficiency**:
+The state in which a Cached-Vector Scan meets the approved latency and candidate-coverage needs for Exploration. It does not describe recommendation quality.
+_Avoid_: Recommendation quality, user satisfaction
+
+**Index Eligibility**:
+The evidence-based state that permits comparison of vector-index designs after a Cached-Vector Scan fails an approved latency or coverage requirement.
+_Avoid_: Index rollout, automatic upgrade
+
+**Vector Index**:
+A replaceable derived cache that can accelerate vector lookup. It is not a source of Preference Profile facts, work facts, Tag Aliases, or recommendation policy.
+_Avoid_: Preference store, recommendation rule
+
 ## Tag Semantics
 
 **Normalized Tag**:

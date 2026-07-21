@@ -366,21 +366,6 @@
             </div>
             
             <div class="form-group">
-                <label class="form-label">
-                    定时任务 (Cron)
-                    <span class="tooltip-icon" data-tooltip="Cron 表达式定义推送任务的执行时间&#10;&#10;格式: 分 时 日 月 周&#10;示例: 0 12 * * * = 每天12点&#10;&#10;常用配置:&#10;• 0 12 * * * — 每天中午12点&#10;• 0 8,20 * * * — 早8点和晚8点&#10;• 0 */4 * * * — 每4小时&#10;• 0 9 * * 1 — 每周一上午9点&#10;&#10;推荐: 0 12 * * * (每日一次)">ⓘ</span>
-                </label>
-                <input type="text" class="form-control" name="cron" 
-                       value="{{ config.scheduler.cron | default('0 12 * * *') }}"
-                       placeholder="0 12 * * *">
-                <div class="help-text" style="margin-top: 0.5rem;">
-                    <a href="#" onclick="setCron('0 12 * * *')">每天12点</a> ·
-                    <a href="#" onclick="setCron('0 8,20 * * *')">早8晚8</a> ·
-                    <a href="#" onclick="setCron('0 */4 * * *')">每4小时</a>
-                </div>
-            </div>
-            
-            <div class="form-group">
                 <label class="form-label">Web 登录验证</label>
                 <label class="toggle-switch">
                     <input type="checkbox" name="require_login_password" id="require_login_password"
@@ -723,12 +708,6 @@
 
 {% block extra_scripts %}
 <script>
-// 设置 Cron 预设
-function setCron(val) {
-    document.querySelector('input[name="cron"]').value = val;
-    return false;
-}
-
 // 检查 IP 同步状态
 fetch('/api/sync-status')
     .then(r => r.json())

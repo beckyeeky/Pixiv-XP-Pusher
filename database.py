@@ -29,6 +29,7 @@ DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
 SCHEMA_VERSION = 7
 TAG_EVIDENCE_FRESHNESS_DAYS = 60
 TAG_MAPPING_EVIDENCE_HASH_STATE = "tag_mapping_evidence_hash_semantic_v2"
+DEFAULT_PUSH_SCHEDULE = "30 9 * * *,0 21 * * *"
 
 
 async def init_db():
@@ -347,6 +348,13 @@ def _init_db_sync():
             CREATE INDEX IF NOT EXISTS idx_exploration_vector_candidates_illust
                 ON exploration_vector_candidates(illust_id);
         """)
+        db.execute(
+            """
+            INSERT OR IGNORE INTO system_state (key, value, updated_at)
+            VALUES ('schedule_cron', ?, CURRENT_TIMESTAMP)
+            """,
+            (DEFAULT_PUSH_SCHEDULE,),
+        )
         db.commit()
 
         candidate_columns = {
@@ -2260,6 +2268,15 @@ async def set_state(key: str, value: str):
             (key, value, datetime.now())
         )
         await db.commit()
+
+
+async def get_or_initialize_push_schedule() -> str:
+    """Return the database-owned push schedule, creating its safe default once."""
+    schedule = str(await get_state("schedule_cron") or "").strip()
+    if schedule:
+        return schedule
+    await set_state("schedule_cron", DEFAULT_PUSH_SCHEDULE)
+    return DEFAULT_PUSH_SCHEDULE
 
 
 # ============ 推送统计 ============

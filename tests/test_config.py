@@ -6,6 +6,11 @@ import config
 
 
 class ConfigNormalizationTests(unittest.TestCase):
+    def test_normalize_config_removes_legacy_push_cron(self):
+        cfg = config.normalize_config({"scheduler": {"cron": "0 12 * * *"}})
+
+        self.assertNotIn("cron", cfg["scheduler"])
+
     def test_normalize_daily_limit_from_string(self):
         cfg = config.normalize_config({"filter": {"daily_limit": "30"}})
         self.assertEqual(cfg["filter"]["daily_limit"], 30)

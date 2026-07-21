@@ -1969,9 +1969,9 @@ class TelegramNotifier(BaseNotifier):
                         h, m = text.split(":")
                         new_cron = f"{m} {h} * * *"
 
-                        # 读取当前配置
-                        config = self._read_config()
-                        current = config.get("schedule", "")
+                        # 主推送计划只保存在数据库。
+                        from database import get_or_initialize_push_schedule
+                        current = await get_or_initialize_push_schedule()
 
                         if current and "," in current:
                             # 已经是多个时间点，追加
@@ -2951,9 +2951,9 @@ class TelegramNotifier(BaseNotifier):
 
         async def _show_schedule_menu(message):
             """显示定时任务设置菜单"""
-            # 读取当前配置
-            config = self._read_config()
-            schedule = config.get("schedule", "45 9/3 * * *")  # 默认
+            # 主推送计划只保存在数据库。
+            from database import get_or_initialize_push_schedule
+            schedule = await get_or_initialize_push_schedule()
 
             # 解析 cron 为友好显示
             display_time = _cron_to_friendly(schedule)

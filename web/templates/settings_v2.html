@@ -868,14 +868,10 @@ textarea.form-control {
             <div class="form-grid">
                 <div>
                     <div class="form-group">
-                        <label class="form-label">主任务 Cron</label>
-                        <input type="text" class="form-control" id="scheduler_cron"
-                               value="{{ config.scheduler.cron | default('0 12 * * *') }}"
-                               placeholder="0 12 * * *">
+                        <label class="form-label">主推送时间</label>
+                        <div class="form-control" aria-readonly="true">{{ push_schedule }}</div>
                         <div class="help-text">
-                            <a href="#" onclick="setCron('0 12 * * *')">每天12点</a> ·
-                            <a href="#" onclick="setCron('0 8,20 * * *')">早8晚8</a> ·
-                            <a href="#" onclick="setCron('0 */4 * * *')">每4小时</a>
+                            主推送时间保存在数据库。请使用 Telegram 的 /schedule 修改。
                         </div>
                     </div>
                     <div class="form-group">
@@ -1084,12 +1080,6 @@ function getArrayValues(containerId) {
     return Array.from(container.querySelectorAll('.array-item')).map(el => 
         el.childNodes[0].textContent.trim()
     );
-}
-
-// 设置 Cron 预设
-function setCron(val) {
-    document.getElementById('scheduler_cron').value = val;
-    return false;
 }
 
 const initialConfig = {{ config | tojson }};
@@ -1417,7 +1407,6 @@ function collectConfig() {
     cfg.web_password = document.getElementById('web_password').value || '';
     cfg.web_password_confirm = document.getElementById('web_password_confirm').value || '';
 
-    scheduler.cron = document.getElementById('scheduler_cron').value;
     scheduler.coalesce = document.getElementById('scheduler_coalesce').checked;
     scheduler.daily_report_cron = document.getElementById('scheduler_daily_report_cron').value || scheduler.daily_report_cron || '0 0 * * *';
 

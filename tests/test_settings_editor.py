@@ -24,6 +24,22 @@ class SettingsEditorTests(unittest.TestCase):
 
         self.assertEqual(snapshot["network"]["random_delay"], [1.0, 3.0])
 
+    def test_apply_settings_removes_legacy_push_cron(self):
+        merged = apply_settings_payload(
+            {
+                "scheduler": {"cron": "0 12 * * *", "coalesce": True},
+                "web": {"require_login_password": False, "password": ""},
+            },
+            {
+                "scheduler": {"cron": "0 20 * * *"},
+                "web": {"require_login_password": False},
+            },
+            str,
+        )
+
+        self.assertNotIn("cron", merged["scheduler"])
+        self.assertTrue(merged["scheduler"]["coalesce"])
+
     def test_merge_replaces_lists_and_preserves_unspecified_fields(self):
         merged = merge_config_replace_lists(
             {"strategies": ["xp_search", "related"], "web": {"port": 8000, "enabled": True}},

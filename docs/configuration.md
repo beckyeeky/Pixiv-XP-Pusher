@@ -33,7 +33,7 @@ python scripts/refresh_config.py config.yaml --output config.new.yaml
 可选策略：`xp_search` / `related` / `ranking` / `subscription`
 
 ## scheduler
-- `cron`：主任务 cron
+- 主推送计划保存在数据库 `schedule_cron`。新数据库默认为每日 09:30 和 21:00。请使用 Telegram `/schedule` 修改。
 - `daily_report_cron`：日报/维护 cron
 
 ## filter

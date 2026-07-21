@@ -777,18 +777,9 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
     """启动调度器 (Daemon Mode)"""
     main_client, sync_client, profiler, notifiers = await setup_services(config)
     scheduler_cfg = config.get("scheduler", {})
-    db_cron = await db_module.get_state("schedule_cron")
-    config_cron = scheduler_cfg.get("cron", "0 20 * * *")
-    schedule_str = db_cron if db_cron else config_cron
+    schedule_str = await db_module.get_or_initialize_push_schedule()
     cron_list = _split_schedule_crons(schedule_str)
     min_interval = _get_min_schedule_interval(cron_list)
-
-    if db_cron and db_cron != config_cron:
-        logger.warning(
-            "检测到数据库中的 schedule_cron (%s) 与 config.yaml 中的 scheduler.cron (%s) 不一致；当前仍使用数据库值，请按需在 Telegram 菜单或配置文件中统一。",
-            db_cron,
-            config_cron,
-        )
     
     # Start Listeners (Background)
     if notifiers:

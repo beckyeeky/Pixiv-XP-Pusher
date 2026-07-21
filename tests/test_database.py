@@ -13,6 +13,18 @@ from tag_relationship_judge import relationship_evidence, relationship_evidence_
 
 
 class DatabaseInitTests(unittest.TestCase):
+    def test_database_initializes_default_push_schedule(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "pixiv_xp.db"
+            with patch.object(database, "DB_PATH", db_path):
+                database._init_db_sync()
+                with sqlite3.connect(db_path) as conn:
+                    row = conn.execute(
+                        "SELECT value FROM system_state WHERE key = 'schedule_cron'"
+                    ).fetchone()
+
+        self.assertEqual(row, ("30 9 * * *,0 21 * * *",))
+
     def test_alias_search_escapes_wildcards_and_matches_case_insensitively(self):
         conn = sqlite3.connect(":memory:")
         try:

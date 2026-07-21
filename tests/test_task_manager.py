@@ -227,7 +227,7 @@ class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_run_scheduler_skips_immediate_run_when_recent_push_exists(self):
-        config = {"scheduler": {"cron": "0 12 * * *"}}
+        config = {"scheduler": {}}
         scheduler = MagicMock()
         scheduler.add_job = MagicMock()
         scheduler.start = MagicMock()
@@ -244,6 +244,7 @@ class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(task_manager, "setup_services", new=AsyncMock(return_value=(AsyncMock(), AsyncMock(), AsyncMock(), []))), \
              patch.object(task_manager, "AsyncIOScheduler", return_value=scheduler), \
+             patch.object(task_manager.db_module, "get_or_initialize_push_schedule", new=AsyncMock(return_value="0 12 * * *")), \
              patch.object(task_manager.db_module, "get_state", new=AsyncMock(side_effect=fake_get_state)), \
              patch.object(task_manager.db_module, "get_last_push_at", new=AsyncMock(return_value=None)), \
              patch.object(task_manager.asyncio, "create_task") as mock_create_task, \
@@ -253,7 +254,7 @@ class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         mock_create_task.assert_not_called()
 
-    async def test_run_scheduler_warns_when_db_schedule_differs_from_config(self):
+    async def test_run_scheduler_uses_database_schedule_without_config_cron(self):
         config = {"scheduler": {"cron": "0 12 * * *"}}
         scheduler = MagicMock()
         scheduler.add_job = MagicMock()
@@ -264,17 +265,13 @@ class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(task_manager, "setup_services", new=AsyncMock(return_value=(AsyncMock(), AsyncMock(), AsyncMock(), []))), \
              patch.object(task_manager, "AsyncIOScheduler", return_value=scheduler), \
-             patch.object(task_manager.db_module, "get_state", new=AsyncMock(return_value="0 20 * * *")), \
-             patch.object(task_manager.logger, "warning") as mock_warning, \
+             patch.object(task_manager.db_module, "get_or_initialize_push_schedule", new=AsyncMock(return_value="30 9 * * *,0 21 * * *")) as get_schedule, \
              patch.object(task_manager.asyncio, "sleep", new=AsyncMock(side_effect=fake_sleep)):
             with self.assertRaises(asyncio.CancelledError):
                 await task_manager.run_scheduler(config, run_immediately=False)
 
-        mock_warning.assert_any_call(
-            "检测到数据库中的 schedule_cron (%s) 与 config.yaml 中的 scheduler.cron (%s) 不一致；当前仍使用数据库值，请按需在 Telegram 菜单或配置文件中统一。",
-            "0 20 * * *",
-            "0 12 * * *",
-        )
+        get_schedule.assert_awaited_once()
+        self.assertEqual(scheduler.add_job.call_count, 3)
 
 
 if __name__ == "__main__":

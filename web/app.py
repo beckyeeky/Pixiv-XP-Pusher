@@ -359,9 +359,11 @@ async def settings_page(request: Request):
         return RedirectResponse("/", status_code=302)
 
     config = build_settings_view_config(_redact_sensitive_config(load_config()))
+    push_schedule = await db.get_or_initialize_push_schedule()
     return render_template(request, "settings_v2.html", {
         "active_page": "settings",
         "config": config,
+        "push_schedule": push_schedule,
         "known_llm_models": get_known_model_catalog("llm"),
         "known_embedding_models": get_known_model_catalog("embedding"),
     })
@@ -463,7 +465,7 @@ class SettingsRequest(BaseModel):
     web_password: Optional[str] = ""
     web_password_confirm: Optional[str] = ""
     user_id: int
-    cron: str
+    cron: Optional[str] = None  # Deprecated: the database owns the push schedule.
     ip_weight_discount: float
     danbooru_login: Optional[str] = ""
     danbooru_api_key: Optional[str] = ""
@@ -514,7 +516,6 @@ def _legacy_settings_payload(req: SettingsRequest) -> dict:
             "danbooru_api_key": req.danbooru_api_key,
         },
         "strategies": req.strategies,
-        "scheduler": {"cron": req.cron},
         "filter": {
             "r18_mode": req.r18_mode,
             "daily_limit": req.daily_limit,
@@ -1315,7 +1316,6 @@ def generate_commented_yaml(config: dict) -> str:
         },
         "scheduler": {
             "_desc": "调度器配置",
-            "cron": "Cron 表达式，例如 '0 */6 * * *' 每6小时执行一次",
             "coalesce": "是否合并错过任务",
             "daily_report_cron": "每日维护任务 Cron（日报+清理）"
         },
