@@ -132,6 +132,14 @@ _Avoid_: Error log, all classified tags
 The one configured AI model that uses live search to classify a Normalized Tag. Gemini with Google Search Grounding is the initial Grounded Judge; a successful result is accepted directly, while failed or explicitly uncertain results remain unresolved.
 _Avoid_: Multi-Judge vote, consensus classifier
 
+**Search Quota Pool**:
+One independently billed search credential whose bounded free allowance may be used for a Search-first Grounded Judge evaluation. It is selected as one unit for a request and is never a Tag identity or classification source.
+_Avoid_: API key rotation, shared Provider
+
+**Search-first Shadow Evaluation**:
+A non-persisting comparison of a Search-first Grounded Judge against known Tag Categories. It records outcomes and pool usage without activating an AI Classification Record or changing a Human Classification.
+_Avoid_: Classification Maintenance, production rollout
+
 **AI Classification Record**:
 The complete persisted result from a Grounded Judge: `tag`, `classification`, `explanation`, and `languages`. `languages` stores one primary ISO language code; explanation is the full human-readable basis for review, not separately stored evidence or a second classification.
 _Avoid_: Tag Evidence, Judge vote, source record

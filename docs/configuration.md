@@ -72,6 +72,37 @@ python scripts/maintain_high_weight_tags.py --limit 40 --min-weight 1.0 --output
 python scripts/maintain_high_weight_tags.py --apply --reviewed-tags /tmp/reviewed-tags.json
 ```
 
+### Search-first Shadow Evaluation
+
+在替换生产 Grounded Judge 前，可先使用 Brave LLM Context、Tavily Advanced fallback 和 DeepSeek Flash 对 JSONL 样本做只读对照。每行至少包含 `tag`，可选 `translation` 与 `expected_classification`；脚本不会读取或修改 `config.yaml`，也不会写入任何 Tag Classification。
+
+```bash
+export BRAVE_SEARCH_KEY_1='...'
+export TAVILY_SEARCH_KEY_1='...'
+export DEEPSEEK_API_KEY='...'
+python3 scripts/run_search_judge_shadow.py \
+  --input /tmp/tag-shadow.jsonl \
+  --report /tmp/tag-shadow-report.json \
+  --brave-key-env BRAVE_SEARCH_KEY_1 \
+  --tavily-key-env TAVILY_SEARCH_KEY_1
+```
+
+可重复传入 `--brave-key-env` / `--tavily-key-env` 以使用独立 Quota Pool。默认每个 Brave Pool 最多 1000 次搜索；Tavily Advanced 默认最多 500 次搜索（每次 2 credits）。请按实际套餐使用 `--brave-free-search-limit` 或 `--tavily-free-search-limit` 调整。每次已提交且未被拒绝的搜索（即使没有 snippets）都会计入额度；默认在 `data/search_judge_quota_usage.json` 保存当月匿名 pool 用量，以便下次运行继续使用同一额度。可用 `--quota-state-path` 改为其他本地路径。报告只含匿名 pool ID、统计和来源 URL，不会输出 Key。
+
+要优先验收对推荐影响最大的标签，可只读导出人工分类记录；默认将 `abs(xp_profile.weight)` 最高的 50 条标为 `priority`（包含强负反馈），而报告会单列 `priority_metrics`。这不会修改数据库或生产分类：
+
+```bash
+python3 scripts/export_tag_shadow_manual.py \
+  --output /tmp/tag-shadow-priority.jsonl \
+  --priority-limit 50
+
+python3 scripts/run_search_judge_shadow.py \
+  --input /tmp/tag-shadow-priority.jsonl \
+  --report /tmp/tag-shadow-priority-report.json \
+  --brave-key-env BRAVE_SEARCH_KEY_1 \
+  --tavily-key-env TAVILY_SEARCH_KEY_1
+```
+
 Telegram 的 `🏷️ 标签审核` 菜单提供同一流程：先点 `📋 查看高权重候选`，确认列表后才会出现并执行分类按钮。候选快照会在确认前重新校验，避免分类已不再符合当前条件的 Tag。
 
 作品级 `semantic_weight` 不应凭感觉调整。运行 `python3 scripts/calibrate_embedding_weight.py` 可用历史 like/dislike 和当前缓存向量生成只读离线对照；样本不足时不会给出建议，也不会自动修改配置。指标与解释见 [作品级 Embedding 权重校准](./embedding_weight_calibration.md)。
