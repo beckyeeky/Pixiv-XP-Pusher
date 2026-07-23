@@ -57,6 +57,18 @@ class TagClassifierTests(unittest.TestCase):
 
         self.assertEqual(classifier.maintenance_concurrency, 10)
 
+    def test_search_first_is_enabled_without_a_legacy_gemini_judge(self):
+        classifier = TagClassifier({
+            "enabled": True,
+            "judges": [],
+            "grounded_judge": {"backend": "search_first"},
+        })
+
+        self.assertTrue(classifier.enabled)
+        self.assertTrue(classifier.search_first_enabled)
+        self.assertFalse(classifier.legacy_judge_enabled)
+        self.assertIsNone(classifier.client)
+
     def test_disabled_classifier_falls_back_to_manual_ip_list(self):
         async def _run():
             classifier = TagClassifier({"enabled": False}, ip_tags=["blue_archive"])

@@ -49,10 +49,10 @@ python scripts/refresh_config.py config.yaml --output config.new.yaml
 - `enabled`：启用后将标签区分为 Feature、Character、Copyright、Artist、Non-preference 与 Unresolved
 - `providers`：顶层 typed Provider 配置；Pixiv 与 Danbooru 各只能有一个，LLM Provider 可配置多个。自定义 OpenAI-compatible Provider 必须提供 `base_url`。
 - `models`：顶层 Model 配置，每项只引用一个 Provider，并填写该 Provider 可用的模型名称。
-- `judges`：引用 `models` 的名称列表；每个不同 `Provider + Model` 身份只计一票。内嵌 Judge 对象不再支持。
+- `judges`：旧版 Gemini / 多 Judge 证据路径。Search-first 模式会忽略并清空此列表，不需要配置。
 - `maintenance.max_tags_per_run`：每次只刷新高影响画像标签，Unresolved 可优先
-- `maintenance.concurrency`：后台 Gemini Grounded Judge 的最大并发请求数，默认 `10`
-- `grounded_judge`：Gemini Grounded Judge 的请求配置。默认总超时 `45` 秒、输出上限 `512` token、温度 `1`；超时、连接错误、限流（429）或服务端错误会按指数退避自动重试 2 次。
+- `maintenance.concurrency`：后台 Grounded Judge 的最大并发请求数，默认 `10`
+- `grounded_judge`：Search-first 搜索判定配置。分类温度固定为 `0`，不需要 Gemini Model 或 Gemini API Key。
 - `danbooru`：仅查询被选中的画像标签；证据会缓存，超时或错误时继续使用缓存和 Judge 投票。连接凭据与地址由 `type: danbooru` Provider 提供。
 - 机器 Tag Evidence 按 source 独立保鲜 60 天；缓存读取不会刷新时效，只有该 source 成功复核才会更新。人工审核永不过期。
 - `--once` 在成功推送 Daily Slate 后最多等待 90 秒完成有界 Classification Maintenance；维护失败或超时会独立记录，不会撤销推送结果。调度模式始终后台执行且不会重复启动活动维护。
@@ -72,9 +72,49 @@ python scripts/maintain_high_weight_tags.py --limit 40 --min-weight 1.0 --output
 python scripts/maintain_high_weight_tags.py --apply --reviewed-tags /tmp/reviewed-tags.json
 ```
 
+### Search-first Grounded Judge
+
+生产标签判定固定使用以下流程：
+
+1. Brave 搜索一次并提供证据。
+2. 只有 Brave 没有有效证据时，才使用 Tavily Advanced 搜索。
+3. DeepSeek Flash 只根据搜索证据输出分类，温度固定为 `0`。
+4. 搜索失败或模型不确定时保留为 Unresolved，不调用 Gemini 兜底。
+
+自动维护只处理达到 Maintenance Eligibility 的画像标签；新 tag 不会在出现时立即调用搜索。推荐起点是 `maintenance.min_profile_weight: 1.0`、`max_tags_per_run: 40`。每个 Brave/Tavily 账号应作为一个独立 Provider，列表顺序即额度耗尽顺序：
+
+```yaml
+providers:
+  brave_search_1: {type: brave_search, api_key: "..."}
+  tavily_search_1: {type: tavily_search, api_key: "..."}
+  deepseek: {type: deepseek, api_key: "...", base_url: "https://api.deepseek.com/v1"}
+models:
+  deepseek_flash: {provider: deepseek, model: deepseek-v4-flash, capabilities: [llm]}
+tag_classifier:
+  enabled: true
+  judges: []
+  maintenance: {max_tags_per_run: 40, concurrency: 3, min_profile_weight: 1.0}
+  grounded_judge:
+    backend: search_first
+    search_classifier_model: deepseek_flash
+    brave_providers: [brave_search_1]
+    tavily_providers: [tavily_search_1]
+    brave_request_limit: 1000
+    tavily_request_limit: 500
+```
+
+WebUI 配置顺序：
+
+1. 在 Provider 页面分别创建 Brave Search、Tavily Search 和 DeepSeek/OpenAI-compatible Provider，并填写各自凭据。
+2. 在 Model 页面创建指向 DeepSeek Provider 的 `deepseek_flash` LLM Model。
+3. 在“AI 功能 → 搜索标签判定”中选择分类模型、Brave 账号池和 Tavily 账号池。
+4. 保存后即可通过 WebUI 或 Telegram 运行高影响维护批次。
+
+Gemini Provider/Model 即使仍保留在通用 Provider/Model 列表中，也不会被标签判定调用；确认没有被其他功能引用后可自行删除。
+
 ### Search-first Shadow Evaluation
 
-在替换生产 Grounded Judge 前，可先使用 Brave LLM Context、Tavily Advanced fallback 和 DeepSeek Flash 对 JSONL 样本做只读对照。每行至少包含 `tag`，可选 `translation` 与 `expected_classification`；脚本不会读取或修改 `config.yaml`，也不会写入任何 Tag Classification。
+上线前后都可使用 Brave LLM Context、Tavily Advanced fallback 和 DeepSeek Flash 对 JSONL 样本做只读对照。每行至少包含 `tag`，可选 `translation` 与 `expected_classification`；脚本不会读取或修改 `config.yaml`，也不会写入任何 Tag Classification。
 
 ```bash
 export BRAVE_SEARCH_KEY_1='...'

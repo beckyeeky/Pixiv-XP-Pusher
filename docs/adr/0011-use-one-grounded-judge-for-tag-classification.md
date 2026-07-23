@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # Use one grounded Judge for tag classification
 
 Classification Maintenance uses Gemini with Google Search Grounding as one Grounded Judge rather than multi-Judge consensus. The Judge performs live search and persists the returned `tag`, `classification`, `explanation`, and one primary ISO `languages` value as one AI Classification Record; a successful result is accepted directly, while request failures and explicit uncertainty remain Unresolved Tags for human review. Human Classifications permanently override AI Classification Records. The same path is available as a manual bulk action from the Review Queue and in periodic maintenance. We deliberately do not persist a separate machine-evidence or citation model, because full explanations are the intended review surface and the product values a single search-informed decision over multiple static-knowledge votes. xAI and Grok OAuth are outside this first implementation; a later provider must first use the ordinary API-key path before OAuth is considered.

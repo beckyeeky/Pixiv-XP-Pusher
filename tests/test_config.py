@@ -44,6 +44,34 @@ class ConfigNormalizationTests(unittest.TestCase):
         self.assertFalse(cfg["tag_classifier"]["enabled"])
         self.assertEqual(cfg["tag_classifier"]["ttl_days"], 30)
 
+    def test_normalize_search_first_grounded_judge_provider_pools(self):
+        cfg = config.normalize_config({
+            "providers": {
+                "brave_1": {"type": "brave_search", "api_key": "brave-key"},
+                "tavily_1": {"type": "tavily_search", "api_key": "tavily-key"},
+                "deepseek": {"type": "deepseek", "api_key": "llm-key"},
+            },
+            "models": {"flash": {"provider": "deepseek", "model": "deepseek-v4-flash"}},
+            "tag_classifier": {
+                "judges": ["flash"],
+                "maintenance": {"min_profile_weight": "-1.5"},
+                "grounded_judge": {
+                    "backend": "search_first",
+                    "search_classifier_model": "flash",
+                    "brave_providers": ["brave_1", "missing"],
+                    "tavily_providers": ["tavily_1"],
+                },
+            },
+        })
+
+        grounded = cfg["tag_classifier"]["grounded_judge"]
+        self.assertEqual(grounded["backend"], "search_first")
+        self.assertEqual(grounded["search_classifier_model"], "flash")
+        self.assertEqual(grounded["brave_providers"], ["brave_1"])
+        self.assertEqual(grounded["tavily_providers"], ["tavily_1"])
+        self.assertEqual(cfg["tag_classifier"]["judges"], [])
+        self.assertEqual(cfg["tag_classifier"]["maintenance"]["min_profile_weight"], 1.5)
+
     def test_load_config_rejects_non_mapping_root(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.yaml"

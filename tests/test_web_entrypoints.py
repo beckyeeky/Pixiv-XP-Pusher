@@ -66,9 +66,18 @@ class WebEntrypointTests(unittest.TestCase):
             'id="section-models"',
             'id="providerDialog"',
             'id="modelDialog"',
+            'id="tag_classifier_search_model"',
+            'id="brave_provider_selection"',
+            'id="tavily_provider_selection"',
+            'value="brave_search"',
+            'value="tavily_search"',
+            '此流程不会调用 Gemini',
+            'Gemini Model 和 Gemini API Key 均不需要设置',
             '智能精排',
         ):
             self.assertIn(marker, template)
+        self.assertNotIn('Gemini backend Model', template)
+        self.assertNotIn('id="tag_classifier_grounded_backend"', template)
 
     def test_authenticated_single_tag_grounded_judge_uses_translation_and_activates_valid_result(self):
         async def authenticated():
@@ -130,32 +139,31 @@ class WebEntrypointTests(unittest.TestCase):
         activate.assert_awaited_once()
 
     def test_authenticated_bulk_grounded_judge_reports_mixed_outcomes(self):
-        async def authenticated():
-            return None
+        summary = {
+            "attempted": 3, "accepted": 1, "unresolved": 1, "failed": 1,
+            "human_override": 0,
+            "usage": {"input": 4, "output": 3, "thoughts": 2, "tool_use_prompt": 1, "total": 10, "search_queries": 2},
+            "items": [],
+        }
+        runtime_config = {"tag_classifier": {"maintenance": {
+            "max_tags_per_run": 3, "min_profile_weight": 1.5, "concurrency": 2,
+        }}}
 
-        async def classify(tag, _):
-            if tag == "resolved":
-                return {"usage": {"input": 4, "output": 3, "thoughts": 2, "tool_use_prompt": 1, "total": 10, "search_queries": 2}}
-            if tag == "uncertain":
-                raise web_app_module.HTTPException(status_code=422, detail="Grounded Judge 明确标为 unresolved")
-            raise web_app_module.HTTPException(status_code=502, detail="offline")
-
-        canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
-        try:
-            with patch.object(web_app_module.db, "get_tag_review_queue", new=AsyncMock(return_value=[
+        with patch.object(web_app_module, "load_config", return_value=runtime_config), \
+             patch.object(web_app_module.db, "get_high_weight_unclassified_profile_tags", new=AsyncMock(return_value=[
                 {"tag": "resolved"}, {"tag": "uncertain"}, {"tag": "offline"},
-            ])), patch.object(web_app_module, "classify_tag_review", side_effect=classify):
-                with TestClient(canonical_app) as client:
-                    response = client.post("/api/tag-reviews/ai-process-all")
-        finally:
-            canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
+            ])) as select, patch.object(web_app_module, "run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run:
+            response = asyncio.run(web_app_module.classify_all_tag_reviews(_=None))
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["attempted"], 3)
-        self.assertEqual(response.json()["accepted"], 1)
-        self.assertEqual(response.json()["unresolved"], 1)
-        self.assertEqual(response.json()["failed"], 1)
-        self.assertEqual(response.json()["usage"], {"input": 4, "output": 3, "thoughts": 2, "tool_use_prompt": 1, "total": 10, "search_queries": 2})
+        self.assertEqual(response["attempted"], 3)
+        self.assertEqual(response["accepted"], 1)
+        self.assertEqual(response["unresolved"], 1)
+        self.assertEqual(response["failed"], 1)
+        self.assertEqual(response["usage"], {"input": 4, "output": 3, "thoughts": 2, "tool_use_prompt": 1, "total": 10, "search_queries": 2})
+        select.assert_awaited_once_with(limit=3, min_profile_weight=1.5)
+        run.assert_awaited_once_with(
+            ["resolved", "uncertain", "offline"], runtime_config, concurrency=2,
+        )
     def test_tag_review_apis_delegate_to_review_queue(self):
         with patch.object(web_app_module.db, "get_tag_review_queue", return_value=[{"tag": "needs_review"}]) as get_queue, \
              patch.object(web_app_module.db, "review_tag_classification") as review:

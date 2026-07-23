@@ -1,15 +1,14 @@
-"""Search-first tag classification for shadow evaluation.
-
-This module deliberately does not alter the production Gemini Grounded Judge.
-It provides a bounded, provider-agnostic path that can be evaluated before it
-is wired into Classification Maintenance.
-"""
+"""Brave/Tavily-grounded tag classification for shadow and production maintenance."""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import threading
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Awaitable, Callable, Mapping, Protocol
 
 import aiohttp
@@ -53,6 +52,46 @@ class _PoolState:
     exhausted: bool = False
 
 
+class MonthlyQuotaUsageLedger:
+    """Persist current-month pool usage locally without storing API credentials."""
+
+    def __init__(self, path: Path, *, month: str | None = None):
+        self._path = path
+        self._month = month or datetime.now().strftime("%Y-%m")
+        self._lock = threading.Lock()
+
+    def _read_unlocked(self) -> dict:
+        if not self._path.exists():
+            return {"months": {}}
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Quota 用量账本无法读取: {self._path}") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("months"), dict):
+            raise ValueError(f"Quota 用量账本格式无效: {self._path}")
+        return data
+
+    def initial_usage(self) -> dict[str, int]:
+        with self._lock:
+            month_usage = self._read_unlocked()["months"].get(self._month, {})
+        if not isinstance(month_usage, dict):
+            raise ValueError(f"Quota 用量账本月份格式无效: {self._path}")
+        return {str(pool_id): max(0, int(used or 0)) for pool_id, used in month_usage.items()}
+
+    def save(self, statuses: list[Mapping[str, object]]) -> None:
+        with self._lock:
+            data = self._read_unlocked()
+            month_usage = data["months"].setdefault(self._month, {})
+            for status in statuses:
+                pool_id = str(status.get("pool_id") or "").strip()
+                if pool_id:
+                    month_usage[pool_id] = max(0, int(status.get("requests_used") or 0))
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._path.with_suffix(self._path.suffix + ".tmp")
+            temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(self._path)
+
+
 class SearchCredentialPool:
     """Quota-first routing across independent credential pools.
 
@@ -61,7 +100,11 @@ class SearchCredentialPool:
     next pool. The caller supplies the concrete network request.
     """
 
-    def __init__(self, pools: list[SearchPoolConfig], *, initial_requests_used: Mapping[str, int] | None = None):
+    def __init__(
+        self, pools: list[SearchPoolConfig], *,
+        initial_requests_used: Mapping[str, int] | None = None,
+        on_usage_change: Callable[[list[dict]], None] | None = None,
+    ):
         if not pools:
             raise ValueError("至少需要一个搜索 Quota Pool")
         if len({pool.pool_id for pool in pools}) != len(pools):
@@ -79,6 +122,7 @@ class SearchCredentialPool:
             )
         self._next_index = 0
         self._selection_lock = asyncio.Lock()
+        self._on_usage_change = on_usage_change
 
     def status(self) -> list[dict[str, int | str | bool | None]]:
         """Return redacted, report-safe pool usage."""
@@ -110,6 +154,8 @@ class SearchCredentialPool:
             self._next_index = (index + 1) % len(self._pools)
         else:
             self._next_index = index
+        if self._on_usage_change:
+            self._on_usage_change(self.status())
 
     async def _reserve_next_pool(self) -> tuple[int, SearchPoolConfig]:
         async with self._selection_lock:
@@ -118,8 +164,13 @@ class SearchCredentialPool:
             return index, pool
 
     def _exhaust(self, index: int, pool: SearchPoolConfig) -> None:
-        self._states[pool.pool_id].exhausted = True
+        state = self._states[pool.pool_id]
+        state.exhausted = True
+        if pool.request_limit is not None:
+            state.requests_used = max(state.requests_used, pool.request_limit)
         self._next_index = (index + 1) % len(self._pools)
+        if self._on_usage_change:
+            self._on_usage_change(self.status())
 
     async def search(
         self,
@@ -257,16 +308,17 @@ class BraveLLMContextClient:
 
     def __init__(
         self, pool: SearchCredentialPool, request_json: JsonRequester = _aiohttp_request_json,
-        *, timeout_seconds: float = 30,
+        *, timeout_seconds: float = 30, endpoint: str | None = None,
     ):
         self._pool = pool
         self._request_json = request_json
         self._timeout_seconds = timeout_seconds
+        self._endpoint = endpoint or self.endpoint
 
     async def search(self, query: str) -> SearchResponse:
         async def request(selected: SearchPoolConfig) -> SearchResponse:
             status, body, _headers = await self._request_json(
-                "GET", self.endpoint,
+                "GET", self._endpoint,
                 {"Accept": "application/json", "X-Subscription-Token": selected.api_key},
                 params={
                     # Brave LLM Context uses its own `jp` enum, not the ISO `ja` code.
@@ -299,16 +351,17 @@ class TavilySearchClient:
 
     def __init__(
         self, pool: SearchCredentialPool, request_json: JsonRequester = _aiohttp_request_json,
-        *, timeout_seconds: float = 30,
+        *, timeout_seconds: float = 30, endpoint: str | None = None,
     ):
         self._pool = pool
         self._request_json = request_json
         self._timeout_seconds = timeout_seconds
+        self._endpoint = endpoint or self.endpoint
 
     async def search(self, query: str) -> SearchResponse:
         async def request(selected: SearchPoolConfig) -> SearchResponse:
             status, body, _headers = await self._request_json(
-                "POST", self.endpoint,
+                "POST", self._endpoint,
                 {"Content-Type": "application/json", "Authorization": f"Bearer {selected.api_key}"},
                 json_body={
                     "query": query, "search_depth": "advanced", "max_results": 5,
@@ -373,11 +426,12 @@ class DeepSeekFlashClassifier:
     def __init__(
         self, api_key: str, *, model: str = "deepseek-v4-flash",
         base_url: str = "https://api.deepseek.com/v1", timeout_seconds: float = 45,
-        client=None,
+        max_output_tokens: int = 1024, client=None,
     ):
         if not str(api_key).strip():
             raise ValueError("DeepSeek Flash 缺少 API Key")
         self._model = model
+        self._max_output_tokens = max(128, int(max_output_tokens))
         if client is not None:
             self._client = client
         else:
@@ -416,7 +470,7 @@ class DeepSeekFlashClassifier:
                 ),
             }],
             temperature=0.0,
-            max_tokens=512,
+            max_tokens=self._max_output_tokens,
             response_format={"type": "json_object"},
         )
         choice = response.choices[0]
@@ -510,6 +564,108 @@ class SearchGroundedJudge:
             **_evidence_diagnostics(evidence),
             "usage": {"search_queries": search_attempts, **evidence.usage},
         }
+
+
+class ConfiguredSearchGroundedJudge:
+    """Production adapter that converts conservative shadow outcomes into activation records."""
+
+    def __init__(self, judge: SearchGroundedJudge):
+        self._judge = judge
+
+    async def classify(self, tag: str, translation: str | None) -> dict:
+        result = await self._judge.classify(tag, translation)
+        usage = result.get("usage") or {}
+        if result.get("classification") == "unresolved":
+            error = ValueError("Grounded Judge 明确标为 unresolved")
+            error.usage = usage
+            raise error
+        record = validate_ai_classification_record(result, tag)
+        return {**record, "usage": usage}
+
+
+_PRODUCTION_RUNTIMES: dict[str, ConfiguredSearchGroundedJudge] = {}
+_PRODUCTION_RUNTIME_LOCK = threading.Lock()
+
+
+def _production_signature(config: dict) -> str:
+    classifier = config.get("tag_classifier") if isinstance(config.get("tag_classifier"), dict) else {}
+    grounded = classifier.get("grounded_judge") if isinstance(classifier.get("grounded_judge"), dict) else {}
+    classifier_model = str(grounded.get("search_classifier_model") or "").strip()
+    providers = config.get("providers") if isinstance(config.get("providers"), dict) else {}
+    models = config.get("models") if isinstance(config.get("models"), dict) else {}
+    names = [*grounded.get("brave_providers", []), *grounded.get("tavily_providers", [])]
+    selected = {
+        "grounded": grounded,
+        "classifier_model": classifier_model,
+        "models": {classifier_model: models.get(classifier_model)},
+        "providers": {name: providers.get(name) for name in names},
+    }
+    model = models.get(classifier_model)
+    if isinstance(model, dict):
+        selected["providers"][model.get("provider")] = providers.get(model.get("provider"))
+    return hashlib.sha256(json.dumps(selected, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def build_configured_search_grounded_judge(config: dict) -> ConfiguredSearchGroundedJudge:
+    """Build or reuse the process-wide production search pools for one normalized config."""
+    signature = _production_signature(config)
+    with _PRODUCTION_RUNTIME_LOCK:
+        cached = _PRODUCTION_RUNTIMES.get(signature)
+        if cached:
+            return cached
+        classifier = config.get("tag_classifier") if isinstance(config.get("tag_classifier"), dict) else {}
+        grounded = classifier.get("grounded_judge") if isinstance(classifier.get("grounded_judge"), dict) else {}
+        classifier_model = str(grounded.get("search_classifier_model") or "").strip()
+        if not classifier_model:
+            raise ValueError("Search-first Grounded Judge 需要选择一个分类 Model")
+        from config import resolve_model
+        model = resolve_model(config, classifier_model, "llm")
+        if model.get("provider") not in {"deepseek", "openai", "openai_compatible", "local"}:
+            raise ValueError("Search-first Grounded Judge 分类 Model 必须兼容 OpenAI Chat Completions")
+        providers = config.get("providers") if isinstance(config.get("providers"), dict) else {}
+
+        def search_pools(field: str, provider_type: str, limit_field: str) -> list[SearchPoolConfig]:
+            result = []
+            limit = int(grounded.get(limit_field) or (1000 if provider_type == "brave_search" else 500))
+            for name in grounded.get(field, []):
+                provider = providers.get(name)
+                if not isinstance(provider, dict) or provider.get("type") != provider_type:
+                    continue
+                key = str(provider.get("api_key") or "").strip()
+                if key:
+                    result.append(SearchPoolConfig(name, key, request_limit=limit))
+            if not result:
+                raise ValueError(f"Search-first Grounded Judge 缺少可用的 {provider_type} Provider")
+            return result
+
+        ledger = MonthlyQuotaUsageLedger(Path(grounded.get("quota_state_path") or "data/search_judge_quota_usage.json"))
+        initial_usage = ledger.initial_usage()
+        brave_pool = SearchCredentialPool(
+            search_pools("brave_providers", "brave_search", "brave_request_limit"),
+            initial_requests_used=initial_usage, on_usage_change=ledger.save,
+        )
+        tavily_pool = SearchCredentialPool(
+            search_pools("tavily_providers", "tavily_search", "tavily_request_limit"),
+            initial_requests_used=initial_usage, on_usage_change=ledger.save,
+        )
+        timeout = float(grounded.get("timeout_seconds") or 45)
+        brave_provider = providers[grounded["brave_providers"][0]]
+        tavily_provider = providers[grounded["tavily_providers"][0]]
+        base_url = str(model.get("base_url") or "").strip()
+        if not base_url and model.get("provider") == "deepseek":
+            base_url = "https://api.deepseek.com/v1"
+        runtime = ConfiguredSearchGroundedJudge(SearchGroundedJudge(
+            BraveLLMContextClient(brave_pool, timeout_seconds=timeout, endpoint=brave_provider.get("base_url") or None),
+            TavilySearchClient(tavily_pool, timeout_seconds=timeout, endpoint=tavily_provider.get("base_url") or None),
+            DeepSeekFlashClassifier(
+                str(model.get("api_key") or ""), model=str(model.get("model") or "deepseek-v4-flash"),
+                base_url=base_url or "https://api.deepseek.com/v1", timeout_seconds=timeout,
+                max_output_tokens=int(grounded.get("max_output_tokens") or 1024),
+            ),
+        ))
+        _PRODUCTION_RUNTIMES.clear()
+        _PRODUCTION_RUNTIMES[signature] = runtime
+        return runtime
 
 
 async def run_shadow_evaluation(

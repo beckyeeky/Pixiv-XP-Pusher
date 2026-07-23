@@ -8,9 +8,7 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -19,6 +17,7 @@ if str(ROOT) not in sys.path:
 from search_grounded_judge import (  # noqa: E402
     BraveLLMContextClient,
     DeepSeekFlashClassifier,
+    MonthlyQuotaUsageLedger,
     SearchCredentialPool,
     SearchGroundedJudge,
     SearchPoolConfig,
@@ -61,46 +60,8 @@ def _read_items(path: Path) -> list[dict]:
     return items
 
 
-class MonthlyQuotaUsageLedger:
-    """Persist current-month pool usage locally without storing API credentials."""
-
-    def __init__(self, path: Path, *, month: str | None = None):
-        self._path = path
-        self._month = month or datetime.now().strftime("%Y-%m")
-
-    def _read(self) -> dict:
-        if not self._path.exists():
-            return {"months": {}}
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Quota 用量账本无法读取: {self._path}") from exc
-        if not isinstance(data, dict) or not isinstance(data.get("months"), dict):
-            raise ValueError(f"Quota 用量账本格式无效: {self._path}")
-        return data
-
-    def initial_usage(self) -> dict[str, int]:
-        month_usage = self._read()["months"].get(self._month, {})
-        if not isinstance(month_usage, dict):
-            raise ValueError(f"Quota 用量账本月份格式无效: {self._path}")
-        return {str(pool_id): max(0, int(used or 0)) for pool_id, used in month_usage.items()}
-
-    def save(self, statuses: list[Mapping[str, object]]) -> None:
-        data = self._read()
-        months = data["months"]
-        month_usage = months.setdefault(self._month, {})
-        for status in statuses:
-            pool_id = str(status.get("pool_id") or "").strip()
-            if pool_id:
-                month_usage[pool_id] = max(0, int(status.get("requests_used") or 0))
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._path.with_suffix(self._path.suffix + ".tmp")
-        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(self._path)
-
-
 def _build_pools(
-    env_names: list[str], provider: str, request_limit: int, *, initial_usage: Mapping[str, int],
+    env_names: list[str], provider: str, request_limit: int, *, initial_usage: dict[str, int],
 ) -> SearchCredentialPool:
     pools = []
     for index, env_name in enumerate(env_names, start=1):

@@ -34,7 +34,7 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.failed_ids, [2])
         self.assertEqual(result.queued_ids, [])
 
-    async def test_tag_review_menu_runs_gemini_for_the_current_queue_and_reports_remaining_count(self):
+    async def test_tag_review_menu_runs_configured_high_impact_batch_and_reports_remaining_count(self):
         notifier = TelegramNotifier.__new__(TelegramNotifier)
         notifier._tag_review_batch_running = False
         query = SimpleNamespace(edit_message_text=AsyncMock(), answer=AsyncMock())
@@ -43,15 +43,18 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
             "human_override": 0, "usage": {"total": 23, "search_queries": 2},
         }
 
-        with patch("database.get_tag_review_count", new=AsyncMock(side_effect=[2, 1])), \
-             patch("database.get_tag_review_queue", new=AsyncMock(return_value=[{"tag": "one"}, {"tag": "two"}])) as queue, \
-             patch("notifier.telegram.load_config", return_value={"tag_classifier": {"maintenance": {"concurrency": 3}}}), \
+        runtime_config = {"tag_classifier": {"maintenance": {
+            "concurrency": 3, "max_tags_per_run": 20, "min_profile_weight": 1.25,
+        }}}
+        with patch("database.get_tag_review_count", new=AsyncMock(return_value=1)), \
+             patch("database.get_high_weight_unclassified_profile_tags", new=AsyncMock(return_value=[{"tag": "one"}, {"tag": "two"}])) as queue, \
+             patch("notifier.telegram.load_config", return_value=runtime_config), \
              patch("notifier.telegram.run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run:
             await notifier._handle_menu_callback(query, "menu:tag_review:run")
 
-        queue.assert_awaited_once_with(limit=2)
+        queue.assert_awaited_once_with(limit=20, min_profile_weight=1.25)
         run.assert_awaited_once_with(
-            ["one", "two"], {"tag_classifier": {"maintenance": {"concurrency": 3}}}, concurrency=3,
+            ["one", "two"], runtime_config, concurrency=3,
         )
         self.assertFalse(notifier._tag_review_batch_running)
         self.assertIn("当前待人工决定：*1*", query.edit_message_text.await_args_list[-1].args[0])
@@ -497,7 +500,7 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("white\\_hair", text)
         self.assertIn("blue\\_archive", text)
         labels = [button.text for row in query.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard for button in row]
-        self.assertIn("🤖 Gemini 批量判定全部", labels)
+        self.assertIn("🤖 判定高影响批次", labels)
         self.assertIn("⭐ 查看常用 Tag", labels)
 
     async def test_tag_review_menu_requires_candidate_preview_before_high_weight_classification(self):
@@ -516,18 +519,18 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
         summary = {"accepted": 1, "unresolved": 1, "failed": 0}
 
         with patch("database.get_high_weight_unclassified_profile_tags", new=AsyncMock(side_effect=[candidates, candidates])) as select, \
-             patch("notifier.telegram.load_config", return_value={"tag_classifier": {"maintenance": {"concurrency": 3}}}), \
+             patch("notifier.telegram.load_config", return_value={"tag_classifier": {"maintenance": {"concurrency": 3, "max_tags_per_run": 25, "min_profile_weight": 1.5}}}), \
              patch("notifier.telegram.run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run:
             await notifier._handle_menu_callback(query, "menu:tag_review:high_weight")
             await notifier._handle_menu_callback(query, "menu:tag_review:high_weight:confirm")
 
         self.assertIn("高权重未分类候选", query.edit_message_text.await_args_list[0].args[0])
         select.assert_has_awaits([
-            call(limit=40, min_profile_weight=1.0),
-            call(limit=40, min_profile_weight=1.0),
+            call(limit=25, min_profile_weight=1.5),
+            call(limit=25, min_profile_weight=1.5),
         ])
         run.assert_awaited_once_with(
-            ["high_weight", "unresolved"], {"tag_classifier": {"maintenance": {"concurrency": 3}}}, concurrency=3,
+            ["high_weight", "unresolved"], {"tag_classifier": {"maintenance": {"concurrency": 3, "max_tags_per_run": 25, "min_profile_weight": 1.5}}}, concurrency=3,
         )
 
 

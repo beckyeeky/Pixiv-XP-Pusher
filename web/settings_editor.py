@@ -126,8 +126,19 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
         "concurrency": 5,
         "maintenance": {
             "max_tags_per_run": 40,
-            "min_profile_weight": 0.0,
+            "min_profile_weight": 1.0,
             "prefer_unresolved_first": True,
+        },
+        "grounded_judge": {
+            "backend": "gemini",
+            "search_classifier_model": "",
+            "brave_providers": [],
+            "tavily_providers": [],
+            "brave_request_limit": 1000,
+            "tavily_request_limit": 500,
+            "quota_state_path": "data/search_judge_quota_usage.json",
+            "temperature": 0.0,
+            "max_output_tokens": 1024,
         },
     },
     "filter": {
@@ -396,7 +407,7 @@ def _validate_provider_model_config(config: dict) -> None:
     models = config.get("models", {})
     if not isinstance(providers, dict) or not isinstance(models, dict):
         raise ValueError("Providers 和 Models 必须是对象")
-    allowed_types = {"openai", "deepseek", "anthropic", "google", "openai_compatible", "local", "pixiv", "danbooru"}
+    allowed_types = {"openai", "deepseek", "anthropic", "google", "openai_compatible", "local", "pixiv", "danbooru", "brave_search", "tavily_search"}
     singleton_labels = {"pixiv": "Pixiv", "danbooru": "Danbooru"}
     singleton_counts = {key: 0 for key in singleton_labels}
     for name, provider in providers.items():
@@ -418,7 +429,7 @@ def _validate_provider_model_config(config: dict) -> None:
             raise ValueError("每个 Model 都需要名称和配置")
         if model.get("provider") not in providers:
             raise ValueError(f"Model {name} 必须引用一个已配置 Provider")
-        if providers[model["provider"]].get("type") in {"pixiv", "danbooru"}:
+        if providers[model["provider"]].get("type") in {"pixiv", "danbooru", "brave_search", "tavily_search"}:
             raise ValueError(f"Model {name} 必须引用 LLM Provider")
         if not str(model.get("model") or "").strip():
             raise ValueError(f"Model {name} 需要模型名称")
@@ -434,6 +445,26 @@ def _validate_provider_model_config(config: dict) -> None:
         judges = classifier.get("judges", [])
         if not isinstance(judges, list) or any(name not in models for name in judges):
             raise ValueError("Judge 必须选择已配置的 Model")
+        grounded = classifier.get("grounded_judge", {})
+        if isinstance(grounded, dict) and grounded.get("backend") == "search_first":
+            search_model_name = grounded.get("search_classifier_model")
+            search_model = models.get(search_model_name, {})
+            search_provider = providers.get(search_model.get("provider"), {}) if isinstance(search_model, dict) else {}
+            if (
+                not search_model
+                or "llm" not in search_model.get("capabilities", [])
+                or search_provider.get("type") not in {"openai", "deepseek", "openai_compatible", "local"}
+            ):
+                raise ValueError("Search-first 必须选择 OpenAI Chat Completions 兼容的 LLM Model")
+            for field, provider_type, label in (
+                ("brave_providers", "brave_search", "Brave Search"),
+                ("tavily_providers", "tavily_search", "Tavily Search"),
+            ):
+                selected = grounded.get(field, [])
+                if not isinstance(selected, list) or not selected or any(
+                    providers.get(name, {}).get("type") != provider_type for name in selected
+                ):
+                    raise ValueError(f"Search-first 至少需要一个有效的 {label} Provider")
     function_selections = [
         ("ai", "embedding", "embedding"),
         ("ai", "scorer", "llm"),
@@ -513,3 +544,8 @@ def _validate_classification_maintenance_fields(config: dict) -> None:
             maintenance.get("max_tags_per_run"),
             "tag_classifier.maintenance.max_tags_per_run",
         )
+    if isinstance(maintenance, dict) and "min_profile_weight" in maintenance:
+        try:
+            float(maintenance.get("min_profile_weight"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("tag_classifier.maintenance.min_profile_weight 必须是数字") from exc

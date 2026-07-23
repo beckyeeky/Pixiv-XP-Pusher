@@ -661,9 +661,12 @@ textarea.form-control {
                     <details class="feature-advanced"><summary>高级参数</summary><div class="form-grid"><div class="form-group"><label class="form-label">候选上限</label><input type="number" class="form-control" id="ai_scorer_max_candidates" value="{{ config.ai.scorer.max_candidates | default(50) }}"></div><div class="form-group"><label class="form-label">评分权重</label><input type="number" step="0.01" class="form-control" id="ai_scorer_score_weight" value="{{ config.ai.scorer.score_weight | default(0.3) }}"></div></div></details>
                 </section>
                 <section class="feature-card">
-                    <div class="feature-card-header"><div><h3 class="feature-card-title">标签审查</h3><p class="feature-card-description">使用一个或多个 LLM Judge 分类和维护标签证据。</p></div><label class="toggle-switch"><input type="checkbox" id="tag_classifier_enabled" {% if config.tag_classifier.enabled %}checked{% endif %}><span>启用</span></label></div>
-                    <div id="judge_selection" class="reference-list"></div>
-                    <details class="feature-advanced"><summary>高级参数</summary><div class="form-grid"><div class="form-group"><label class="form-label">证据缓存天数</label><input type="number" min="1" class="form-control" id="tag_classifier_ttl_days" value="{{ config.tag_classifier.ttl_days | default(30) }}"></div><div class="form-group"><label class="form-label">批大小</label><input type="number" min="1" class="form-control" id="tag_classifier_batch_size" value="{{ config.tag_classifier.batch_size | default(50) }}"></div><div class="form-group"><label class="form-label">并发</label><input type="number" min="1" class="form-control" id="tag_classifier_concurrency" value="{{ config.tag_classifier.concurrency | default(5) }}"></div><div class="form-group"><label class="form-label">每次维护标签上限</label><input type="number" min="1" class="form-control" id="tag_classifier_max_tags_per_run" value="{{ config.tag_classifier.maintenance.max_tags_per_run | default(40) }}"></div></div></details>
+                    <div class="feature-card-header"><div><h3 class="feature-card-title">搜索标签判定</h3><p class="feature-card-description">Brave 搜索证据 → 没有有效证据时改用 Tavily → DeepSeek 按证据分类。此流程不会调用 Gemini。</p></div><label class="toggle-switch"><input type="checkbox" id="tag_classifier_enabled" {% if config.tag_classifier.enabled %}checked{% endif %}><span>启用维护</span></label></div>
+                    <div class="help-text">只自动处理达到画像权重阈值的标签；新标签不会一出现就产生搜索费用。人工单条判定不受权重阈值限制。</div>
+                    <div class="form-group"><label class="form-label">分类模型（推荐 DeepSeek Flash）</label><select class="form-control" id="tag_classifier_search_model"></select><div class="help-text">模型只接收搜索结果并输出标签类别，温度固定为 0。Gemini Model 和 Gemini API Key 均不需要设置。</div></div>
+                    <div class="form-group"><label class="form-label">第一步：Brave Search 账号池</label><div id="brave_provider_selection" class="reference-list"></div><div class="help-text">按列表顺序使用；当前账号达到月请求上限或返回额度耗尽后，才切换到下一个账号。</div></div>
+                    <div class="form-group"><label class="form-label">第二步：Tavily Search 账号池</label><div id="tavily_provider_selection" class="reference-list"></div><div class="help-text">只有 Brave 没有提供可用证据时才调用 Tavily，不会与 Brave 同时搜索。</div></div>
+                    <details class="feature-advanced"><summary>高级参数</summary><div class="form-grid"><div class="form-group"><label class="form-label">证据缓存天数</label><input type="number" min="1" class="form-control" id="tag_classifier_ttl_days" value="{{ config.tag_classifier.ttl_days | default(30) }}"></div><div class="form-group"><label class="form-label">批大小</label><input type="number" min="1" class="form-control" id="tag_classifier_batch_size" value="{{ config.tag_classifier.batch_size | default(50) }}"></div><div class="form-group"><label class="form-label">维护并发</label><input type="number" min="1" class="form-control" id="tag_classifier_concurrency" value="{{ config.tag_classifier.maintenance.concurrency | default(3) }}"></div><div class="form-group"><label class="form-label">每次维护标签上限</label><input type="number" min="1" class="form-control" id="tag_classifier_max_tags_per_run" value="{{ config.tag_classifier.maintenance.max_tags_per_run | default(40) }}"></div><div class="form-group"><label class="form-label">最小绝对画像权重</label><input type="number" min="0" step="0.1" class="form-control" id="tag_classifier_min_profile_weight" value="{{ config.tag_classifier.maintenance.min_profile_weight | default(1.0) }}"></div><div class="form-group"><label class="form-label">每个 Brave key 月请求上限</label><input type="number" min="1" class="form-control" id="tag_classifier_brave_request_limit" value="{{ config.tag_classifier.grounded_judge.brave_request_limit | default(1000) }}"></div><div class="form-group"><label class="form-label">每个 Tavily key 月请求上限</label><input type="number" min="1" class="form-control" id="tag_classifier_tavily_request_limit" value="{{ config.tag_classifier.grounded_judge.tavily_request_limit | default(500) }}"></div></div></details>
                 </section>
             </div>
         </div>
@@ -1001,7 +1004,7 @@ textarea.form-control {
     <form method="dialog" class="settings-card" onsubmit="saveProviderDialog(event)">
         <h3 id="providerDialogTitle">添加 AI Provider</h3>
         <div class="form-group"><label class="form-label">Provider 名称</label><input required class="form-control" id="provider_dialog_name" placeholder="例如 openrouter"></div>
-        <div class="form-group"><label class="form-label">服务类型</label><select class="form-control" id="provider_dialog_type"><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="anthropic">Anthropic</option><option value="google">Google</option><option value="local">本地服务</option><option value="openai_compatible">自定义 OpenAI-compatible</option></select></div>
+        <div class="form-group"><label class="form-label">服务类型</label><select class="form-control" id="provider_dialog_type"><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="anthropic">Anthropic</option><option value="google">Google</option><option value="brave_search">Brave Search</option><option value="tavily_search">Tavily Search</option><option value="local">本地服务</option><option value="openai_compatible">自定义 OpenAI-compatible</option></select></div>
         <div class="form-group"><label class="form-label">Base URL</label><input type="url" class="form-control" id="provider_dialog_url" placeholder="https://gateway.example/v1"></div>
         <div class="form-actions"><button type="button" class="btn-secondary" onclick="document.getElementById('providerDialog').close()">取消</button><button type="submit" class="btn-primary">保存</button></div>
     </form>
@@ -1131,10 +1134,10 @@ function renderSingletonProviderSettings() {
 
 function renderLLMSettings() {
     const providers = ensureObject(initialConfig, 'providers');
-    const llmProviders = Object.fromEntries(Object.entries(providers).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)));
+    const managedProviders = Object.fromEntries(Object.entries(providers).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)));
+    const llmProviders = Object.fromEntries(Object.entries(managedProviders).filter(([, provider]) => !['brave_search', 'tavily_search'].includes(provider.type)));
     const models = ensureObject(initialConfig, 'models');
-    const judges = ensureArray(ensureObject(initialConfig, 'tag_classifier'), 'judges');
-    document.getElementById('provider_list').innerHTML = Object.entries(llmProviders)
+    document.getElementById('provider_list').innerHTML = Object.entries(managedProviders)
         .map(([name, provider]) => renderProviderCard(name, provider, models)).join('')
         || '<p class="empty-models">尚未配置 AI Provider。先添加一个服务连接。</p>';
     document.getElementById('model_list').innerHTML = Object.entries(models)
@@ -1143,7 +1146,8 @@ function renderLLMSettings() {
     setFunctionModelOptions('tag_mapping_model', 'llm', ensureObject(initialConfig, 'tag_mapping')?.model);
     setFunctionModelOptions('ai_embedding_model', 'embedding', ensureObject(initialConfig, 'ai').embedding?.model);
     setFunctionModelOptions('ai_scorer_model', 'llm', ensureObject(initialConfig, 'ai').scorer?.model);
-    renderJudgeSelection();
+    setSearchClassifierModelOptions(ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge')?.search_classifier_model);
+    renderSearchProviderSelection();
 }
 
 function renderProviderCard(name, provider, models) {
@@ -1174,7 +1178,7 @@ function defaultModelForCapabilities(capabilities) {
 }
 let editingProviderName = null;
 let editingModelName = null;
-function aiProviderEntries() { return Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)); }
+function aiProviderEntries() { return Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider && !['pixiv', 'danbooru', 'brave_search', 'tavily_search'].includes(provider.type)); }
 function openProviderDialog(name = null) {
     editingProviderName = name;
     const provider = name ? initialConfig.providers[name] : {type: 'openai_compatible', base_url: ''};
@@ -1194,6 +1198,10 @@ function saveProviderDialog(event) {
     if (editingProviderName && editingProviderName !== name) {
         delete initialConfig.providers[editingProviderName];
         Object.values(ensureObject(initialConfig, 'models')).forEach(model => { if (model.provider === editingProviderName) model.provider = name; });
+        const grounded = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge');
+        for (const field of ['brave_providers', 'tavily_providers']) {
+            grounded[field] = ensureArray(grounded, field).map(item => item === editingProviderName ? name : item);
+        }
     }
     document.getElementById('providerDialog').close();
     renderLLMSettings();
@@ -1233,6 +1241,15 @@ function saveModelDialog(event) {
     renderLLMSettings();
 }
 function setFunctionModelOptions(id, capability, selected) { const select = document.getElementById(id); if (!select) return; const models = ensureObject(initialConfig, 'models'); const options = Object.entries(models).filter(([, model]) => Array.isArray(model?.capabilities) && model.capabilities.includes(capability)); select.innerHTML = options.map(([name, model]) => `<option value="${escapeHtml(name)}" ${name === selected ? 'selected' : ''}>${escapeHtml(name)} (${escapeHtml(model.provider || '')})</option>`).join('') || '<option value="">请先配置兼容 Model</option>'; }
+function setSearchClassifierModelOptions(selected) {
+    const select = document.getElementById('tag_classifier_search_model');
+    const providers = ensureObject(initialConfig, 'providers');
+    const compatible = new Set(['openai', 'deepseek', 'openai_compatible', 'local']);
+    const options = Object.entries(ensureObject(initialConfig, 'models')).filter(([, model]) =>
+        Array.isArray(model?.capabilities) && model.capabilities.includes('llm') && compatible.has(providers[model.provider]?.type)
+    );
+    select.innerHTML = options.map(([name, model]) => `<option value="${escapeHtml(name)}" ${name === selected ? 'selected' : ''}>${escapeHtml(name)} (${escapeHtml(model.provider || '')})</option>`).join('') || '<option value="">请先配置兼容 Model</option>';
+}
 function renameModelReferences(oldName, newName) {
     initialConfig.tag_classifier.judges = initialConfig.tag_classifier.judges.map(name => name === oldName ? newName : name);
     const tagMapping = ensureObject(initialConfig, 'tag_mapping');
@@ -1241,6 +1258,8 @@ function renameModelReferences(oldName, newName) {
     if (embedding.model === oldName) embedding.model = newName;
     const scorer = ensureObject(ensureObject(initialConfig, 'ai'), 'scorer');
     if (scorer.model === oldName) scorer.model = newName;
+    const grounded = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge');
+    if (grounded.search_classifier_model === oldName) grounded.search_classifier_model = newName;
 }
 function modelReferenceLabels(name) {
     const refs = [];
@@ -1249,14 +1268,24 @@ function modelReferenceLabels(name) {
     if (ensureObject(initialConfig, 'tag_mapping').model === name) refs.push('标签映射候选');
     if (ensureObject(ensureObject(initialConfig, 'ai'), 'embedding').model === name) refs.push('语义嵌入');
     if (ensureObject(ensureObject(initialConfig, 'ai'), 'scorer').model === name) refs.push('智能精排');
+    if (ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge').search_classifier_model === name) refs.push('Search-first 标签分类');
     return refs;
 }
-function renderJudgeSelection() {
-    const target = document.getElementById('judge_selection');
-    if (!target) return;
-    const judges = ensureArray(ensureObject(initialConfig, 'tag_classifier'), 'judges');
-    const llmModels = Object.entries(ensureObject(initialConfig, 'models')).filter(([, model]) => Array.isArray(model?.capabilities) && model.capabilities.includes('llm'));
-    target.innerHTML = llmModels.length ? llmModels.map(([name, model]) => `<label class="toggle-switch"><input type="checkbox" ${judges.includes(name) ? 'checked' : ''} onchange="toggleJudge('${escapeJs(name)}', this.checked)"><span>${escapeHtml(name)} (${escapeHtml(model.provider || '')})</span></label>`).join('') : '<span class="help-text">请先在 Model 页面创建 LLM Model。</span>';
+function renderSearchProviderSelection() {
+    const grounded = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge');
+    for (const [type, field, targetId] of [
+        ['brave_search', 'brave_providers', 'brave_provider_selection'],
+        ['tavily_search', 'tavily_providers', 'tavily_provider_selection'],
+    ]) {
+        const selected = ensureArray(grounded, field);
+        const entries = Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider?.type === type);
+        document.getElementById(targetId).innerHTML = entries.length ? entries.map(([name]) => `<label class="toggle-switch"><input type="checkbox" ${selected.includes(name) ? 'checked' : ''} onchange="toggleSearchProvider('${field}', '${escapeJs(name)}', this.checked)"><span>${escapeHtml(name)}</span></label>`).join('') : '<span class="help-text">请先在 Provider 页面添加对应 Search Provider。</span>';
+    }
+}
+function toggleSearchProvider(field, name, enabled) {
+    const grounded = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge');
+    const selected = ensureArray(grounded, field);
+    grounded[field] = enabled ? [...new Set([...selected, name])] : selected.filter(item => item !== name);
 }
 function removeModel(name) {
     const refs = modelReferenceLabels(name);
@@ -1285,7 +1314,6 @@ function removeProvider(name) {
     delete initialConfig.providers[name];
     renderLLMSettings();
 }
-function toggleJudge(name, enabled) { const judges = initialConfig.tag_classifier.judges; initialConfig.tag_classifier.judges = enabled ? [...new Set([...judges, name])] : judges.filter(item => item !== name); }
 function openCredentialDialog(name, field = 'api_key', label = '凭据') { editingProviderCredential = {name, field}; document.getElementById('credentialDialogTitle').textContent = `编辑 ${name} 的 ${label}`; document.getElementById('provider_credential_value').value = ''; document.getElementById('provider_credential_delete').checked = false; document.getElementById('providerCredentialDialog').showModal(); }
 function closeCredentialDialog() { document.getElementById('providerCredentialDialog').close(); }
 function saveProviderCredential() {
@@ -1456,14 +1484,21 @@ function collectConfig() {
 
     const tagClassifier = ensureObject(cfg, 'tag_classifier');
     const maintenance = ensureObject(tagClassifier, 'maintenance');
+    const groundedJudge = ensureObject(tagClassifier, 'grounded_judge');
     tagClassifier.enabled = document.getElementById('tag_classifier_enabled').checked;
     tagClassifier.ttl_days = asInt(document.getElementById('tag_classifier_ttl_days').value, tagClassifier.ttl_days || 30);
     tagClassifier.batch_size = asInt(document.getElementById('tag_classifier_batch_size').value, tagClassifier.batch_size || 50);
-    tagClassifier.concurrency = asInt(document.getElementById('tag_classifier_concurrency').value, tagClassifier.concurrency || 5);
+    maintenance.concurrency = asInt(document.getElementById('tag_classifier_concurrency').value, maintenance.concurrency || 3);
     maintenance.max_tags_per_run = asInt(
         document.getElementById('tag_classifier_max_tags_per_run').value,
         maintenance.max_tags_per_run || 40,
     );
+    maintenance.min_profile_weight = Math.abs(asFloat(document.getElementById('tag_classifier_min_profile_weight').value, maintenance.min_profile_weight || 1));
+    groundedJudge.backend = 'search_first';
+    tagClassifier.judges = [];
+    groundedJudge.search_classifier_model = document.getElementById('tag_classifier_search_model').value || '';
+    groundedJudge.brave_request_limit = asInt(document.getElementById('tag_classifier_brave_request_limit').value, groundedJudge.brave_request_limit || 1000);
+    groundedJudge.tavily_request_limit = asInt(document.getElementById('tag_classifier_tavily_request_limit').value, groundedJudge.tavily_request_limit || 500);
 
     profiler.scan_limit = asInt(document.getElementById('profiler_scan_limit').value, profiler.scan_limit || 1000);
     profiler.discovery_rate = asFloat(document.getElementById('profiler_discovery_rate').value, profiler.discovery_rate || 0.1);

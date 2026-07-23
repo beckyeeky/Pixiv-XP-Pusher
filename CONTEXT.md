@@ -129,7 +129,7 @@ Unresolved Tags awaiting a human Tag Category decision, ordered by their likely 
 _Avoid_: Error log, all classified tags
 
 **Grounded Judge**:
-The one configured AI model that uses live search to classify a Normalized Tag. Gemini with Google Search Grounding is the initial Grounded Judge; a successful result is accepted directly, while failed or explicitly uncertain results remain unresolved.
+The Search-first classification path for a Normalized Tag: Brave supplies evidence, Tavily is the no-evidence fallback, and one classifier Model returns the decision. A successful result is accepted directly, while failed or explicitly uncertain results remain unresolved.
 _Avoid_: Multi-Judge vote, consensus classifier
 
 **Search Quota Pool**:
@@ -139,6 +139,10 @@ _Avoid_: API key rotation, shared Provider
 **Search-first Shadow Evaluation**:
 A non-persisting comparison of a Search-first Grounded Judge against known Tag Categories. It records outcomes and pool usage without activating an AI Classification Record or changing a Human Classification.
 _Avoid_: Classification Maintenance, production rollout
+
+**Search-first Grounded Judge**:
+A Grounded Judge path in which one ordered Search Quota Pool supplies evidence to one classifier Model. Brave is primary, Tavily is fallback, and the result remains one AI Classification Record rather than a vote.
+_Avoid_: Multi-provider consensus, search-only classification
 
 **AI Classification Record**:
 The complete persisted result from a Grounded Judge: `tag`, `classification`, `explanation`, and `languages`. `languages` stores one primary ISO language code; explanation is the full human-readable basis for review, not separately stored evidence or a second classification.
@@ -155,6 +159,10 @@ _Avoid_: Any profile tag, matched tag
 **Classification Maintenance**:
 The periodic process, also available as a manual bulk action from the Review Queue, that asks the Grounded Judge to classify important profile tags. Successful AI Classification Records are accepted directly; failures and explicit uncertainty remain unresolved for human review. Daily recommendation delivery consumes its latest accepted results without waiting for it.
 _Avoid_: Daily recommendation run, profile rebuild
+
+**Maintenance Eligibility**:
+The state in which a Normalized Tag may enter Classification Maintenance because its absolute Preference Profile weight reaches the configured impact threshold or a human explicitly selects it. Merely appearing for the first time does not make a tag eligible.
+_Avoid_: New tag, classify-on-arrival
 
 **Maintenance Completion**:
 The settled outcome of a bounded Classification Maintenance attempt after a Daily Slate has been delivered. It is recorded independently of delivery success.

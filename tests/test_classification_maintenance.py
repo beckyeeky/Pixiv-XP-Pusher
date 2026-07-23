@@ -2,7 +2,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import aiohttp
 
@@ -158,3 +158,18 @@ class ScheduledClassificationMaintenanceTests(unittest.TestCase):
 
         self.assertEqual(settings.max_output_tokens, 1024)
         self.assertEqual(settings.thinking_level, "minimal")
+
+    def test_search_first_backend_dispatches_to_configured_search_judge(self):
+        configured = AsyncMock(return_value={
+            "tag": "white_hair", "classification": "feature", "explanation": "trait",
+            "languages": "en", "usage": {"search_queries": 1},
+        })
+        runtime = Mock()
+        runtime.classify = configured
+        config = {"tag_classifier": {"grounded_judge": {"backend": "search_first"}}}
+
+        with patch("search_grounded_judge.build_configured_search_grounded_judge", return_value=runtime):
+            result = asyncio.run(grounded_judge.classify_single_tag("white_hair", None, config))
+
+        self.assertEqual(result["classification"], "feature")
+        configured.assert_awaited_once_with("white_hair", None)

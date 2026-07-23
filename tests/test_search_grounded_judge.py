@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class SearchCredentialPoolTests(unittest.TestCase):
@@ -196,6 +197,33 @@ class SearchGroundedJudgeTests(unittest.TestCase):
         self.assertEqual(result["model_classification"], "unresolved")
         self.assertEqual(result["source_urls"], ["https://example.test"])
         self.assertEqual(result["evidence_excerpt"], ["The source does not resolve this ambiguous tag."])
+
+    def test_builds_production_runtime_from_search_provider_pools_and_one_model(self):
+        import search_grounded_judge as module
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            module, "AsyncOpenAI", return_value=SimpleNamespace(),
+        ):
+            module._PRODUCTION_RUNTIMES.clear()
+            runtime = module.build_configured_search_grounded_judge({
+                "providers": {
+                    "brave_1": {"type": "brave_search", "api_key": "brave-key"},
+                    "tavily_1": {"type": "tavily_search", "api_key": "tavily-key"},
+                    "deepseek": {"type": "deepseek", "api_key": "llm-key", "base_url": "https://api.deepseek.com/v1"},
+                },
+                "models": {"flash": {"provider": "deepseek", "model": "deepseek-v4-flash", "capabilities": ["llm"]}},
+                "tag_classifier": {
+                    "judges": ["flash"],
+                    "grounded_judge": {
+                        "backend": "search_first", "brave_providers": ["brave_1"],
+                        "search_classifier_model": "flash",
+                        "tavily_providers": ["tavily_1"],
+                        "quota_state_path": str(Path(temp_dir) / "quota.json"),
+                    },
+                },
+            })
+
+        self.assertIsInstance(runtime, module.ConfiguredSearchGroundedJudge)
 
 
 class SearchProviderAdapterTests(unittest.TestCase):

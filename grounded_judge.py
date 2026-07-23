@@ -176,7 +176,12 @@ def validate_ai_classification_record(record: dict, tag: str) -> dict:
 
 
 async def classify_single_tag(tag: str, translation: str | None, config: dict) -> dict:
-    """Call the configured sole Gemini Grounded Judge and validate its record."""
+    """Call the configured sole Grounded Judge backend and validate its record."""
+    classifier = config.get("tag_classifier") if isinstance(config.get("tag_classifier"), dict) else {}
+    settings = classifier.get("grounded_judge") if isinstance(classifier.get("grounded_judge"), dict) else {}
+    if settings.get("backend") == "search_first":
+        from search_grounded_judge import build_configured_search_grounded_judge
+        return await build_configured_search_grounded_judge(config).classify(tag, translation)
     judge = _selected_gemini_judge(config)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{judge.model}:generateContent?key={judge.api_key}"
     payload = {

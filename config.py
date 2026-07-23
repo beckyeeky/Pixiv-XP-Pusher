@@ -386,7 +386,7 @@ def normalize_config(config: dict) -> dict:
         model_name = str(model.get("model") or "").strip()
         if (
             provider_name not in normalized_providers
-            or normalized_providers[provider_name].get("type") in {"pixiv", "danbooru"}
+            or normalized_providers[provider_name].get("type") in {"pixiv", "danbooru", "brave_search", "tavily_search"}
             or not model_name
         ):
             logger.warning("Model %s 引用了不存在 Provider 或缺少模型名称，已跳过", name)
@@ -443,9 +443,9 @@ def normalize_config(config: dict) -> dict:
         field_name="tag_classifier.maintenance.concurrency",
     ))
     try:
-        maintenance_cfg["min_profile_weight"] = float(maintenance_cfg.get("min_profile_weight", 0.0))
+        maintenance_cfg["min_profile_weight"] = abs(float(maintenance_cfg.get("min_profile_weight", 1.0)))
     except (TypeError, ValueError):
-        maintenance_cfg["min_profile_weight"] = 0.0
+        maintenance_cfg["min_profile_weight"] = 1.0
     maintenance_cfg["prefer_unresolved_first"] = bool(maintenance_cfg.get("prefer_unresolved_first", True))
 
     grounded_judge_cfg = tag_classifier_cfg.setdefault("grounded_judge", {})
@@ -519,6 +519,45 @@ def normalize_config(config: dict) -> dict:
             "retry_delay_seconds": retry_delay_seconds,
         }
     grounded_judge_cfg["retry_by_status"] = normalized_retry_by_status
+    backend = str(grounded_judge_cfg.get("backend", "gemini") or "").strip().lower()
+    if backend not in {"gemini", "search_first"}:
+        logger.warning("配置项 tag_classifier.grounded_judge.backend 非法，已回退为 gemini")
+        backend = "gemini"
+    grounded_judge_cfg["backend"] = backend
+    for field_name, provider_type in (
+        ("brave_providers", "brave_search"),
+        ("tavily_providers", "tavily_search"),
+    ):
+        references = grounded_judge_cfg.get(field_name, [])
+        if not isinstance(references, list):
+            references = []
+        grounded_judge_cfg[field_name] = list(dict.fromkeys(
+            name.strip() for name in references
+            if isinstance(name, str)
+            and name.strip() in normalized_providers
+            and normalized_providers[name.strip()].get("type") == provider_type
+        ))
+    grounded_judge_cfg["brave_request_limit"] = max(1, _coerce_int(
+        grounded_judge_cfg.get("brave_request_limit", 1000), default=1000,
+        field_name="tag_classifier.grounded_judge.brave_request_limit",
+    ))
+    grounded_judge_cfg["tavily_request_limit"] = max(1, _coerce_int(
+        grounded_judge_cfg.get("tavily_request_limit", 500), default=500,
+        field_name="tag_classifier.grounded_judge.tavily_request_limit",
+    ))
+    grounded_judge_cfg["quota_state_path"] = str(
+        grounded_judge_cfg.get("quota_state_path") or "data/search_judge_quota_usage.json"
+    )
+    search_classifier_model = str(grounded_judge_cfg.get("search_classifier_model") or "").strip()
+    search_model = normalized_models.get(search_classifier_model, {})
+    search_provider = normalized_providers.get(search_model.get("provider"), {}) if isinstance(search_model, dict) else {}
+    grounded_judge_cfg["search_classifier_model"] = (
+        search_classifier_model
+        if search_classifier_model in normalized_models
+        and "llm" in normalized_models[search_classifier_model].get("capabilities", [])
+        and search_provider.get("type") in {"openai", "deepseek", "openai_compatible", "local"}
+        else ""
+    )
 
     judges = tag_classifier_cfg.get("judges", [])
     if not isinstance(judges, list):
@@ -534,7 +573,10 @@ def normalize_config(config: dict) -> dict:
             logger.warning("tag_classifier.judges 引用了不存在的 Model %s，已跳过", name)
             continue
         normalized_judges.append(name)
-    tag_classifier_cfg["judges"] = normalized_judges
+    # Search-first fully replaces the legacy Gemini/multi-Judge evidence path.
+    # Keeping stale Judge references here would still initialize and call them
+    # during delivery even though maintenance uses the Search-first backend.
+    tag_classifier_cfg["judges"] = [] if backend == "search_first" else normalized_judges
 
     daily_slate_cfg = filter_cfg.setdefault("daily_slate", {})
     if not isinstance(daily_slate_cfg, dict):

@@ -182,6 +182,30 @@ class SettingsEditorTests(unittest.TestCase):
                 str,
             )
 
+    def test_search_first_requires_compatible_model_and_both_search_provider_pools(self):
+        current = {
+            "web": {"require_login_password": False, "password": ""},
+            "providers": {
+                "deepseek": {"type": "openai_compatible", "base_url": "https://api.deepseek.com/v1", "api_key": "k"},
+                "brave": {"type": "brave_search", "api_key": "b"},
+                "tavily": {"type": "tavily_search", "api_key": "t"},
+            },
+            "models": {"flash": {"provider": "deepseek", "model": "deepseek-v4-flash", "capabilities": ["llm"]}},
+            "tag_classifier": {"judges": [], "grounded_judge": {"backend": "gemini"}},
+        }
+
+        merged = apply_settings_payload(current, {"tag_classifier": {"grounded_judge": {
+            "backend": "search_first", "search_classifier_model": "flash",
+            "brave_providers": ["brave"], "tavily_providers": ["tavily"],
+        }}}, str)
+        self.assertEqual(merged["tag_classifier"]["grounded_judge"]["backend"], "search_first")
+
+        with self.assertRaisesRegex(ValueError, "Tavily Search"):
+            apply_settings_payload(current, {"tag_classifier": {"grounded_judge": {
+                "backend": "search_first", "search_classifier_model": "flash",
+                "brave_providers": ["brave"], "tavily_providers": [],
+            }}}, str)
+
     def test_apply_settings_rejects_deleting_model_still_referenced(self):
         current = {
             "web": {"require_login_password": False, "password": ""},

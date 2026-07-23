@@ -91,9 +91,17 @@ providers:
     api_key: ""
     base_url: "https://api.chatai.best/v1"
 
-  # Google Gemini：标签分类使用原生 Google Search Grounding 端点。
+  # Google Provider 可供其他功能使用；Search-first 标签判定不需要 Gemini。
   gemini:
     type: google
+    api_key: ""
+
+  # 每个搜索账号单独建一个 Provider；grounded_judge 中的顺序就是额度耗尽顺序。
+  brave_search_1:
+    type: brave_search
+    api_key: ""
+  tavily_search_1:
+    type: tavily_search
     api_key: ""
 
 models:
@@ -124,21 +132,28 @@ tag_classifier:
   concurrency: 5
   maintenance:
     max_tags_per_run: 40 # 每次仅刷新高影响画像标签，避免全量重跑
-    concurrency: 10 # Gemini Grounded Judge 的并发请求数
-    min_profile_weight: 0.0
+    concurrency: 10 # Grounded Judge 的并发请求数
+    min_profile_weight: 1.0 # 新标签先积累影响；达到绝对权重阈值后才进入维护
     prefer_unresolved_first: true
   grounded_judge:
+    backend: search_first # Brave → 无证据时 Tavily → 所选 DeepSeek Model
+    search_classifier_model: deepseek_flash
+    brave_providers: [brave_search_1]
+    tavily_providers: [tavily_search_1]
+    brave_request_limit: 1000
+    tavily_request_limit: 500
+    quota_state_path: data/search_judge_quota_usage.json
     timeout_seconds: 45
     max_output_tokens: 1024
     temperature: 0.0
     thinking_level: minimal # 单标签固定 JSON 分类，减少推理 token 挤占输出预算
     max_retries: 2 # 首次请求失败后最多重试两次，仅重试超时、限流和服务端错误
     retry_delay_seconds: 1 # 重试间隔按 1s、2s 指数退避
-    # 仅对 503 覆盖默认重试策略，给 Gemini 服务恢复更长窗口；其他可重试错误使用上方默认值。
+    # 旧版原生 Grounded Judge 的兼容重试字段；Search-first 搜索池有自己的额度切换机制。
     retry_by_status:
       "503": {max_retries: 5, retry_delay_seconds: 5}
-  # Grounded Judge 必须恰好选择一个 Gemini Model。
-  judges: [gemini_flash]
+  # Search-first 不使用旧版 Judge 列表。
+  judges: []
   danbooru:
     enabled: false # 只查询画像中出现的标签；无需镜像完整标签库
     timeout_seconds: 15 # 不可用时仅保留缓存证据，不替代 Grounded Judge

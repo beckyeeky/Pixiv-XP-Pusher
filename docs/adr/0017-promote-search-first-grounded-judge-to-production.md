@@ -1,0 +1,3 @@
+# Promote the Search-first Grounded Judge to production
+
+Classification Maintenance uses the Search-first Grounded Judge instead of the existing Gemini native-grounding backend. It uses ordered independent Brave Search Quota Pools, falls back once to ordered Tavily pools when Brave supplies no usable evidence, and asks exactly one configured OpenAI-compatible classifier Model at temperature zero. Search-first does not initialize or call `tag_classifier.judges`; stale Judge references are ignored during normalization. It preserves the one-decision, conservative Unresolved Tag, and permanent Human Classification override guarantees from ADR-0011 while making search allowance and classifier cost independently controllable.

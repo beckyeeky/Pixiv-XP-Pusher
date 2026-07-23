@@ -61,6 +61,8 @@ class TagClassifier:
             "providers": self.providers,
             "models": self.models,
         }
+        grounded_cfg = cfg.get("grounded_judge") if isinstance(cfg.get("grounded_judge"), dict) else {}
+        self.search_first_enabled = grounded_cfg.get("backend", "gemini") == "search_first"
         self.legacy_api_key = cfg.get("api_key", "")
         self.legacy_base_url = cfg.get("base_url") or "https://api.deepseek.com/v1"
         self.legacy_model = cfg.get("model") or "deepseek-v4-flash"
@@ -75,15 +77,16 @@ class TagClassifier:
         self.danbooru_lookup = DanbooruEvidenceLookup(self._danbooru_config(cfg))
 
         requested_enabled = cfg.get("enabled", False)
-        self.enabled = bool(requested_enabled and HAS_OPENAI and self.api_key)
+        self.legacy_judge_enabled = bool(requested_enabled and HAS_OPENAI and self.api_key)
+        self.enabled = bool(requested_enabled and HAS_OPENAI and (self.search_first_enabled or self.api_key))
         if requested_enabled and not HAS_OPENAI:
-            logger.warning("openai 依赖不可用，TagClassifier 已回退到手动 IP 列表")
-        if requested_enabled and not self.api_key:
+            logger.warning("openai 依赖不可用，标签分类维护已回退到手动 IP 列表")
+        if requested_enabled and not self.search_first_enabled and not self.api_key:
             logger.warning("tag_classifier.enabled=true 但未配置 api_key，已回退到手动 IP 列表")
 
         self.client = None
         self.judge_clients = {}
-        if self.enabled:
+        if self.legacy_judge_enabled:
             try:
                 self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
             except Exception as exc:
@@ -124,7 +127,7 @@ class TagClassifier:
         results = {}
         for tag, row in cached_rows.items():
             # 启用 AI 后，不复用低置信度 fallback 结果，避免历史回退缓存长期遮蔽 AI 分类
-            if self.enabled and row["source"] == "fallback":
+            if self.legacy_judge_enabled and row["source"] == "fallback":
                 continue
             # 手动 IP 列表可能更新；不要让旧 fallback(feature) 缓存遮蔽新配置。
             if row["source"] == "fallback" and tag in self.manual_ip_tags:
@@ -138,7 +141,7 @@ class TagClassifier:
         if remaining:
             # Delivery consumes accepted maintenance classifications. It never
             # establishes a second, ungrounded machine classification path.
-            if self.enabled and self.client:
+            if self.legacy_judge_enabled and self.client:
                 fallback_results = self._classify_unaccepted_ai_tags(remaining)
             elif len(self.judges) > 1:
                 # A multi-Judge setup must not silently turn an unavailable
