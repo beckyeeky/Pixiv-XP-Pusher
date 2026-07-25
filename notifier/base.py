@@ -2,73 +2,18 @@
 推送器抽象基类
 """
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from delivery_reconciliation import (
+    DELIVERY_DELIVERED,
+    DELIVERY_FAILED,
+    DELIVERY_QUEUED,
+    DeliveryBatchResult,
+    DeliveryItem,
+)
 
 if TYPE_CHECKING:
     from pixiv_client import Illust
-
-
-DELIVERY_QUEUED = "queued"
-DELIVERY_DELIVERED = "delivered"
-DELIVERY_FAILED = "failed"
-
-
-@dataclass(frozen=True)
-class DeliveryItem:
-    """Per-illust delivery state returned by notifiers."""
-
-    illust_id: int
-    status: str
-    message_id: int | None = None
-    error: str | None = None
-
-
-@dataclass
-class DeliveryBatchResult:
-    """Batch delivery result with queued/delivered/failed separated."""
-
-    items: list[DeliveryItem] = field(default_factory=list)
-
-    @classmethod
-    def from_delivered_ids(cls, requested_ids: list[int], delivered_ids: list[int]) -> "DeliveryBatchResult":
-        delivered_set = set(delivered_ids)
-        return cls([
-            DeliveryItem(
-                illust_id=illust_id,
-                status=DELIVERY_DELIVERED if illust_id in delivered_set else DELIVERY_FAILED,
-            )
-            for illust_id in requested_ids
-        ])
-
-    @classmethod
-    def queued(cls, requested_ids: list[int]) -> "DeliveryBatchResult":
-        return cls([DeliveryItem(illust_id=illust_id, status=DELIVERY_QUEUED) for illust_id in requested_ids])
-
-    @classmethod
-    def failed(cls, requested_ids: list[int], error: str | None = None) -> "DeliveryBatchResult":
-        return cls([DeliveryItem(illust_id=illust_id, status=DELIVERY_FAILED, error=error) for illust_id in requested_ids])
-
-    @property
-    def accepted_ids(self) -> list[int]:
-        return [
-            item.illust_id
-            for item in self.items
-            if item.status in {DELIVERY_QUEUED, DELIVERY_DELIVERED}
-        ]
-
-    @property
-    def queued_ids(self) -> list[int]:
-        return [item.illust_id for item in self.items if item.status == DELIVERY_QUEUED]
-
-    @property
-    def delivered_ids(self) -> list[int]:
-        return [item.illust_id for item in self.items if item.status == DELIVERY_DELIVERED]
-
-    @property
-    def failed_ids(self) -> list[int]:
-        return [item.illust_id for item in self.items if item.status == DELIVERY_FAILED]
 
 
 class BaseNotifier(ABC):
@@ -96,6 +41,16 @@ class BaseNotifier(ABC):
         """
         pass
 
+    def _delivery_message_ids(self, delivered_ids: list[int]) -> dict[int, int]:
+        delivered_set = set(delivered_ids)
+        return {
+            illust_id: message_id
+            for message_id, illust_id in getattr(
+                self, "_message_illust_map", {}
+            ).items()
+            if illust_id in delivered_set
+        }
+
     async def send_with_result(self, illusts: list["Illust"]) -> DeliveryBatchResult:
         """Send and return explicit delivery state.
 
@@ -104,7 +59,11 @@ class BaseNotifier(ABC):
         """
         requested_ids = [illust.id for illust in illusts]
         delivered_ids = await self.send(illusts)
-        return DeliveryBatchResult.from_delivered_ids(requested_ids, delivered_ids)
+        return DeliveryBatchResult.from_delivered_ids(
+            requested_ids,
+            delivered_ids,
+            self._delivery_message_ids(delivered_ids),
+        )
     
     @abstractmethod
     def format_message(self, illust: "Illust") -> str:
@@ -154,4 +113,3 @@ class BaseNotifier(ABC):
         """
         # 默认实现不发送或仅打印
         return True
-

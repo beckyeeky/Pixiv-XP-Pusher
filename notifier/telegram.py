@@ -15,7 +15,12 @@ from telegram.ext import Application, CallbackQueryHandler
 from .base import BaseNotifier, DeliveryBatchResult
 from classification_maintenance import ClassificationMaintenance
 from config import load_config
+from delivery_reconciliation import (
+    DatabaseDeliveryPersistence,
+    DeliveryReconciliationModule,
+)
 from pixiv_client import Illust, PixivClient
+from push_stats import PushStats
 from push_schedule import (
     DatabasePushScheduleState,
     PushSchedule,
@@ -299,18 +304,29 @@ class TelegramNotifier(BaseNotifier):
                     if result_future and not result_future.done():
                         requested_ids = [ill.id for ill in illusts]
                         result_future.set_result(
-                            DeliveryBatchResult.from_delivered_ids(requested_ids, sent_ids)
+                            DeliveryBatchResult.from_delivered_ids(
+                                requested_ids,
+                                sent_ids,
+                                self._delivery_message_ids(sent_ids),
+                            )
                         )
-                    # legacy send() 路径保留队列内落库兼容；新接口由调用方统一落库。
+                    # Legacy send() returns queued IDs immediately. Once the
+                    # worker observes delivery, use the same reconciliation
+                    # module as PushRun instead of owning persistence here.
                     elif sent_ids:
                         try:
-                            import database as db
-                            for ill in illusts:
-                                if ill.id in sent_ids:
-                                    source = getattr(ill, 'source', 'unknown')
-                                    await db.mark_pushed(ill.id, source)
+                            result = DeliveryBatchResult.from_delivered_ids(
+                                [ill.id for ill in illusts],
+                                sent_ids,
+                                self._delivery_message_ids(sent_ids),
+                            )
+                            reconciliation = DeliveryReconciliationModule(
+                                DatabaseDeliveryPersistence(),
+                                PushStats(),
+                            )
+                            await reconciliation.reconcile(illusts, [result])
                         except Exception as e:
-                            logger.warning(f"队列内标记推送状态失败: {e}")
+                            logger.warning(f"队列内 reconciliation 失败: {e}")
                 except Exception as e:
                     logger.error(f"推送任务执行失败: {e}")
                     if result_future and not result_future.done():
