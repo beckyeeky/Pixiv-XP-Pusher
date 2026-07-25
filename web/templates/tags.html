@@ -249,15 +249,21 @@
 {% endblock %}
 
 {% block content %}
-<div class="card" style="margin-bottom: 1.5rem;">
-    <div class="card-header">
-        <h2 class="card-title">🏷️ 标签管理</h2>
+<header class="page-header">
+    <div>
+        <div class="page-header__eyebrow">Tag Operations</div>
+        <h1 class="page-header__title">标签管理</h1>
+        <p class="page-header__description">管理推荐权重、处理未解决的 Tag Category，并审核可能影响画像身份的 Tag Mapping Candidate。</p>
     </div>
-    <p style="color: var(--text-secondary); font-size: 0.9rem;">
-        管理您的 Boost Tags（提升推荐权重）和黑名单（过滤不想要的标签）。
-    </p>
+</header>
+
+<div class="task-tabs" role="tablist" aria-label="标签管理任务">
+    <button class="task-tab" type="button" role="tab" data-task-tab="weights" aria-controls="task-weights" aria-selected="true">权重管理</button>
+    <button class="task-tab" type="button" role="tab" data-task-tab="classification" aria-controls="task-classification" aria-selected="false">分类审核</button>
+    <button class="task-tab" type="button" role="tab" data-task-tab="mapping" aria-controls="task-mapping" aria-selected="false">映射审核</button>
 </div>
 
+<section class="task-panel" id="task-weights" role="tabpanel" data-task-panel="weights">
 <div class="tags-container">
     <!-- 左侧：字典查询 -->
     <div class="section-card">
@@ -316,7 +322,9 @@
         </div>
     </div>
 </div>
+</section>
 
+<section class="task-panel" id="task-classification" role="tabpanel" data-task-panel="classification" hidden>
 <div class="card" aria-labelledby="review-queue-title">
     <div class="card-header">
         <div>
@@ -347,7 +355,9 @@
     <div id="reviewFeedback" class="review-feedback" role="status" aria-live="polite"></div>
     <div id="reviewQueue" class="review-queue" aria-live="polite">正在加载审核队列…</div>
 </div>
+</section>
 
+<section class="task-panel" id="task-mapping" role="tabpanel" data-task-panel="mapping" hidden>
 <div class="card" aria-labelledby="mapping-review-title">
     <div class="card-header">
         <div>
@@ -382,10 +392,42 @@
     <div class="section-header" style="margin-top: 1rem;"><span class="section-title">待审核候选</span></div>
     <div id="mappingQueue" class="review-queue" aria-live="polite">正在加载映射候选…</div>
 </div>
+</section>
 {% endblock %}
 
 {% block extra_scripts %}
 <script>
+const TAG_TASKS = ['weights', 'classification', 'mapping'];
+
+function activateTagTask(task, {updateHash = true, focus = false} = {}) {
+    const nextTask = TAG_TASKS.includes(task) ? task : 'weights';
+    document.querySelectorAll('[data-task-tab]').forEach(tab => {
+        const active = tab.dataset.taskTab === nextTask;
+        tab.setAttribute('aria-selected', String(active));
+        tab.tabIndex = active ? 0 : -1;
+        if (active && focus) tab.focus();
+    });
+    document.querySelectorAll('[data-task-panel]').forEach(panel => {
+        panel.hidden = panel.dataset.taskPanel !== nextTask;
+    });
+    if (updateHash && window.location.hash !== `#${nextTask}`) {
+        history.replaceState(null, '', `#${nextTask}`);
+    }
+}
+
+document.querySelectorAll('[data-task-tab]').forEach(tab => {
+    tab.addEventListener('click', () => activateTagTask(tab.dataset.taskTab));
+    tab.addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+        event.preventDefault();
+        const current = TAG_TASKS.indexOf(tab.dataset.taskTab);
+        const offset = event.key === 'ArrowRight' ? 1 : -1;
+        activateTagTask(TAG_TASKS[(current + offset + TAG_TASKS.length) % TAG_TASKS.length], {focus: true});
+    });
+});
+window.addEventListener('hashchange', () => activateTagTask(location.hash.slice(1), {updateHash: false}));
+activateTagTask(location.hash.slice(1), {updateHash: false});
+
 // 页面加载时获取当前设置
 document.addEventListener('DOMContentLoaded', () => {
     loadTagSettings();
@@ -523,7 +565,11 @@ async function classifyAllWithGroundedJudge() {
     const configuredMax = Number(input.max) || 40;
     const requested = Math.max(1, Math.min(configuredMax, Number.parseInt(input.value, 10) || configuredMax));
     input.value = requested;
-    if (!confirm(`确认使用 AI 批量处理最多 ${requested} 个高权重未分类标签？不会处理低于权重阈值的标签。`)) return;
+    if (!await PixivUI.confirm({
+        title: '确认批量分类',
+        message: `最多处理 ${requested} 个高权重未分类标签，不会处理低于权重阈值的标签。`,
+        confirmLabel: '开始处理',
+    })) return;
     feedback.textContent = `正在使用 AI 批量处理，最多 ${requested} 条…`;
     button.disabled = true;
     try {
@@ -701,7 +747,12 @@ async function loadActiveTagAliases({reset = true} = {}) {
 }
 
 async function deleteTagAlias(originalTag) {
-    if (!confirm(`确定撤销 Tag Alias “${originalTag}” 吗？下次画像构建将不再应用它。`)) return;
+    if (!await PixivUI.confirm({
+        title: '撤销 Tag Alias',
+        message: `确定撤销“${originalTag}”吗？下次画像构建将不再应用它。`,
+        confirmLabel: '撤销别名',
+        kind: 'danger',
+    })) return;
     const feedback = document.getElementById('mappingFeedback');
     try {
         const response = await fetch('/api/tag-aliases', {
@@ -747,7 +798,12 @@ async function reviewMappingCandidate(id, decision, kind = null) {
 
 async function rejectLegacyFilteredCandidates() {
     const feedback = document.getElementById('mappingFeedback');
-    if (!confirm('仅拒绝旧系统曾标记为“建议过滤”、且没有映射目标的候选；不会过滤作品、不会创建 Tag Alias。继续吗？')) return;
+    if (!await PixivUI.confirm({
+        title: '关闭旧系统候选',
+        message: '仅拒绝旧系统曾标记为“建议过滤”且没有映射目标的候选；不会过滤作品，也不会创建 Tag Alias。',
+        confirmLabel: '确认关闭',
+        kind: 'danger',
+    })) return;
     feedback.textContent = '正在关闭旧系统无目标候选…';
     try {
         const response = await fetch('/api/tag-mapping-candidates/reject-legacy-filtered', {
@@ -824,7 +880,12 @@ async function applyAiMappingBatch() {
         return;
     }
     const summary = preview.summary || {};
-    if (!confirm(`确认批量处理 ${summary.eligible || 0} 条？其中接受等价别名 ${summary.accept_equivalent || 0} 条，拒绝 ${summary.reject || 0} 条。`)) return;
+    if (!await PixivUI.confirm({
+        title: '应用批量审核决定',
+        message: `将处理 ${summary.eligible || 0} 条：接受等价别名 ${summary.accept_equivalent || 0} 条，拒绝 ${summary.reject || 0} 条。`,
+        confirmLabel: '确认应用',
+        kind: 'danger',
+    })) return;
     feedback.textContent = '正在原子应用这批 AI 建议…';
     try {
         const response = await fetch('/api/tag-mapping-ai-batch-apply', {
@@ -961,12 +1022,17 @@ function searchTag() {
         .catch(err => {
             document.getElementById('searchLoading').style.display = 'none';
             console.error('搜索失败:', err);
-            alert('搜索失败: ' + err.message);
+            PixivUI.toast('搜索失败：' + err.message, 'error');
         });
 }
 
-function addIpDownweight(tag) {
-    if (!confirm(`确定要降低 "${tag}" 的权重吗？\n这将使其推荐频率大幅降低 (0.1x)。`)) return;
+async function addIpDownweight(tag) {
+    if (!await PixivUI.confirm({
+        title: '降低标签权重',
+        message: `将“${tag}”的推荐权重降至 0.1×。`,
+        confirmLabel: '确认降权',
+        kind: 'danger',
+    })) return;
     
     // 默认降权倍率 0.1
     const multiplier = 0.1;
@@ -981,10 +1047,10 @@ function addIpDownweight(tag) {
         if (data.success) {
             loadTagSettings();
         } else {
-            alert('添加失败: ' + (data.error || '未知错误'));
+            PixivUI.toast('添加失败：' + (data.error || '未知错误'), 'error');
         }
     })
-    .catch(err => alert('网络错误: ' + err.message));
+    .catch(err => PixivUI.toast('网络错误：' + err.message, 'error'));
 }
 
 function addBoostTag(tag) {
@@ -1001,14 +1067,19 @@ function addBoostTag(tag) {
             loadTagSettings();
             // 显示成功提示（可选）
         } else {
-            alert('添加失败: ' + (data.error || '未知错误'));
+            PixivUI.toast('添加失败：' + (data.error || '未知错误'), 'error');
         }
     })
-    .catch(err => alert('网络错误: ' + err.message));
+    .catch(err => PixivUI.toast('网络错误：' + err.message, 'error'));
 }
 
-function removeBoostTag(tag) {
-    if (!confirm(`确定要删除 Boost Tag "${tag}" 吗？`)) return;
+async function removeBoostTag(tag) {
+    if (!await PixivUI.confirm({
+        title: '删除 Boost Tag',
+        message: `确定删除“${tag}”吗？`,
+        confirmLabel: '删除',
+        kind: 'danger',
+    })) return;
     
     fetch('/api/config/boost-tag', {
         method: 'DELETE',
@@ -1020,7 +1091,7 @@ function removeBoostTag(tag) {
         if (data.success) {
             loadTagSettings();
         } else {
-            alert('删除失败: ' + (data.error || '未知错误'));
+            PixivUI.toast('删除失败：' + (data.error || '未知错误'), 'error');
         }
     });
 }
@@ -1036,14 +1107,19 @@ function addBlacklistTag(tag) {
         if (data.success) {
             loadTagSettings();
         } else {
-            alert('添加失败: ' + (data.error || '未知错误'));
+            PixivUI.toast('添加失败：' + (data.error || '未知错误'), 'error');
         }
     })
-    .catch(err => alert('网络错误: ' + err.message));
+    .catch(err => PixivUI.toast('网络错误：' + err.message, 'error'));
 }
 
-function removeBlacklistTag(tag) {
-    if (!confirm(`确定要从黑名单中删除 "${tag}" 吗？`)) return;
+async function removeBlacklistTag(tag) {
+    if (!await PixivUI.confirm({
+        title: '移出黑名单',
+        message: `确定将“${tag}”移出黑名单吗？`,
+        confirmLabel: '确认移除',
+        kind: 'danger',
+    })) return;
     
     fetch('/api/config/blacklist-tag', {
         method: 'DELETE',
@@ -1055,7 +1131,7 @@ function removeBlacklistTag(tag) {
         if (data.success) {
             loadTagSettings();
         } else {
-            alert('删除失败: ' + (data.error || '未知错误'));
+            PixivUI.toast('删除失败：' + (data.error || '未知错误'), 'error');
         }
     });
 }

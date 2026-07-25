@@ -49,6 +49,20 @@
     width: 100%;
 }
 
+.settings-nav-group {
+    display: block;
+    margin: 0.9rem 0.75rem 0.35rem;
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.settings-nav-group:first-child {
+    margin-top: 0.35rem;
+}
+
 .settings-nav-item:hover {
     background: var(--bg-primary);
     color: var(--text-primary);
@@ -375,6 +389,10 @@ textarea.form-control {
         flex: 0 0 auto;
         width: auto;
     }
+    .settings-nav-group,
+    .settings-nav hr {
+        display: none;
+    }
     .option-grid {
         grid-template-columns: 1fr;
     }
@@ -394,24 +412,35 @@ textarea.form-control {
 {% endblock %}
 
 {% block content %}
+<header class="page-header">
+    <div>
+        <div class="page-header__eyebrow">System Settings</div>
+        <h1 class="page-header__title">系统设置</h1>
+        <p class="page-header__description">按接入、推荐、AI 与系统分组管理配置。所有更改会在明确保存后统一写入。</p>
+    </div>
+</header>
 <div class="settings-container">
     <!-- 左侧导航 -->
-    <nav class="settings-nav">
-        <button class="settings-nav-item active" data-section="pixiv" aria-controls="section-pixiv" aria-selected="true" onclick="showSection('pixiv', event)">🔑 Pixiv 认证</button>
-        <button class="settings-nav-item" data-section="strategies" aria-controls="section-strategies" aria-selected="false" onclick="showSection('strategies', event)">🎯 推送策略</button>
-        <button class="settings-nav-item" data-section="notifier" aria-controls="section-notifier" aria-selected="false" onclick="showSection('notifier', event)">📢 推送通道</button>
-        <button class="settings-nav-item" data-section="profiler" aria-controls="section-profiler" aria-selected="false" onclick="showSection('profiler', event)">👤 画像分析</button>
-        <button class="settings-nav-item" data-section="providers" aria-controls="section-providers" aria-selected="false" onclick="showSection('providers', event)">🔌 AI Provider</button>
-        <button class="settings-nav-item" data-section="models" aria-controls="section-models" aria-selected="false" onclick="showSection('models', event)">🧩 AI Model</button>
-        <button class="settings-nav-item" data-section="ai" aria-controls="section-ai" aria-selected="false" onclick="showSection('ai', event)">✨ AI 功能</button>
-        <button class="settings-nav-item" data-section="filter" aria-controls="section-filter" aria-selected="false" onclick="showSection('filter', event)">🛡️ 内容过滤</button>
-        <button class="settings-nav-item" data-section="fetcher" aria-controls="section-fetcher" aria-selected="false" onclick="showSection('fetcher', event)">📥 内容获取</button>
-        <button class="settings-nav-item" data-section="scheduler" aria-controls="section-scheduler" aria-selected="false" onclick="showSection('scheduler', event)">⏰ 定时任务</button>
-        <button class="settings-nav-item" data-section="network" aria-controls="section-network" aria-selected="false" onclick="showSection('network', event)">🌐 网络配置</button>
-        <button class="settings-nav-item" data-section="feedback" aria-controls="section-feedback" aria-selected="false" onclick="showSection('feedback', event)">💬 反馈机制</button>
-        <button class="settings-nav-item" data-section="web" aria-controls="section-web" aria-selected="false" onclick="showSection('web', event)">🖥️ Web UI</button>
+    <nav class="settings-nav" aria-label="设置分区">
+        <span class="settings-nav-group">接入与通知</span>
+        <button class="settings-nav-item active" data-section="pixiv" aria-controls="section-pixiv" aria-selected="true" onclick="showSection('pixiv', event)">Pixiv 认证</button>
+        <button class="settings-nav-item" data-section="notifier" aria-controls="section-notifier" aria-selected="false" onclick="showSection('notifier', event)">推送通道</button>
+        <span class="settings-nav-group">推荐与内容</span>
+        <button class="settings-nav-item" data-section="strategies" aria-controls="section-strategies" aria-selected="false" onclick="showSection('strategies', event)">推送策略</button>
+        <button class="settings-nav-item" data-section="profiler" aria-controls="section-profiler" aria-selected="false" onclick="showSection('profiler', event)">画像分析</button>
+        <button class="settings-nav-item" data-section="filter" aria-controls="section-filter" aria-selected="false" onclick="showSection('filter', event)">内容过滤</button>
+        <button class="settings-nav-item" data-section="fetcher" aria-controls="section-fetcher" aria-selected="false" onclick="showSection('fetcher', event)">内容获取</button>
+        <button class="settings-nav-item" data-section="feedback" aria-controls="section-feedback" aria-selected="false" onclick="showSection('feedback', event)">反馈机制</button>
+        <span class="settings-nav-group">AI</span>
+        <button class="settings-nav-item" data-section="providers" aria-controls="section-providers" aria-selected="false" onclick="showSection('providers', event)">AI Provider</button>
+        <button class="settings-nav-item" data-section="models" aria-controls="section-models" aria-selected="false" onclick="showSection('models', event)">AI Model</button>
+        <button class="settings-nav-item" data-section="ai" aria-controls="section-ai" aria-selected="false" onclick="showSection('ai', event)">AI 功能</button>
+        <span class="settings-nav-group">系统</span>
+        <button class="settings-nav-item" data-section="scheduler" aria-controls="section-scheduler" aria-selected="false" onclick="showSection('scheduler', event)">定时任务</button>
+        <button class="settings-nav-item" data-section="network" aria-controls="section-network" aria-selected="false" onclick="showSection('network', event)">网络配置</button>
+        <button class="settings-nav-item" data-section="web" aria-controls="section-web" aria-selected="false" onclick="showSection('web', event)">Web UI</button>
         <hr style="border-color: var(--border); margin: 1rem 0;">
-        <a href="/import-export" class="settings-nav-item">📥📤 导入/导出</a>
+        <a href="/import-export" class="settings-nav-item">导入与导出</a>
     </nav>
 
     <!-- 右侧内容区 -->
@@ -1034,9 +1063,9 @@ textarea.form-control {
 <!-- 固定底部保存栏 -->
 <div class="save-bar">
     <span id="saveStatus" class="save-status" aria-live="polite"></span>
-    <button type="button" class="btn-secondary" onclick="exportConfig()">📤 导出配置</button>
-    <button type="button" class="btn-primary" onclick="saveAllSettings()">
-        💾 保存所有设置
+    <button type="button" class="btn-secondary" onclick="exportConfig()">导出配置</button>
+    <button type="button" class="btn-primary" id="saveAllSettingsButton" onclick="saveAllSettings()">
+        保存所有设置
     </button>
 </div>
 {% endblock %}
@@ -1045,6 +1074,7 @@ textarea.form-control {
 <script>
 // 切换设置页面
 function showSection(sectionId, evt) {
+    if (!document.getElementById('section-' + sectionId)) sectionId = 'pixiv';
     document.querySelectorAll('.settings-section').forEach(el => {
         el.classList.toggle('active', el.id === 'section-' + sectionId);
     });
@@ -1056,10 +1086,43 @@ function showSection(sectionId, evt) {
         }
     });
     const target = document.getElementById('section-' + sectionId);
+    if (window.location.hash !== `#${sectionId}`) {
+        history.replaceState(null, '', `#${sectionId}`);
+    }
     if (target && evt) {
         target.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
 }
+
+let settingsDirty = false;
+
+function setSettingsDirty(dirty) {
+    settingsDirty = dirty;
+    const status = document.getElementById('saveStatus');
+    if (dirty) {
+        status.textContent = '有未保存的更改';
+        status.className = 'save-status dirty';
+    } else if (status.textContent === '有未保存的更改') {
+        status.textContent = '';
+        status.className = 'save-status';
+    }
+}
+
+document.addEventListener('input', event => {
+    if (event.target.closest('.settings-content, dialog')) setSettingsDirty(true);
+});
+document.addEventListener('change', event => {
+    if (event.target.closest('.settings-content, dialog')) setSettingsDirty(true);
+});
+document.addEventListener('click', event => {
+    if (event.target.closest('.settings-content .array-item .remove')) setSettingsDirty(true);
+});
+window.addEventListener('beforeunload', event => {
+    if (!settingsDirty) return;
+    event.preventDefault();
+    event.returnValue = '';
+});
+window.addEventListener('hashchange', () => showSection(location.hash.slice(1)));
 
 // 添加数组项
 function addArrayItem(event, input) {
@@ -1210,7 +1273,10 @@ function openProviderDialog(name = null) {
 function saveProviderDialog(event) {
     event.preventDefault();
     const name = document.getElementById('provider_dialog_name').value.trim();
-    if (!name || (name !== editingProviderName && initialConfig.providers[name])) return alert('Provider 名称不能为空且不能重复');
+    if (!name || (name !== editingProviderName && initialConfig.providers[name])) {
+        PixivUI.toast('Provider 名称不能为空且不能重复', 'error');
+        return;
+    }
     const previous = editingProviderName ? initialConfig.providers[editingProviderName] : {};
     const provider = {...previous, type: document.getElementById('provider_dialog_type').value, base_url: document.getElementById('provider_dialog_url').value.trim()};
     initialConfig.providers[name] = provider;
@@ -1224,10 +1290,14 @@ function saveProviderDialog(event) {
     }
     document.getElementById('providerDialog').close();
     renderLLMSettings();
+    setSettingsDirty(true);
 }
 function openModelDialog(name = null) {
     const providers = aiProviderEntries().map(([providerName]) => providerName);
-    if (!providers.length) return alert('请先添加 AI Provider');
+    if (!providers.length) {
+        PixivUI.toast('请先添加 AI Provider', 'error');
+        return;
+    }
     editingModelName = name;
     const model = name ? initialConfig.models[name] : {provider: providers[0], model: KNOWN_LLM_MODELS[0] || '', capabilities: ['llm']};
     const capabilities = Array.isArray(model.capabilities) ? model.capabilities : ['llm'];
@@ -1250,7 +1320,10 @@ function saveModelDialog(event) {
     const provider = document.getElementById('model_dialog_provider').value;
     const modelId = document.getElementById('model_dialog_model').value.trim();
     const capability = document.getElementById('model_dialog_capabilities').value;
-    if (!name || !provider || !modelId || (name !== editingModelName && initialConfig.models[name])) return alert('请填写不重复的名称、Provider 和模型 ID');
+    if (!name || !provider || !modelId || (name !== editingModelName && initialConfig.models[name])) {
+        PixivUI.toast('请填写不重复的名称、Provider 和模型 ID', 'error');
+        return;
+    }
     initialConfig.models[name] = {provider, model: modelId, capabilities: capability === 'both' ? ['llm', 'embedding'] : [capability]};
     if (editingModelName && editingModelName !== name) {
         delete initialConfig.models[editingModelName];
@@ -1258,6 +1331,7 @@ function saveModelDialog(event) {
     }
     document.getElementById('modelDialog').close();
     renderLLMSettings();
+    setSettingsDirty(true);
 }
 function setFunctionModelOptions(id, capability, selected) { const select = document.getElementById(id); if (!select) return; const models = ensureObject(initialConfig, 'models'); const options = Object.entries(models).filter(([, model]) => Array.isArray(model?.capabilities) && model.capabilities.includes(capability)); select.innerHTML = options.map(([name, model]) => `<option value="${escapeHtml(name)}" ${name === selected ? 'selected' : ''}>${escapeHtml(name)} (${escapeHtml(model.provider || '')})</option>`).join('') || '<option value="">请先配置兼容 Model</option>'; }
 function setSearchClassifierModelOptions(selected) {
@@ -1299,41 +1373,58 @@ function toggleSearchProvider(field, name, enabled) {
     const selected = ensureArray(grounded, field);
     grounded[field] = enabled ? [...new Set([...selected, name])] : selected.filter(item => item !== name);
 }
-function removeModel(name) {
+async function removeModel(name) {
     const refs = modelReferenceLabels(name);
     if (refs.length) {
-        alert(`无法删除 Model ${name}：仍被 ${refs.join(', ')} 引用`);
+        PixivUI.toast(`无法删除 Model ${name}：仍被 ${refs.join(', ')} 引用`, 'error');
         return;
     }
-    if (!confirm(`确定删除 Model ${name}？`)) return;
+    if (!await PixivUI.confirm({
+        title: '删除 AI Model',
+        message: `确定删除 Model“${name}”吗？`,
+        confirmLabel: '删除',
+        kind: 'danger',
+    })) return;
     delete initialConfig.models[name];
     renderLLMSettings();
+    setSettingsDirty(true);
 }
-function removeProvider(name) {
+async function removeProvider(name) {
     const provider = initialConfig.providers[name];
     if (provider && SINGLETON_PROVIDER_TYPES.has(provider.type)) {
-        alert('Pixiv / Danbooru Provider 不可删除');
+        PixivUI.toast('Pixiv / Danbooru Provider 不可删除', 'error');
         return;
     }
     const owned = Object.entries(ensureObject(initialConfig, 'models'))
         .filter(([, model]) => model && model.provider === name)
         .map(([modelName]) => modelName);
     if (owned.length) {
-        alert(`无法删除 Provider ${name}：仍被 Model ${owned.join(', ')} 引用`);
+        PixivUI.toast(`无法删除 Provider ${name}：仍被 Model ${owned.join(', ')} 引用`, 'error');
         return;
     }
-    if (!confirm(`确定删除 Provider ${name}？`)) return;
+    if (!await PixivUI.confirm({
+        title: '删除 AI Provider',
+        message: `确定删除 Provider“${name}”吗？`,
+        confirmLabel: '删除',
+        kind: 'danger',
+    })) return;
     delete initialConfig.providers[name];
     renderLLMSettings();
+    setSettingsDirty(true);
 }
 function openCredentialDialog(name, field = 'api_key', label = '凭据') { editingProviderCredential = {name, field}; document.getElementById('credentialDialogTitle').textContent = `编辑 ${name} 的 ${label}`; document.getElementById('provider_credential_value').value = ''; document.getElementById('provider_credential_delete').checked = false; document.getElementById('providerCredentialDialog').showModal(); }
 function closeCredentialDialog() { document.getElementById('providerCredentialDialog').close(); }
-function saveProviderCredential() {
+async function saveProviderCredential() {
     const {name, field} = editingProviderCredential;
     const provider = initialConfig.providers[name];
     const deleting = document.getElementById('provider_credential_delete').checked;
     const value = document.getElementById('provider_credential_value').value;
-    if (deleting && !confirm('确定删除此 Provider 的凭据吗？')) return;
+    if (deleting && !await PixivUI.confirm({
+        title: '删除 Provider 凭据',
+        message: '保存设置后，此凭据将被删除且无法从 WebUI 恢复。',
+        confirmLabel: '删除凭据',
+        kind: 'danger',
+    })) return;
     provider.credential_actions = provider.credential_actions || {};
     if (deleting) {
         provider.credential_actions[field] = 'delete';
@@ -1347,6 +1438,7 @@ function saveProviderCredential() {
     closeCredentialDialog();
     renderSingletonProviderSettings();
     renderLLMSettings();
+    setSettingsDirty(true);
 }
 
 function asInt(value, fallback) {
@@ -1568,14 +1660,14 @@ function collectConfig() {
 
 // 保存所有设置
 function saveAllSettings() {
-    const btn = document.querySelector('.save-bar .btn-primary');
+    const btn = document.getElementById('saveAllSettingsButton');
     
     let config = null;
     try {
         config = collectConfig();
     } catch (err) {
-        setSaveStatus('❌ 配置格式错误', 'error');
-        alert(err.message);
+        setSaveStatus('配置格式错误', 'error');
+        PixivUI.toast(err.message, 'error');
         return;
     }
     
@@ -1591,19 +1683,21 @@ function saveAllSettings() {
     .then(r => r.json())
     .then(res => {
         if (res.success) {
-            setSaveStatus('✅ 保存成功', 'success');
+            setSettingsDirty(false);
+            setSaveStatus('保存成功', 'success');
+            PixivUI.toast('设置已保存', 'success');
         } else {
-            setSaveStatus('❌ 保存失败', 'error');
-            alert('保存失败: ' + (res.error || '未知错误'));
+            setSaveStatus('保存失败', 'error');
+            PixivUI.toast('保存失败：' + (res.error || '未知错误'), 'error');
         }
     })
     .catch(err => {
-        setSaveStatus('❌ 网络错误', 'error');
-        alert('网络错误: ' + err.message);
+        setSaveStatus('网络错误', 'error');
+        PixivUI.toast('网络错误：' + err.message, 'error');
     })
     .finally(() => {
         btn.disabled = false;
-        btn.textContent = '💾 保存所有设置';
+        btn.textContent = '保存所有设置';
         setTimeout(() => {
             setSaveStatus('');
         }, 3000);
@@ -1616,7 +1710,7 @@ async function exportConfig() {
         const resp = await fetch('/api/config/export');
         const data = await resp.json();
         if (!data.success) {
-            alert('导出失败: ' + (data.error || '未知错误'));
+            PixivUI.toast('导出失败：' + (data.error || '未知错误'), 'error');
             return;
         }
         const blob = new Blob([data.yaml], { type: 'text/yaml;charset=utf-8' });
@@ -1628,8 +1722,9 @@ async function exportConfig() {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+        PixivUI.toast('配置已导出', 'success');
     } catch (err) {
-        alert('导出失败: ' + err.message);
+        PixivUI.toast('导出失败：' + err.message, 'error');
     }
 }
 
@@ -1661,7 +1756,11 @@ async function syncIPTags(button) {
     const log = document.getElementById('syncLog');
     if (!btn || !log) return;
 
-    if (!confirm('开始同步 Danbooru IP 标签？这可能需要几分钟。')) return;
+    if (!await PixivUI.confirm({
+        title: '同步 Danbooru IP 标签',
+        message: '同步可能需要几分钟。期间请保持页面打开。',
+        confirmLabel: '开始同步',
+    })) return;
 
     btn.disabled = true;
     btn.textContent = '⏳ 同步中...';
@@ -1679,13 +1778,13 @@ async function syncIPTags(button) {
 
         if (data.success) {
             await refreshIPSyncStatus();
-            alert('✅ 同步成功！');
+            PixivUI.toast('同步成功', 'success');
         } else {
-            alert('❌ 同步失败，请查看日志');
+            PixivUI.toast('同步失败，请查看日志', 'error');
         }
     } catch (err) {
         log.textContent += `\n❌ 错误: ${err.message}`;
-        alert('请求失败: ' + err.message);
+        PixivUI.toast('请求失败：' + err.message, 'error');
     } finally {
         btn.disabled = false;
         btn.textContent = '🔄 同步 IP 标签列表';
@@ -1695,5 +1794,6 @@ async function syncIPTags(button) {
 refreshIPSyncStatus();
 renderSingletonProviderSettings();
 renderLLMSettings();
+showSection(location.hash.slice(1) || 'pixiv');
 </script>
 {% endblock %}

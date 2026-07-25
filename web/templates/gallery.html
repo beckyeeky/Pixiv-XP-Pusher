@@ -1,19 +1,26 @@
 {% extends "base.html" %}
 
-{% block title %}Gallery - Pixiv-XP-Pusher{% endblock %}
+{% block title %}作品画廊 - Pixiv-XP-Pusher{% endblock %}
 
 {% block content %}
+<header class="page-header">
+    <div>
+        <div class="page-header__eyebrow">Gallery</div>
+        <h1 class="page-header__title">作品画廊</h1>
+        <p class="page-header__description">浏览历史推送作品，可切换分页或瀑布流，并快速筛选已收藏内容。</p>
+    </div>
+</header>
 <div class="card">
     <div class="card-header gallery-header">
         <div>
-            <h2 class="card-title">🖼️ 推送历史画廊</h2>
+            <h2 class="card-title">推送历史</h2>
             <span class="gallery-total">共 {{ total }} 张作品</span>
         </div>
 
         {% if items %}
         <div class="gallery-toolbar">
             <button type="button" class="btn gallery-toolbar-btn" id="galleryLayoutToggleButton" aria-pressed="false">
-                切换为 Pinterest 瀑布流
+                切换为瀑布流
             </button>
             <a
                 href="/gallery?page=1{% if not favorites_only %}&favorites_only=true{% endif %}"
@@ -76,9 +83,9 @@
         </div>
 
         <div class="gallery-pagination__jump">
-            <span>跳至</span>
+            <label for="pageJump">跳至页码</label>
             <input type="number" id="pageJump" min="1" max="{{ total_pages }}" value="{{ page }}">
-            <button type="button" class="btn" id="pageJumpButton">Go</button>
+            <button type="button" class="btn" id="pageJumpButton">跳转</button>
         </div>
     </div>
     {% endif %}

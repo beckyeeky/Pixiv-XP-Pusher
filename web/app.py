@@ -57,6 +57,7 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 # 确保目录存在
 STATIC_DIR.mkdir(exist_ok=True)
 TEMPLATES_DIR.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # 初始化模板引擎
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
