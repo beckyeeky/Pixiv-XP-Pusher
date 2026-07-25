@@ -3,138 +3,29 @@
 去重、黑名单、质量过滤、匹配度评分
 """
 import logging
+from dataclasses import dataclass
 from typing import Optional
 
 from pixiv_client import Illust
 import database as db
-from tag_categories import is_feature_category, is_identity_category, is_seed_category
-from daily_slate import DailySlateComposer
+from tag_categories import is_identity_category, is_seed_category
+from daily_slate import (
+    DailySlateComposer,
+    DailySlateResult,
+    PreferenceContributions,
+    calculate_preference_contributions,
+)
 from tag_mapping import TagIdentityResolver
 from utils import normalize_tag
 
 logger = logging.getLogger(__name__)
 
 
-FEATURE_CONTRIBUTION_SCHEDULE = (1.0, 0.5, 0.25)
-
-
-def _is_feature_classification(classification) -> bool:
-    return is_feature_category(classification)
-
-
-def _build_tag_match_breakdown(
-    tags: list[str],
-    xp_profile: dict[str, float],
-    negative_profile: dict[str, float] = None,
-    tag_classifications: Optional[dict] = None,
-    tag_resolver: Optional[TagIdentityResolver] = None,
-) -> dict[str, float | int]:
-    if not tags or not xp_profile:
-        return {
-            "max_weight": 1.0,
-            "matched_count": 0,
-            "high_weight_matches": 0,
-            "negative_penalty": 0.0,
-            "total_score": 0.0,
-            "feature_contribution": 0.0,
-            "ip_contribution": 0.0,
-            "character_contribution": 0.0,
-            "copyright_contribution": 0.0,
-            "feature_match_count": 0,
-        }
-
-    sorted_weights = sorted(xp_profile.values(), reverse=True)
-    max_weight = sorted_weights[0] if sorted_weights else 1.0
-    top_threshold = sorted_weights[len(sorted_weights) // 5] if len(sorted_weights) >= 5 else max_weight * 0.8
-
-    feature_weights: list[tuple[float, float]] = []
-    non_feature_weights: list[tuple[float, float]] = []
-    identity_weights: list[float] = []
-    typed_identity_weights = {"character": [], "copyright": []}
-    negative_penalty = 0.0
-    seen_positive_tags: set[str] = set()
-    seen_negative_tags: set[str] = set()
-    resolver = tag_resolver or TagIdentityResolver()
-
-    for tag in tags:
-        normalized_tag = resolver.resolve(tag)
-        tag_key = normalized_tag or tag.lower().strip()
-
-        weight = None
-        if normalized_tag in xp_profile:
-            weight = xp_profile[normalized_tag]
-        elif tag.lower() in xp_profile:
-            weight = xp_profile[tag.lower()]
-
-        if weight is not None and tag_key not in seen_positive_tags:
-            seen_positive_tags.add(tag_key)
-            classification = (tag_classifications or {}).get(normalized_tag)
-            effective_weight = float(weight) * (1.3 if _is_feature_classification(classification) else 1.0)
-
-            if _is_feature_classification(classification):
-                feature_weights.append((effective_weight, float(weight)))
-            else:
-                non_feature_weights.append((effective_weight, float(weight)))
-                if is_identity_category(classification):
-                    identity_weights.append(effective_weight)
-                    category = getattr(classification, "classification", classification)
-                    category = str(category).lower()
-                    if category in typed_identity_weights:
-                        typed_identity_weights[category].append(effective_weight)
-
-        if negative_profile and tag_key not in seen_negative_tags:
-            seen_negative_tags.add(tag_key)
-            neg_weight = negative_profile.get(normalized_tag, negative_profile.get(tag.lower(), 0))
-            if neg_weight > 0:
-                negative_penalty += neg_weight * 0.5
-
-    feature_weights.sort(key=lambda item: item[0], reverse=True)
-    feature_contribution = 0.0
-    feature_high_weight_matches = 0
-    contributing_feature_count = 0
-    for index, (effective_weight, raw_weight) in enumerate(feature_weights[:len(FEATURE_CONTRIBUTION_SCHEDULE)]):
-        feature_contribution += effective_weight * FEATURE_CONTRIBUTION_SCHEDULE[index]
-        contributing_feature_count += 1
-        if raw_weight >= top_threshold:
-            feature_high_weight_matches += 1
-
-    non_feature_total = sum(effective_weight for effective_weight, _ in non_feature_weights)
-    non_feature_high_weight_matches = sum(1 for _, raw_weight in non_feature_weights if raw_weight >= top_threshold)
-
-    return {
-        "max_weight": max_weight,
-        "matched_count": contributing_feature_count + len(non_feature_weights),
-        "high_weight_matches": feature_high_weight_matches + non_feature_high_weight_matches,
-        "negative_penalty": negative_penalty,
-        "total_score": feature_contribution + non_feature_total,
-        "feature_contribution": feature_contribution,
-        "ip_contribution": max(identity_weights) if identity_weights else 0.0,
-        "identity_contribution": max(identity_weights) if identity_weights else 0.0,
-        "character_contribution": max(typed_identity_weights["character"], default=0.0),
-        "copyright_contribution": max(typed_identity_weights["copyright"], default=0.0),
-        "feature_match_count": len(feature_weights),
-    }
-
-
-def _finalize_match_score(breakdown: dict[str, float | int]) -> float:
-    import math
-
-    matched_count = int(breakdown["matched_count"])
-    max_weight = float(breakdown["max_weight"])
-    negative_penalty = float(breakdown["negative_penalty"])
-
-    if matched_count == 0:
-        if negative_penalty > 0:
-            return max(-negative_penalty / (max_weight + 1), -0.5)
-        return 0.0
-
-    base_score = float(breakdown["total_score"]) / (matched_count * max_weight) if max_weight > 0 else 0.0
-    quantity_bonus = min(math.log(1 + matched_count) / math.log(6), 0.3)
-    quality_bonus = min(int(breakdown["high_weight_matches"]) * 0.05, 0.2)
-    penalty_normalized = negative_penalty / (max_weight + 1) if max_weight > 0 else 0
-
-    final_score = base_score + quantity_bonus + quality_bonus - penalty_normalized
-    return max(min(final_score, 1.0), 0.0)
+@dataclass(frozen=True)
+class ContentFilterResult:
+    selected: tuple[Illust, ...]
+    ranked: tuple[Illust, ...]
+    daily_slate: DailySlateResult | None = None
 
 
 def calculate_match_score(
@@ -175,14 +66,14 @@ def calculate_tag_match_score(
 ) -> float:
     """Calculate the production Tag score from cached work tags only."""
 
-    breakdown = _build_tag_match_breakdown(
+    contributions = calculate_preference_contributions(
         tags,
         xp_profile,
         negative_profile,
-        tag_classifications=tag_classifications,
-        tag_resolver=tag_resolver,
+        classifications=tag_classifications,
+        resolver=tag_resolver,
     )
-    return _finalize_match_score(breakdown)
+    return contributions.match_score
 
 class ContentFilter:
     """内容过滤器"""
@@ -301,6 +192,15 @@ class ContentFilter:
         xp_profile: Optional[dict[str, float]] = None,
         user_id: int = 0  # 用于 Embedding 缓存
     ) -> list[Illust]:
+        result = await self.filter_with_result(illusts, xp_profile, user_id)
+        return list(result.selected)
+
+    async def filter_with_result(
+        self,
+        illusts: list[Illust],
+        xp_profile: Optional[dict[str, float]] = None,
+        user_id: int = 0,
+    ) -> ContentFilterResult:
         """
         过滤管道
         
@@ -316,7 +216,7 @@ class ContentFilter:
         from datetime import datetime, timedelta
         
         if not illusts:
-            return []
+            return ContentFilterResult((), ())
 
         try:
             await self.load_db_blocklist()
@@ -481,26 +381,19 @@ class ContentFilter:
         
         scored_result = []
         uncached_embeddings = []  # 待计算的作品 Embedding
+        contributions_by_id: dict[int, PreferenceContributions] = {}
         
         for illust in unique_result:
             if xp_profile:
-                breakdown = _build_tag_match_breakdown(
+                contributions = calculate_preference_contributions(
                     illust.tags,
                     xp_profile,
                     negative_profile,
-                    tag_classifications=tag_classifications,
-                    tag_resolver=self.tag_resolver,
+                    classifications=tag_classifications,
+                    resolver=self.tag_resolver,
                 )
-                score = _finalize_match_score(breakdown)
-                illust.feature_contribution = float(breakdown["feature_contribution"])
-                illust.ip_contribution = float(breakdown["ip_contribution"])
-                illust.character_contribution = float(breakdown["character_contribution"])
-                illust.copyright_contribution = float(breakdown["copyright_contribution"])
-                illust.feature_match_count = int(breakdown["feature_match_count"])
-                illust.is_feature_led = (
-                    illust.feature_contribution > 0
-                    and illust.feature_contribution >= illust.ip_contribution
-                )
+                score = contributions.match_score
+                contributions_by_id[illust.id] = contributions
 
                 # 画师权重加成：关注画师的作品额外加成
                 if illust.user_id in self.subscribed_artists:
@@ -510,12 +403,7 @@ class ContentFilter:
                     continue
             else:
                 score = 0.0
-                illust.feature_contribution = 0.0
-                illust.ip_contribution = 0.0
-                illust.character_contribution = 0.0
-                illust.copyright_contribution = 0.0
-                illust.feature_match_count = 0
-                illust.is_feature_led = False
+                contributions_by_id[illust.id] = PreferenceContributions()
                 # 无 XP 时，关注画师也给予基础分
                 if illust.user_id in self.subscribed_artists:
                     score = self.artist_boost
@@ -680,10 +568,16 @@ class ContentFilter:
                 artist_count[illust.user_id] = count + 1
         
         # Daily Slate applies Motive Mix and Identity Caps after ranking.
+        slate_result = None
         if self.daily_slate.enabled:
-            final_result = self.daily_slate.compose(
-                diverse_result, self.daily_limit, tag_classifications, xp_profile or {}
+            slate_result = self.daily_slate.compose(
+                diverse_result,
+                self.daily_limit,
+                tag_classifications,
+                xp_profile or {},
+                contributions_by_id,
             )
+            final_result = list(slate_result.selected)
         # 7. 探索比例：只从常规 Top N 之外挑 feature 候选，避免把原本就会入选的强图改名成探索
         elif self.exploration_ratio > 0 and len(diverse_result) > self.daily_limit:
             import random
@@ -696,8 +590,18 @@ class ContentFilter:
             feature_pool = [
                 illust
                 for illust in candidate_pool
-                if getattr(illust, "feature_match_count", 0) > 0
-                and getattr(illust, "feature_contribution", 0.0) >= getattr(illust, "ip_contribution", 0.0)
+                if contributions_by_id.get(
+                    illust.id,
+                    PreferenceContributions(),
+                ).feature_match_count > 0
+                and contributions_by_id.get(
+                    illust.id,
+                    PreferenceContributions(),
+                ).feature
+                >= contributions_by_id.get(
+                    illust.id,
+                    PreferenceContributions(),
+                ).identity
             ]
 
             if len(feature_pool) >= explore_count:
@@ -716,10 +620,6 @@ class ContentFilter:
             # 8. 每日上限
             final_result = diverse_result[:self.daily_limit]
 
-        # Candidate-source audit reads the same post-filter ranking that fed
-        # Daily Slate composition; this does not affect selection.
-        self._last_ranked_illusts = list(diverse_result)
-        
         # 记录匹配度日志
         if xp_profile and scored_result:
             top_3 = scored_result[:3]
@@ -745,7 +645,11 @@ class ContentFilter:
             pass
         
         logger.info(f"过滤后剩余 {len(final_result)} 个作品 (涉及 {len(artist_count)} 个画师)")
-        return final_result
+        return ContentFilterResult(
+            selected=tuple(final_result),
+            ranked=tuple(diverse_result),
+            daily_slate=slate_result,
+        )
 
     async def _classify_tags_for_illusts(self, illusts: list[Illust]) -> dict:
         if not self.tag_classifier or not illusts:

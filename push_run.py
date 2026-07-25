@@ -270,7 +270,12 @@ class PushRun:
             )
 
             pixiv_uid = self.config.get("pixiv", {}).get("user_id", 0)
-            filtered = await content_filter.filter(all_illusts, xp_profile=xp_profile, user_id=pixiv_uid)
+            filter_result = await content_filter.filter_with_result(
+                all_illusts,
+                xp_profile=xp_profile,
+                user_id=pixiv_uid,
+            )
+            filtered = list(filter_result.selected)
             logger.info(f"过滤后 {len(filtered)} 个作品")
 
             if vector_batch.run_id:
@@ -282,7 +287,7 @@ class PushRun:
                         vector_batch.run_id,
                         ranked_ids=[
                             illust.id
-                            for illust in getattr(content_filter, "_last_ranked_illusts", [])
+                            for illust in filter_result.ranked
                         ],
                         selected_ids={illust.id for illust in filtered},
                         slate_profile_concentration=slate_profile_concentration(

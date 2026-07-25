@@ -105,12 +105,25 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
              patch("filter.db.get_blocked_tags", new=AsyncMock(return_value=[])), \
              patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[])), \
              patch.object(content_filter, "_classify_tags_for_illusts", new=AsyncMock(return_value=classifications)):
-            ranked = await content_filter.filter(
+            filter_result = await content_filter.filter_with_result(
                 illusts,
                 xp_profile={tag: 1.0 for tag in classifications},
             )
+            ranked = list(filter_result.selected)
 
         self.assertEqual(len(ranked), 7)
+        self.assertEqual(
+            [item.id for item in filter_result.ranked],
+            [item.id for item in illusts],
+        )
+        self.assertEqual(
+            set(filter_result.daily_slate.contributions),
+            {item.id for item in illusts},
+        )
+        self.assertTrue(all(
+            not hasattr(item, "feature_contribution")
+            for item in filter_result.ranked
+        ))
         self.assertLessEqual(sum("blue_archive" in item.tags for item in ranked), 2)
         self.assertEqual(sum(getattr(item, "recommendation_motive", None) == "feature" for item in ranked), 3)
     def test_feature_tags_receive_extra_match_weight(self):
