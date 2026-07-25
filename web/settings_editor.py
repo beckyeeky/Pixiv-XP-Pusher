@@ -10,7 +10,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Callable
 
-from config import validate_singleton_providers
+from provider_model_graph import ProviderModelGraph
 
 
 SENSITIVE_CONFIG_KEYS = {
@@ -332,9 +332,9 @@ def apply_settings_payload(
     from config import normalize_config
 
     _validate_classification_maintenance_fields(merged)
-    _validate_provider_model_deletions(merged)
+    ProviderModelGraph.from_config(merged).validate_deletion_references()
     merged = normalize_config(merged)
-    _validate_provider_model_config(merged)
+    ProviderModelGraph.from_config(merged).validate()
     web_cfg = merged.setdefault("web", {})
     current_web_cfg = current.get("web", {}) if isinstance(current.get("web"), dict) else {}
 
@@ -400,123 +400,6 @@ def _preserve_masked_secrets(current: Any, submitted: Any) -> None:
                 submitted[key] = old
         elif isinstance(old, dict) and isinstance(value, dict):
             _preserve_masked_secrets(old, value)
-
-
-def _validate_provider_model_config(config: dict) -> None:
-    providers = config.get("providers", {})
-    models = config.get("models", {})
-    if not isinstance(providers, dict) or not isinstance(models, dict):
-        raise ValueError("Providers 和 Models 必须是对象")
-    allowed_types = {"openai", "deepseek", "anthropic", "google", "openai_compatible", "local", "pixiv", "danbooru", "brave_search", "tavily_search"}
-    singleton_labels = {"pixiv": "Pixiv", "danbooru": "Danbooru"}
-    singleton_counts = {key: 0 for key in singleton_labels}
-    for name, provider in providers.items():
-        if not isinstance(name, str) or not name.strip() or not isinstance(provider, dict):
-            raise ValueError("每个 Provider 都需要名称和配置")
-        provider_type = provider.get("type")
-        if provider_type not in allowed_types:
-            raise ValueError(f"Provider {name} 的类型无效")
-        if provider_type in singleton_counts:
-            singleton_counts[provider_type] += 1
-        if provider_type == "openai_compatible" and not str(provider.get("base_url") or "").strip():
-            raise ValueError(f"自定义 Provider {name} 需要 Base URL")
-    for provider_type, count in singleton_counts.items():
-        if count > 1:
-            raise ValueError(f"只能配置一个 {singleton_labels[provider_type]} Provider")
-    validate_singleton_providers(providers)
-    for name, model in models.items():
-        if not isinstance(name, str) or not name.strip() or not isinstance(model, dict):
-            raise ValueError("每个 Model 都需要名称和配置")
-        if model.get("provider") not in providers:
-            raise ValueError(f"Model {name} 必须引用一个已配置 Provider")
-        if providers[model["provider"]].get("type") in {"pixiv", "danbooru", "brave_search", "tavily_search"}:
-            raise ValueError(f"Model {name} 必须引用 LLM Provider")
-        if not str(model.get("model") or "").strip():
-            raise ValueError(f"Model {name} 需要模型名称")
-        capabilities = model.get("capabilities", model.get("capability", ["llm"]))
-        if isinstance(capabilities, str):
-            capabilities = [capabilities]
-        if not isinstance(capabilities, list) or not capabilities or any(
-            capability not in {"llm", "embedding"} for capability in capabilities
-        ):
-            raise ValueError(f"Model {name} 的能力必须是 llm 或 embedding")
-    classifier = config.get("tag_classifier", {})
-    if isinstance(classifier, dict):
-        judges = classifier.get("judges", [])
-        if not isinstance(judges, list) or any(name not in models for name in judges):
-            raise ValueError("Judge 必须选择已配置的 Model")
-        grounded = classifier.get("grounded_judge", {})
-        if isinstance(grounded, dict) and grounded.get("backend") == "search_first":
-            search_model_name = grounded.get("search_classifier_model")
-            search_model = models.get(search_model_name, {})
-            search_provider = providers.get(search_model.get("provider"), {}) if isinstance(search_model, dict) else {}
-            if (
-                not search_model
-                or "llm" not in search_model.get("capabilities", [])
-                or search_provider.get("type") not in {"openai", "deepseek", "openai_compatible", "local"}
-            ):
-                raise ValueError("Search-first 必须选择 OpenAI Chat Completions 兼容的 LLM Model")
-            for field, provider_type, label in (
-                ("brave_providers", "brave_search", "Brave Search"),
-                ("tavily_providers", "tavily_search", "Tavily Search"),
-            ):
-                selected = grounded.get(field, [])
-                if not isinstance(selected, list) or not selected or any(
-                    providers.get(name, {}).get("type") != provider_type for name in selected
-                ):
-                    raise ValueError(f"Search-first 至少需要一个有效的 {label} Provider")
-    function_selections = [
-        ("ai", "embedding", "embedding"),
-        ("ai", "scorer", "llm"),
-        (None, "tag_mapping", "llm"),
-    ]
-    for section_name, function_name, capability in function_selections:
-        section = config.get(section_name, {}) if section_name else config
-        function_cfg = section.get(function_name, {}) if isinstance(section, dict) else None
-        model_ref = function_cfg.get("model") if isinstance(function_cfg, dict) else None
-        if not isinstance(function_cfg, dict) or not function_cfg.get("enabled"):
-            continue
-        label = f"{section_name}.{function_name}.model" if section_name else f"{function_name}.model"
-        if not model_ref or model_ref not in models:
-            raise ValueError(f"{label} 必须选择 {capability} Model")
-        model_capabilities = models[model_ref].get("capabilities", ["llm"])
-        if capability not in model_capabilities:
-            raise ValueError(f"{label} 必须选择 {capability} Model")
-
-
-def _validate_provider_model_deletions(config: dict) -> None:
-    """Reject Settings maps that delete Providers/Models still in use."""
-    providers = config.get("providers", {})
-    models = config.get("models", {})
-    if not isinstance(providers, dict) or not isinstance(models, dict):
-        return
-    classifier = config.get("tag_classifier", {})
-    judges = classifier.get("judges", []) if isinstance(classifier, dict) else []
-    if isinstance(judges, list):
-        for judge_name in judges:
-            if judge_name not in models:
-                raise ValueError(f"Model {judge_name} 仍被 Judge 引用，无法删除")
-    for section_name, function_name in (
-        ("ai", "embedding"),
-        ("ai", "scorer"),
-        (None, "tag_mapping"),
-    ):
-        section = config.get(section_name, {}) if section_name else config
-        function_cfg = section.get(function_name, {}) if isinstance(section, dict) else None
-        if not isinstance(function_cfg, dict):
-            continue
-        model_ref = str(function_cfg.get("model") or "").strip()
-        if model_ref and model_ref not in models:
-            raise ValueError(
-                f"Model {model_ref} 仍被 "
-                f"{section_name + '.' if section_name else ''}{function_name}.model 引用，无法删除"
-            )
-    for model_name, model in models.items():
-        if not isinstance(model, dict):
-            continue
-        provider_name = model.get("provider")
-        if provider_name not in providers:
-            raise ValueError(f"Provider {provider_name} 仍被 Model {model_name} 引用，无法删除")
 
 
 def _positive_int_field(value: Any, field_name: str) -> None:

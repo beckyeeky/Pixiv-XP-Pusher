@@ -4,14 +4,21 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from provider_model_graph import (
+    MODEL_CAPABILITIES,
+    NON_MODEL_PROVIDER_TYPES,
+    OPENAI_CHAT_PROVIDER_TYPES,
+    SINGLETON_PROVIDER_TYPES,
+    ProviderModelGraph,
+    model_capabilities,
+    validate_singleton_providers,
+)
 from proxy_utils import normalize_proxy_url
 from telegram_rich import normalize_rich_message_config
 
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path("config.yaml")
-SINGLETON_PROVIDER_TYPES = frozenset({"pixiv", "danbooru"})
-MODEL_CAPABILITIES = frozenset({"llm", "embedding"})
 KNOWN_MODEL_CATALOGS = {
     "llm": [
         "gpt-4o-mini",
@@ -36,27 +43,7 @@ def get_known_model_catalog(capability: str) -> list[str]:
 
 
 def _model_capabilities(model: dict) -> list[str]:
-    raw_capabilities = model.get("capabilities", model.get("capability", ["llm"]))
-    if isinstance(raw_capabilities, str):
-        raw_capabilities = [raw_capabilities]
-    capabilities = [
-        capability.strip()
-        for capability in raw_capabilities
-        if isinstance(capability, str) and capability.strip() in MODEL_CAPABILITIES
-    ] if isinstance(raw_capabilities, list) else []
-    return list(dict.fromkeys(capabilities or ["llm"]))
-
-
-def validate_singleton_providers(providers: dict) -> None:
-    """Reject malformed typed Provider configuration before it reaches runtime."""
-    counts = {provider_type: 0 for provider_type in SINGLETON_PROVIDER_TYPES}
-    for provider in providers.values() if isinstance(providers, dict) else ():
-        if isinstance(provider, dict) and provider.get("type") in counts:
-            counts[provider["type"]] += 1
-    labels = {"pixiv": "Pixiv", "danbooru": "Danbooru"}
-    for provider_type, count in counts.items():
-        if count != 1:
-            raise ValueError(f"必须配置且只能配置一个 {labels[provider_type]} Provider")
+    return model_capabilities(model)
 
 
 def _migrate_one_function_model(
@@ -386,7 +373,7 @@ def normalize_config(config: dict) -> dict:
         model_name = str(model.get("model") or "").strip()
         if (
             provider_name not in normalized_providers
-            or normalized_providers[provider_name].get("type") in {"pixiv", "danbooru", "brave_search", "tavily_search"}
+            or normalized_providers[provider_name].get("type") in NON_MODEL_PROVIDER_TYPES
             or not model_name
         ):
             logger.warning("Model %s 引用了不存在 Provider 或缺少模型名称，已跳过", name)
@@ -555,7 +542,7 @@ def normalize_config(config: dict) -> dict:
         search_classifier_model
         if search_classifier_model in normalized_models
         and "llm" in normalized_models[search_classifier_model].get("capabilities", [])
-        and search_provider.get("type") in {"openai", "deepseek", "openai_compatible", "local"}
+        and search_provider.get("type") in OPENAI_CHAT_PROVIDER_TYPES
         else ""
     )
 
@@ -659,51 +646,17 @@ def normalize_config(config: dict) -> dict:
 
 def get_singleton_provider(config: dict, provider_type: str) -> dict:
     """Return the single provider of a capability type, if configured."""
-    providers = config.get("providers") if isinstance(config, dict) else None
-    if not isinstance(providers, dict):
-        return {}
-    matches = [
-        provider for provider in providers.values()
-        if isinstance(provider, dict) and provider.get("type") == provider_type
-    ]
-    return copy.deepcopy(matches[0]) if len(matches) == 1 else {}
+    return ProviderModelGraph.from_config(config).singleton_provider(provider_type)
 
 
 def get_compatible_models(config: dict, capability: str) -> dict[str, dict]:
     """Return shared Models that can be selected by a product function."""
-    if capability not in MODEL_CAPABILITIES:
-        raise ValueError(f"不支持的 Model capability: {capability}")
-    models = config.get("models") if isinstance(config, dict) else None
-    if not isinstance(models, dict):
-        return {}
-    return {
-        name: copy.deepcopy(model)
-        for name, model in models.items()
-        if isinstance(model, dict) and capability in _model_capabilities(model)
-    }
+    return ProviderModelGraph.from_config(config).compatible_models(capability)
 
 
 def resolve_model(config: dict, model_ref: str, capability: str | None = None) -> dict:
     """Resolve a Model reference into runtime credentials and provider details."""
-    models = config.get("models") if isinstance(config, dict) else None
-    providers = config.get("providers") if isinstance(config, dict) else None
-    model = models.get(model_ref) if isinstance(models, dict) else None
-    if not isinstance(model, dict):
-        raise ValueError(f"未找到 Model: {model_ref}")
-    if capability is not None and model_ref not in get_compatible_models(config, capability):
-        raise ValueError(f"Model {model_ref} 不兼容 {capability} function")
-    provider_name = model.get("provider")
-    provider = providers.get(provider_name) if isinstance(providers, dict) else None
-    if not isinstance(provider, dict):
-        raise ValueError(f"Model {model_ref} 引用了不存在的 Provider: {provider_name}")
-    resolved = copy.deepcopy(model)
-    resolved.update({
-        "provider_name": provider_name,
-        "provider": provider.get("type", "openai_compatible"),
-        "api_key": provider.get("api_key", ""),
-        "base_url": provider.get("base_url", ""),
-    })
-    return resolved
+    return ProviderModelGraph.from_config(config).resolve_model(model_ref, capability)
 
 
 def resolve_tag_mapping_config(config: dict) -> dict:

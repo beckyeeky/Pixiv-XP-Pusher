@@ -32,6 +32,7 @@ from config import (
     resolve_tag_mapping_config,
 )
 from proxy_utils import normalize_proxy_url
+from provider_model_graph import settings_rules as provider_model_settings_rules
 from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
 from classification_maintenance import ClassificationMaintenance
 from tag_mapping import AITagMappingCandidateGenerator
@@ -366,6 +367,7 @@ async def settings_page(request: Request):
         "push_schedule": push_schedule,
         "known_llm_models": get_known_model_catalog("llm"),
         "known_embedding_models": get_known_model_catalog("embedding"),
+        "provider_model_rules": provider_model_settings_rules(),
     })
 
 

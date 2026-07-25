@@ -1004,7 +1004,7 @@ textarea.form-control {
     <form method="dialog" class="settings-card" onsubmit="saveProviderDialog(event)">
         <h3 id="providerDialogTitle">添加 AI Provider</h3>
         <div class="form-group"><label class="form-label">Provider 名称</label><input required class="form-control" id="provider_dialog_name" placeholder="例如 openrouter"></div>
-        <div class="form-group"><label class="form-label">服务类型</label><select class="form-control" id="provider_dialog_type"><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="anthropic">Anthropic</option><option value="google">Google</option><option value="brave_search">Brave Search</option><option value="tavily_search">Tavily Search</option><option value="local">本地服务</option><option value="openai_compatible">自定义 OpenAI-compatible</option></select></div>
+        <div class="form-group"><label class="form-label">服务类型</label><select class="form-control" id="provider_dialog_type">{% for option in provider_model_rules.editable_provider_types %}<option value="{{ option.type }}">{{ option.label }}</option>{% endfor %}</select></div>
         <div class="form-group"><label class="form-label">Base URL</label><input type="url" class="form-control" id="provider_dialog_url" placeholder="https://gateway.example/v1"></div>
         <div class="form-actions"><button type="button" class="btn-secondary" onclick="document.getElementById('providerDialog').close()">取消</button><button type="submit" class="btn-primary">保存</button></div>
     </form>
@@ -1107,7 +1107,26 @@ function ensureArray(parent, key) {
 
 const KNOWN_LLM_MODELS = {{ known_llm_models | tojson }};
 const KNOWN_EMBEDDING_MODELS = {{ known_embedding_models | tojson }};
+const PROVIDER_MODEL_RULES = {{ provider_model_rules | tojson }};
+const SINGLETON_PROVIDER_TYPES = new Set(PROVIDER_MODEL_RULES.singleton_provider_types);
+const NON_MODEL_PROVIDER_TYPES = new Set(PROVIDER_MODEL_RULES.non_model_provider_types);
+const OPENAI_CHAT_PROVIDER_TYPES = new Set(PROVIDER_MODEL_RULES.openai_chat_provider_types);
 let editingProviderCredential = null;
+
+function valueAtPath(root, path, fallback = undefined) {
+    let value = root;
+    for (const key of path) {
+        if (!value || typeof value !== 'object') return fallback;
+        value = value[key];
+    }
+    return value ?? fallback;
+}
+
+function parentAtPath(root, path) {
+    let value = root;
+    for (const key of path.slice(0, -1)) value = ensureObject(value, key);
+    return [value, path[path.length - 1]];
+}
 
 function singletonProvider(type, defaults) {
     const providers = ensureObject(initialConfig, 'providers');
@@ -1134,8 +1153,8 @@ function renderSingletonProviderSettings() {
 
 function renderLLMSettings() {
     const providers = ensureObject(initialConfig, 'providers');
-    const managedProviders = Object.fromEntries(Object.entries(providers).filter(([, provider]) => provider && !['pixiv', 'danbooru'].includes(provider.type)));
-    const llmProviders = Object.fromEntries(Object.entries(managedProviders).filter(([, provider]) => !['brave_search', 'tavily_search'].includes(provider.type)));
+    const managedProviders = Object.fromEntries(Object.entries(providers).filter(([, provider]) => provider && !SINGLETON_PROVIDER_TYPES.has(provider.type)));
+    const llmProviders = Object.fromEntries(Object.entries(managedProviders).filter(([, provider]) => !NON_MODEL_PROVIDER_TYPES.has(provider.type)));
     const models = ensureObject(initialConfig, 'models');
     document.getElementById('provider_list').innerHTML = Object.entries(managedProviders)
         .map(([name, provider]) => renderProviderCard(name, provider, models)).join('')
@@ -1178,7 +1197,7 @@ function defaultModelForCapabilities(capabilities) {
 }
 let editingProviderName = null;
 let editingModelName = null;
-function aiProviderEntries() { return Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider && !['pixiv', 'danbooru', 'brave_search', 'tavily_search'].includes(provider.type)); }
+function aiProviderEntries() { return Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider && !NON_MODEL_PROVIDER_TYPES.has(provider.type)); }
 function openProviderDialog(name = null) {
     editingProviderName = name;
     const provider = name ? initialConfig.providers[name] : {type: 'openai_compatible', base_url: ''};
@@ -1198,9 +1217,9 @@ function saveProviderDialog(event) {
     if (editingProviderName && editingProviderName !== name) {
         delete initialConfig.providers[editingProviderName];
         Object.values(ensureObject(initialConfig, 'models')).forEach(model => { if (model.provider === editingProviderName) model.provider = name; });
-        const grounded = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge');
-        for (const field of ['brave_providers', 'tavily_providers']) {
-            grounded[field] = ensureArray(grounded, field).map(item => item === editingProviderName ? name : item);
+        for (const reference of PROVIDER_MODEL_RULES.search_provider_references) {
+            const [owner, field] = parentAtPath(initialConfig, reference.path);
+            owner[field] = ensureArray(owner, field).map(item => item === editingProviderName ? name : item);
         }
     }
     document.getElementById('providerDialog').close();
@@ -1244,42 +1263,35 @@ function setFunctionModelOptions(id, capability, selected) { const select = docu
 function setSearchClassifierModelOptions(selected) {
     const select = document.getElementById('tag_classifier_search_model');
     const providers = ensureObject(initialConfig, 'providers');
-    const compatible = new Set(['openai', 'deepseek', 'openai_compatible', 'local']);
     const options = Object.entries(ensureObject(initialConfig, 'models')).filter(([, model]) =>
-        Array.isArray(model?.capabilities) && model.capabilities.includes('llm') && compatible.has(providers[model.provider]?.type)
+        Array.isArray(model?.capabilities) && model.capabilities.includes('llm') && OPENAI_CHAT_PROVIDER_TYPES.has(providers[model.provider]?.type)
     );
     select.innerHTML = options.map(([name, model]) => `<option value="${escapeHtml(name)}" ${name === selected ? 'selected' : ''}>${escapeHtml(name)} (${escapeHtml(model.provider || '')})</option>`).join('') || '<option value="">请先配置兼容 Model</option>';
 }
 function renameModelReferences(oldName, newName) {
-    initialConfig.tag_classifier.judges = initialConfig.tag_classifier.judges.map(name => name === oldName ? newName : name);
-    const tagMapping = ensureObject(initialConfig, 'tag_mapping');
-    if (tagMapping.model === oldName) tagMapping.model = newName;
-    const embedding = ensureObject(ensureObject(initialConfig, 'ai'), 'embedding');
-    if (embedding.model === oldName) embedding.model = newName;
-    const scorer = ensureObject(ensureObject(initialConfig, 'ai'), 'scorer');
-    if (scorer.model === oldName) scorer.model = newName;
-    const grounded = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge');
-    if (grounded.search_classifier_model === oldName) grounded.search_classifier_model = newName;
+    for (const reference of PROVIDER_MODEL_RULES.model_references) {
+        const [owner, field] = parentAtPath(initialConfig, reference.path);
+        if (reference.multiple) {
+            owner[field] = ensureArray(owner, field).map(name => name === oldName ? newName : name);
+        } else if (owner[field] === oldName) {
+            owner[field] = newName;
+        }
+    }
 }
 function modelReferenceLabels(name) {
-    const refs = [];
-    const judges = ensureArray(ensureObject(initialConfig, 'tag_classifier'), 'judges');
-    if (judges.includes(name)) refs.push('标签审查 Judge');
-    if (ensureObject(initialConfig, 'tag_mapping').model === name) refs.push('标签映射候选');
-    if (ensureObject(ensureObject(initialConfig, 'ai'), 'embedding').model === name) refs.push('语义嵌入');
-    if (ensureObject(ensureObject(initialConfig, 'ai'), 'scorer').model === name) refs.push('智能精排');
-    if (ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge').search_classifier_model === name) refs.push('Search-first 标签分类');
-    return refs;
+    return PROVIDER_MODEL_RULES.model_references
+        .filter(reference => {
+            const value = valueAtPath(initialConfig, reference.path, reference.multiple ? [] : '');
+            return reference.multiple ? Array.isArray(value) && value.includes(name) : value === name;
+        })
+        .map(reference => reference.label);
 }
 function renderSearchProviderSelection() {
-    const grounded = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge');
-    for (const [type, field, targetId] of [
-        ['brave_search', 'brave_providers', 'brave_provider_selection'],
-        ['tavily_search', 'tavily_providers', 'tavily_provider_selection'],
-    ]) {
-        const selected = ensureArray(grounded, field);
-        const entries = Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider?.type === type);
-        document.getElementById(targetId).innerHTML = entries.length ? entries.map(([name]) => `<label class="toggle-switch"><input type="checkbox" ${selected.includes(name) ? 'checked' : ''} onchange="toggleSearchProvider('${field}', '${escapeJs(name)}', this.checked)"><span>${escapeHtml(name)}</span></label>`).join('') : '<span class="help-text">请先在 Provider 页面添加对应 Search Provider。</span>';
+    for (const reference of PROVIDER_MODEL_RULES.search_provider_references) {
+        const [owner, field] = parentAtPath(initialConfig, reference.path);
+        const selected = ensureArray(owner, field);
+        const entries = Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider?.type === reference.provider_type);
+        document.getElementById(reference.target_id).innerHTML = entries.length ? entries.map(([name]) => `<label class="toggle-switch"><input type="checkbox" ${selected.includes(name) ? 'checked' : ''} onchange="toggleSearchProvider('${field}', '${escapeJs(name)}', this.checked)"><span>${escapeHtml(name)}</span></label>`).join('') : '<span class="help-text">请先在 Provider 页面添加对应 Search Provider。</span>';
     }
 }
 function toggleSearchProvider(field, name, enabled) {
@@ -1299,7 +1311,7 @@ function removeModel(name) {
 }
 function removeProvider(name) {
     const provider = initialConfig.providers[name];
-    if (provider && ['pixiv', 'danbooru'].includes(provider.type)) {
+    if (provider && SINGLETON_PROVIDER_TYPES.has(provider.type)) {
         alert('Pixiv / Danbooru Provider 不可删除');
         return;
     }

@@ -10,6 +10,7 @@ import task_manager
 import yaml
 from tag_classifier import TagClassifier
 from web.settings_editor import apply_settings_payload, redact_sensitive_config
+from provider_model_graph import settings_rules
 
 
 class SingletonProviderTests(unittest.TestCase):
@@ -222,7 +223,11 @@ class SingletonProviderTests(unittest.TestCase):
         self.assertIn("Danbooru Provider", template)
         self.assertIn("singletonProvider('pixiv'", template)
         self.assertIn("singletonProvider('danbooru'", template)
-        self.assertIn("!['pixiv', 'danbooru'].includes(provider.type)", template)
+        self.assertIn("SINGLETON_PROVIDER_TYPES.has(provider.type)", template)
+        self.assertEqual(
+            set(settings_rules()["singleton_provider_types"]),
+            {"pixiv", "danbooru"},
+        )
         self.assertIn("credential_actions[field]", template)
         self.assertIn("'login', 'Danbooru Login'", template)
 
@@ -233,7 +238,11 @@ class SingletonProviderTests(unittest.TestCase):
         self.assertIn("此 Provider 的凭据由", template)
         self.assertIn("API Key 会被此 Model 自动复用", template)
         self.assertIn("modelReferenceLabels", template)
-        self.assertIn("标签审查 Judge", template)
+        self.assertIn("PROVIDER_MODEL_RULES.model_references", template)
+        self.assertIn(
+            "标签审查 Judge",
+            {reference["label"] for reference in settings_rules()["model_references"]},
+        )
 
 
 if __name__ == "__main__":
