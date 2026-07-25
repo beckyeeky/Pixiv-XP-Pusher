@@ -1,6 +1,8 @@
 import re
 import asyncio
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from inspect import signature
@@ -25,6 +27,79 @@ from tag_relationship_judge import MERGE_PRINCIPLES_VERSION, relationship_eviden
 
 
 class WebEntrypointTests(unittest.TestCase):
+    def test_webui_uses_shared_responsive_application_shell(self):
+        base_template = (Path(web_app_module.TEMPLATES_DIR) / "base.html").read_text(encoding="utf-8")
+        stylesheet = (Path(web_app_module.STATIC_DIR) / "app.css").read_text(encoding="utf-8")
+        script = (Path(web_app_module.STATIC_DIR) / "ui.js").read_text(encoding="utf-8")
+
+        for label in ("概览", "作品画廊", "标签管理", "系统设置", "数据管理"):
+            self.assertIn(label, base_template)
+        self.assertIn('aria-current="page"', base_template)
+        self.assertIn("data-menu-toggle", base_template)
+        self.assertIn("uiConfirmDialog", base_template)
+        self.assertIn("--sidebar-width", stylesheet)
+        self.assertIn("@media (max-width: 768px)", stylesheet)
+        self.assertIn("window.PixivUI", script)
+        self.assertTrue(any(getattr(route, "name", None) == "static" for route in canonical_app.routes))
+
+    def test_tags_page_separates_tasks_without_changing_route(self):
+        template = (Path(web_app_module.TEMPLATES_DIR) / "tags.html").read_text(encoding="utf-8")
+
+        for task in ("weights", "classification", "mapping"):
+            self.assertIn(f'data-task-tab="{task}"', template)
+            self.assertIn(f'data-task-panel="{task}"', template)
+        self.assertIn("activateTagTask(location.hash.slice(1)", template)
+        self.assertIn("history.replaceState", template)
+        self.assertIn("removeReviewItem(tag)", template)
+
+    def test_settings_page_groups_sections_and_tracks_unsaved_changes(self):
+        template = (Path(web_app_module.TEMPLATES_DIR) / "settings_v2.html").read_text(encoding="utf-8")
+
+        for group in ("接入与通知", "推荐与内容", "AI", "系统"):
+            self.assertIn(f'<span class="settings-nav-group">{group}</span>', template)
+        self.assertIn("beforeunload", template)
+        self.assertIn("有未保存的更改", template)
+        self.assertIn("history.replaceState", template)
+        self.assertIn("setSettingsDirty(false)", template)
+
+    def test_active_templates_do_not_use_native_alert_or_confirm(self):
+        native_dialog = re.compile(r"(?<![.\w])(?:alert|confirm)\s*\(")
+        active_templates = (
+            "base.html", "dashboard.html", "gallery.html", "tags.html",
+            "settings_v2.html", "import_export.html", "login.html", "setup.html",
+        )
+
+        for name in active_templates:
+            template = (Path(web_app_module.TEMPLATES_DIR) / name).read_text(encoding="utf-8")
+            self.assertIsNone(native_dialog.search(template), name)
+
+    def test_webui_javascript_is_syntax_valid_when_node_is_available(self):
+        if not shutil.which("node"):
+            self.skipTest("node is not installed")
+
+        replacements = {
+            "{{ config | tojson }}": "{}",
+            "{{ known_llm_models | tojson }}": "[]",
+            "{{ known_embedding_models | tojson }}": "[]",
+            "{{ provider_model_rules | tojson }}": (
+                '{"editable_provider_types":[],"search_provider_references":[],"model_references":[]}'
+            ),
+            "{{ 'true' if favorites_only else 'false' }}": "false",
+        }
+        for name in ("dashboard.html", "gallery.html", "tags.html", "settings_v2.html", "import_export.html"):
+            template = (Path(web_app_module.TEMPLATES_DIR) / name).read_text(encoding="utf-8")
+            scripts = "\n".join(re.findall(r"<script[^>]*>(.*?)</script>", template, re.DOTALL))
+            for source, value in replacements.items():
+                scripts = scripts.replace(source, value)
+            result = subprocess.run(
+                ["node", "--check"],
+                input=scripts,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, f"{name}: {result.stderr}")
+
     def test_dashboard_preview_supports_tag_and_artist_targets(self):
         async def authenticated():
             return None
@@ -69,8 +144,7 @@ class WebEntrypointTests(unittest.TestCase):
             'id="tag_classifier_search_model"',
             'id="brave_provider_selection"',
             'id="tavily_provider_selection"',
-            'value="brave_search"',
-            'value="tavily_search"',
+            'provider_model_rules.editable_provider_types',
             '此流程不会调用 Gemini',
             'Gemini Model 和 Gemini API Key 均不需要设置',
             '智能精排',

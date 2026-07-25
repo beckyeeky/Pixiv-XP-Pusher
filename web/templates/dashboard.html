@@ -1,12 +1,20 @@
 {% extends "base.html" %}
 
-{% block title %}Dashboard - Pixiv-XP-Pusher{% endblock %}
+{% block title %}概览 - Pixiv-XP-Pusher{% endblock %}
 
 {% block content %}
+<header class="page-header">
+    <div>
+        <div class="page-header__eyebrow">Dashboard</div>
+        <h1 class="page-header__title">推荐概览</h1>
+        <p class="page-header__description">查看最近 7 天的推送表现，以及当前 Preference Profile 中最重要的偏好信号。</p>
+    </div>
+</header>
+
 <!-- 统计概览 -->
 <div class="card">
     <div class="card-header">
-        <h2 class="card-title">📊 推送统计 (7天)</h2>
+        <h2 class="card-title">最近 7 天</h2>
     </div>
     <div class="stats-grid">
         <div class="stat-item">
@@ -15,11 +23,11 @@
         </div>
         <div class="stat-item">
             <div class="stat-value">{{ stats.likes }}</div>
-            <div class="stat-label">❤️ 喜欢</div>
+            <div class="stat-label">喜欢</div>
         </div>
         <div class="stat-item">
             <div class="stat-value">{{ stats.dislikes }}</div>
-            <div class="stat-label">👎 不喜欢</div>
+            <div class="stat-label">不喜欢</div>
         </div>
         <div class="stat-item">
             <div class="stat-value">{{ like_rate }}</div>
@@ -31,12 +39,12 @@
 <!-- XP 特征词云 -->
 <div class="card">
     <div class="card-header">
-        <h2 class="card-title">🎯 XP 特征 Top 20</h2>
+        <h2 class="card-title">Feature 偏好 Top 20</h2>
     </div>
     {% if feature_tags %}
     <div class="tag-cloud">
         {% for tag, weight in feature_tags %}
-        <span class="tag tag--previewable" data-preview-kind="tag" data-preview-value="{{ tag }}" data-preview-label="{{ tag }}" style="font-size: {{ 0.8 + weight * 0.1 }}rem;">
+        <span class="tag tag--previewable" tabindex="0" data-preview-kind="tag" data-preview-value="{{ tag }}" data-preview-label="{{ tag }}" style="font-size: {{ 0.8 + weight * 0.1 }}rem;">
             {{ tag }}
             <span class="weight">{{ "%.1f"|format(weight) }}</span>
         </span>
@@ -50,11 +58,11 @@
 {% if identity_tags %}
 <div class="card">
     <div class="card-header">
-        <h2 class="card-title">🧩 角色 / 作品偏好 Top 10</h2>
+        <h2 class="card-title">Character / Copyright 偏好 Top 10</h2>
     </div>
     <div class="tag-cloud">
         {% for tag, weight in identity_tags %}
-        <span class="tag tag--previewable" data-preview-kind="tag" data-preview-value="{{ tag }}" data-preview-label="{{ tag }}" style="font-size: {{ 0.8 + weight * 0.1 }}rem;">
+        <span class="tag tag--previewable" tabindex="0" data-preview-kind="tag" data-preview-value="{{ tag }}" data-preview-label="{{ tag }}" style="font-size: {{ 0.8 + weight * 0.1 }}rem;">
             {{ tag }}
             <span class="weight">{{ "%.1f"|format(weight) }}</span>
         </span>
@@ -144,7 +152,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     for (const target of tags) {
-        target.addEventListener('mouseenter', () => {
+        const showPreview = () => {
             window.clearTimeout(timer);
             const kind = target.dataset.previewKind;
             const value = target.dataset.previewValue;
@@ -156,8 +164,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 positionPreview(target);
                 loadPreview(kind, value, version);
             }, intentDelay);
-        });
+        };
+        target.addEventListener('mouseenter', showPreview);
         target.addEventListener('mouseleave', hidePreview);
+        target.addEventListener('focus', showPreview);
+        target.addEventListener('blur', hidePreview);
     }
     window.addEventListener('scroll', hidePreview, { passive: true });
     window.addEventListener('resize', hidePreview);
@@ -169,7 +180,7 @@ document.addEventListener('DOMContentLoaded', () => {
 {% if stats.top_artists %}
 <div class="card">
     <div class="card-header">
-        <h2 class="card-title">🎨 热门画师 (7天)</h2>
+        <h2 class="card-title">热门画师</h2>
     </div>
     <div class="tag-cloud">
         {% for artist_id, count in stats.top_artists %}
@@ -188,7 +199,7 @@ document.addEventListener('DOMContentLoaded', () => {
 {% if stats.top_tags %}
 <div class="card">
     <div class="card-header">
-        <h2 class="card-title">🏷️ 热门推送标签 (7天)</h2>
+        <h2 class="card-title">热门推送标签</h2>
     </div>
     <div class="tag-cloud">
         {% for tag, count in stats.top_tags %}
@@ -205,13 +216,13 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- 快捷操作 -->
 <div class="card">
     <div class="card-header">
-        <h2 class="card-title">⚡ 快捷操作</h2>
+        <h2 class="card-title">常用入口</h2>
     </div>
-    <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-        使用命令行执行推送任务，或通过 Telegram Bot 发送 <code>/push</code> 指令。
-    </p>
-    <code style="display: block; background: var(--bg-secondary); padding: 1rem; border-radius: 6px;">
-        python main.py --once
-    </code>
+    <div class="review-actions">
+        <a class="btn" href="/tags#classification">处理分类审核</a>
+        <a class="btn secondary" href="/tags#mapping">处理映射审核</a>
+        <a class="btn secondary" href="/gallery">浏览推送历史</a>
+        <a class="btn secondary" href="/settings">调整系统设置</a>
+    </div>
 </div>
 {% endblock %}

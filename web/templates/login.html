@@ -3,21 +3,24 @@
 {% block title %}登录 - Pixiv-XP-Pusher{% endblock %}
 
 {% block content %}
-<div style="max-width: 400px; margin: 5rem auto;">
-    <div class="card">
-        <h1 style="text-align: center; margin-bottom: 0.5rem; color: var(--accent);">🎨 Pixiv-XP-Pusher</h1>
-        <p style="text-align: center; color: var(--text-secondary); margin-bottom: 2rem;">请输入密码登录管理面板</p>
-
-        {% if error %}
-        <div class="alert alert-error" style="margin-bottom: 1rem; padding: 0.75rem 1rem; background: rgba(220, 53, 69, 0.15); border: 1px solid rgba(220, 53, 69, 0.3); border-radius: 6px; color: #ff6b7a; font-size: 0.9rem;">
-            {{ error }}
+<section class="auth-card">
+    <header class="auth-brand">
+        <span class="app-brand__mark" aria-hidden="true">PX</span>
+        <div>
+            <h1 class="auth-title">登录管理控制台</h1>
+            <p class="auth-description">输入访问密码以继续。</p>
         </div>
-        {% endif %}
+    </header>
 
-        <form method="post" action="/login">
-            <input type="password" name="password" placeholder="密码" required style="width: 100%; margin-bottom: 1rem;">
-            <button type="submit" class="btn" style="width: 100%;">登录</button>
-        </form>
-    </div>
-</div>
+    {% if error %}
+    <div class="status-banner" data-kind="error" role="alert" style="margin-bottom: 1rem;">{{ error }}</div>
+    {% endif %}
+
+    <form class="auth-form" method="post" action="/login">
+        <label for="loginPassword">访问密码
+            <input id="loginPassword" type="password" name="password" autocomplete="current-password" required autofocus>
+        </label>
+        <button type="submit" class="btn">登录</button>
+    </form>
+</section>
 {% endblock %}
