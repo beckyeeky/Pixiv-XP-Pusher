@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import database as db
-from classification_maintenance import run_scheduled_maintenance
+from classification_maintenance import ClassificationMaintenance
 from config import load_config
 
 
@@ -28,10 +28,7 @@ async def select_candidates(limit: int, min_weight: float) -> list[dict]:
 
 async def apply_candidates(candidates: list[dict], config: dict) -> dict:
     tags = [item["tag"] for item in candidates]
-    classifier = config.get("tag_classifier") if isinstance(config.get("tag_classifier"), dict) else {}
-    maintenance = classifier.get("maintenance") if isinstance(classifier.get("maintenance"), dict) else {}
-    concurrency = maintenance.get("concurrency", 10)
-    return await run_scheduled_maintenance(tags, config, concurrency=concurrency)
+    return await ClassificationMaintenance(config).run_tags(tags)
 
 
 def load_reviewed_candidates(path: Path) -> tuple[list[str], dict]:

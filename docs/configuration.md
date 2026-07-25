@@ -108,7 +108,7 @@ WebUI 配置顺序：
 1. 在 Provider 页面分别创建 Brave Search、Tavily Search 和 DeepSeek/OpenAI-compatible Provider，并填写各自凭据。
 2. 在 Model 页面创建指向 DeepSeek Provider 的 `deepseek_flash` LLM Model。
 3. 在“AI 功能 → 搜索标签判定”中选择分类模型、Brave 账号池和 Tavily 账号池。
-4. 保存后即可通过 WebUI 或 Telegram 运行高影响维护批次。
+4. 保存后，可在 WebUI“标签管理 → AI 批量处理标签”预设本次最大数量；Telegram `/tags` 也会先选数量并二次确认。服务端始终以 `maintenance.max_tags_per_run` 为硬上限。
 
 Gemini Provider/Model 即使仍保留在通用 Provider/Model 列表中，也不会被标签判定调用；确认没有被其他功能引用后可自行删除。
 

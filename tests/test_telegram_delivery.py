@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from types import MethodType, SimpleNamespace
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import ANY, AsyncMock, call, patch
 
 try:
     from notifier.telegram import TelegramNotifier
@@ -48,13 +48,18 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
         }}}
         with patch("database.get_tag_review_count", new=AsyncMock(return_value=1)), \
              patch("database.get_high_weight_unclassified_profile_tags", new=AsyncMock(return_value=[{"tag": "one"}, {"tag": "two"}])) as queue, \
+             patch("database.set_state", new=AsyncMock()), \
              patch("notifier.telegram.load_config", return_value=runtime_config), \
-             patch("notifier.telegram.run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run:
+             patch("classification_maintenance.run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run:
             await notifier._handle_menu_callback(query, "menu:tag_review:run")
+            await notifier._handle_menu_callback(query, "menu:tag_review:run:pick_10")
+            await notifier._handle_menu_callback(query, "menu:tag_review:run:confirm_10")
 
-        queue.assert_awaited_once_with(limit=20, min_profile_weight=1.25)
+        self.assertIn("请选择本次安全上限", query.edit_message_text.await_args_list[0].args[0])
+        self.assertIn("确认 AI 批量处理", query.edit_message_text.await_args_list[1].args[0])
+        queue.assert_awaited_once_with(limit=10, min_profile_weight=1.25)
         run.assert_awaited_once_with(
-            ["one", "two"], runtime_config, concurrency=3,
+            ["one", "two"], runtime_config, ANY, concurrency=3,
         )
         self.assertFalse(notifier._tag_review_batch_running)
         self.assertIn("当前待人工决定：*1*", query.edit_message_text.await_args_list[-1].args[0])
@@ -480,7 +485,7 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("second", text)
         self.assertIn("2 / 2", text)
 
-    async def test_tag_review_menu_lists_common_tags_alongside_gemini_actions(self):
+    async def test_tag_review_menu_lists_common_tags_alongside_ai_batch_action(self):
         notifier = TelegramNotifier.__new__(TelegramNotifier)
         query = SimpleNamespace(edit_message_text=AsyncMock(), answer=AsyncMock())
         sections = {
@@ -500,7 +505,7 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("white\\_hair", text)
         self.assertIn("blue\\_archive", text)
         labels = [button.text for row in query.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard for button in row]
-        self.assertIn("🤖 判定高影响批次", labels)
+        self.assertIn("🤖 AI 批量处理（最多 40）", labels)
         self.assertIn("⭐ 查看常用 Tag", labels)
 
     async def test_tag_review_menu_requires_candidate_preview_before_high_weight_classification(self):
@@ -519,8 +524,9 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
         summary = {"accepted": 1, "unresolved": 1, "failed": 0}
 
         with patch("database.get_high_weight_unclassified_profile_tags", new=AsyncMock(side_effect=[candidates, candidates])) as select, \
+             patch("database.set_state", new=AsyncMock()), \
              patch("notifier.telegram.load_config", return_value={"tag_classifier": {"maintenance": {"concurrency": 3, "max_tags_per_run": 25, "min_profile_weight": 1.5}}}), \
-             patch("notifier.telegram.run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run:
+             patch("classification_maintenance.run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run:
             await notifier._handle_menu_callback(query, "menu:tag_review:high_weight")
             await notifier._handle_menu_callback(query, "menu:tag_review:high_weight:confirm")
 
@@ -530,7 +536,10 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
             call(limit=25, min_profile_weight=1.5),
         ])
         run.assert_awaited_once_with(
-            ["high_weight", "unresolved"], {"tag_classifier": {"maintenance": {"concurrency": 3, "max_tags_per_run": 25, "min_profile_weight": 1.5}}}, concurrency=3,
+            ["high_weight", "unresolved"],
+            {"tag_classifier": {"maintenance": {"concurrency": 3, "max_tags_per_run": 25, "min_profile_weight": 1.5}}},
+            ANY,
+            concurrency=3,
         )
 
 

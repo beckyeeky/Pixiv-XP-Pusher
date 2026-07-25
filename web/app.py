@@ -33,7 +33,7 @@ from config import (
 )
 from proxy_utils import normalize_proxy_url
 from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
-from classification_maintenance import classify_and_activate_tag, run_scheduled_maintenance
+from classification_maintenance import ClassificationMaintenance
 from tag_mapping import AITagMappingCandidateGenerator
 from tag_relationship_judge import plan_ai_recommendation_staging
 from utils import normalize_tag
@@ -1000,7 +1000,9 @@ async def classify_tag_review(tag: str, _=Depends(require_auth)):
     if not normalized_tag:
         raise HTTPException(status_code=400, detail="必须提供有效标签")
     try:
-        result = await classify_and_activate_tag(normalized_tag, load_config())
+        result = await ClassificationMaintenance(load_config()).classify_tag(
+            normalized_tag
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
@@ -1012,18 +1014,13 @@ async def classify_tag_review(tag: str, _=Depends(require_auth)):
 
 
 @app.post("/api/tag-reviews/ai-process-all")
-async def classify_all_tag_reviews(_=Depends(require_auth)):
+async def classify_all_tag_reviews(
+    limit: int | None = Query(default=None, ge=1, le=200),
+    _=Depends(require_auth),
+):
     """Run one bounded high-impact Classification Maintenance batch."""
     runtime_config = load_config()
-    classifier = runtime_config.get("tag_classifier", {})
-    maintenance = classifier.get("maintenance", {}) if isinstance(classifier, dict) else {}
-    limit = int(maintenance.get("max_tags_per_run", 40))
-    minimum = float(maintenance.get("min_profile_weight", 1.0))
-    concurrency = int(maintenance.get("concurrency", 3))
-    items = await db.get_high_weight_unclassified_profile_tags(limit=limit, min_profile_weight=minimum)
-    return await run_scheduled_maintenance(
-        [item["tag"] for item in items], runtime_config, concurrency=concurrency,
-    )
+    return await ClassificationMaintenance(runtime_config).run_eligible(limit)
 
 
 def _format_review_evidence(item: dict) -> str:

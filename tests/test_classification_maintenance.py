@@ -75,23 +75,97 @@ class ScheduledClassificationMaintenanceTests(unittest.TestCase):
     def test_scheduled_maintenance_keeps_existing_priority_before_using_grounded_path(self):
         summary = {"attempted": 2, "accepted": 1, "unresolved": 1, "failed": 0,
                    "human_override": 0, "usage": {}, "items": []}
-        classifier = TagClassifier({
+        config = {"tag_classifier": {
             "maintenance": {"max_tags_per_run": 2, "prefer_unresolved_first": True},
-        })
-        with patch.object(tag_classifier.db, "get_tag_classifications", new=AsyncMock(return_value={
+        }}
+        database_module = Mock()
+        database_module.get_tag_classifications = AsyncMock(return_value={
             "resolved_high": {"classification": "feature"},
             "unresolved_low": {"classification": "unresolved"},
             "unresolved_high": {"classification": "unresolved"},
-        })), patch.object(tag_classifier, "run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run, \
-             patch.object(tag_classifier.db, "set_state", new=AsyncMock()) as set_state:
-            result = asyncio.run(classifier.maintain_profile_tags({
+        })
+        database_module.set_state = AsyncMock()
+        manager = maintenance.ClassificationMaintenance(
+            config,
+            classify=AsyncMock(),
+            database_module=database_module,
+        )
+        with patch.object(
+            maintenance,
+            "run_scheduled_maintenance",
+            new=AsyncMock(return_value=summary),
+        ) as run:
+            result = asyncio.run(manager.run_profile({
                 "resolved_high": 10.0, "unresolved_low": 1.0, "unresolved_high": 5.0,
             }))
 
         self.assertIs(result, summary)
         self.assertEqual(run.await_args.args[0], ["unresolved_high", "unresolved_low"])
         self.assertEqual(run.await_args.kwargs["concurrency"], 10)
-        set_state.assert_awaited_once()
+        database_module.set_state.assert_awaited_once()
+
+    def test_tag_classifier_delegates_profile_maintenance_to_the_deep_module(self):
+        classifier = TagClassifier({
+            "maintenance": {"max_tags_per_run": 2},
+        })
+        classifier.maintenance.run_profile = AsyncMock(return_value={"attempted": 1})
+
+        result = asyncio.run(classifier.maintain_profile_tags({"white_hair": 2.0}))
+
+        self.assertEqual(result, {"attempted": 1})
+        classifier.maintenance.run_profile.assert_awaited_once_with({"white_hair": 2.0})
+
+    def test_eligible_run_owns_selection_defaults_and_summary_persistence(self):
+        summary = {
+            "attempted": 1, "accepted": 1, "unresolved": 0, "failed": 0,
+            "human_override": 0, "usage": {}, "items": [],
+        }
+        database_module = Mock()
+        database_module.get_high_weight_unclassified_profile_tags = AsyncMock(
+            return_value=[{"tag": "white_hair", "profile_weight": 2.0}]
+        )
+        database_module.set_state = AsyncMock()
+        manager = maintenance.ClassificationMaintenance(
+            {"tag_classifier": {"maintenance": {
+                "max_tags_per_run": 40,
+                "min_profile_weight": 1.25,
+                "concurrency": 4,
+            }}},
+            classify=AsyncMock(),
+            database_module=database_module,
+        )
+        with patch.object(
+            maintenance,
+            "run_scheduled_maintenance",
+            new=AsyncMock(return_value=summary),
+        ) as run:
+            result = asyncio.run(manager.run_eligible(limit=10))
+
+        database_module.get_high_weight_unclassified_profile_tags.assert_awaited_once_with(
+            limit=10,
+            min_profile_weight=1.25,
+        )
+        self.assertEqual(run.await_args.args[0], ["white_hair"])
+        self.assertEqual(run.await_args.kwargs["concurrency"], 4)
+        database_module.set_state.assert_awaited_once()
+        self.assertEqual(result["effective_limit"], 10)
+        self.assertEqual(result["configured_limit"], 40)
+
+    def test_reviewed_run_rejects_a_stale_eligibility_snapshot(self):
+        database_module = Mock()
+        database_module.get_high_weight_unclassified_profile_tags = AsyncMock(
+            return_value=[{"tag": "still_current"}]
+        )
+        database_module.set_state = AsyncMock()
+        manager = maintenance.ClassificationMaintenance(
+            {"tag_classifier": {"maintenance": {"max_tags_per_run": 20}}},
+            database_module=database_module,
+        )
+
+        with self.assertRaisesRegex(ValueError, "no longer eligible"):
+            asyncio.run(manager.run_reviewed(["went_stale"]))
+
+        database_module.set_state.assert_not_awaited()
 
     def test_scheduled_maintenance_respects_configured_concurrency(self):
         async def run():

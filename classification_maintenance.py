@@ -3,13 +3,52 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 import database as db
 from grounded_judge import classify_single_tag, validate_ai_classification_record
+from tag_categories import TAG_CATEGORY_UNRESOLVED
+from utils import normalize_tag
 
 
 USAGE_KEYS = ("input", "output", "thoughts", "tool_use_prompt", "total", "search_queries")
+SUMMARY_STATE_KEY = "runtime.last_classification_maintenance_summary"
+
+
+def _positive_int(value, default: int) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+@dataclass(frozen=True)
+class MaintenancePolicy:
+    max_tags_per_run: int = 40
+    min_profile_weight: float = 0.0
+    prefer_unresolved_first: bool = True
+    concurrency: int = 10
+
+    @classmethod
+    def from_config(cls, config: dict) -> "MaintenancePolicy":
+        classifier = config.get("tag_classifier") if isinstance(config, dict) else {}
+        classifier = classifier if isinstance(classifier, dict) else {}
+        maintenance = classifier.get("maintenance")
+        maintenance = maintenance if isinstance(maintenance, dict) else {}
+        try:
+            minimum = float(maintenance.get("min_profile_weight", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            minimum = 0.0
+        return cls(
+            max_tags_per_run=_positive_int(maintenance.get("max_tags_per_run", 40), 40),
+            min_profile_weight=minimum,
+            prefer_unresolved_first=bool(
+                maintenance.get("prefer_unresolved_first", True)
+            ),
+            concurrency=_positive_int(maintenance.get("concurrency", 10), 10),
+        )
 
 
 def empty_usage() -> dict[str, int]:
@@ -72,3 +111,131 @@ async def run_scheduled_maintenance(
             summary["usage"][key] += int(usage.get(key) or 0)
         summary["items"].append(item)
     return summary
+
+
+class ClassificationMaintenance:
+    """Own one complete bounded Classification Maintenance lifecycle."""
+
+    def __init__(
+        self,
+        config: dict,
+        *,
+        classify: Callable[[str, dict], Awaitable[dict]] = classify_and_activate_tag,
+        database_module=db,
+    ):
+        self.config = config if isinstance(config, dict) else {}
+        self.policy = MaintenancePolicy.from_config(self.config)
+        self._classify = classify
+        self._db = database_module
+
+    async def classify_tag(self, tag: str) -> dict:
+        normalized = normalize_tag(tag)
+        if not normalized:
+            raise ValueError("必须提供有效标签")
+        return await self._classify(normalized, self.config)
+
+    async def preview(self, limit: int | None = None) -> list[dict]:
+        effective_limit = self._effective_limit(limit)
+        return await self._db.get_high_weight_unclassified_profile_tags(
+            limit=effective_limit,
+            min_profile_weight=self.policy.min_profile_weight,
+        )
+
+    async def run_eligible(self, limit: int | None = None) -> dict:
+        candidates = await self.preview(limit)
+        summary = await self.run_tags(item["tag"] for item in candidates)
+        effective_limit = self._effective_limit(limit)
+        return {
+            **summary,
+            "requested_limit": limit if isinstance(limit, int) else effective_limit,
+            "effective_limit": effective_limit,
+            "configured_limit": self.policy.max_tags_per_run,
+            "min_profile_weight": self.policy.min_profile_weight,
+        }
+
+    async def run_reviewed(
+        self,
+        tags: list[str],
+        *,
+        limit: int | None = None,
+    ) -> dict:
+        approved = list(dict.fromkeys(
+            normalized for tag in tags if (normalized := normalize_tag(tag))
+        ))
+        current = await self.preview(limit)
+        current_tags = {item["tag"] for item in current}
+        stale = [tag for tag in approved if tag not in current_tags]
+        if stale:
+            raise ValueError(
+                f"reviewed tags are no longer eligible: {', '.join(stale)}"
+            )
+        return await self.run_tags(approved)
+
+    async def run_profile(self, profile: list[str] | dict[str, float]) -> dict:
+        selected = await self._select_profile_tags(profile)
+        return await self.run_tags(selected)
+
+    async def run_tags(self, tags) -> dict:
+        selected = list(dict.fromkeys(
+            normalized for tag in tags if (normalized := normalize_tag(tag))
+        ))[:self.policy.max_tags_per_run]
+        summary = await run_scheduled_maintenance(
+            selected,
+            self.config,
+            self._classify,
+            concurrency=self.policy.concurrency,
+        )
+        await self._db.set_state(
+            SUMMARY_STATE_KEY,
+            json.dumps(summary, ensure_ascii=False),
+        )
+        return summary
+
+    async def _select_profile_tags(
+        self,
+        profile: list[str] | dict[str, float],
+    ) -> list[str]:
+        if not isinstance(profile, dict):
+            return list(dict.fromkeys(
+                normalized
+                for tag in profile
+                if (normalized := normalize_tag(tag))
+            ))[:self.policy.max_tags_per_run]
+
+        normalized_profile = {
+            normalized: float(weight)
+            for tag, weight in profile.items()
+            if (normalized := normalize_tag(tag))
+        }
+        candidates = [
+            tag
+            for tag, weight in normalized_profile.items()
+            if abs(weight) >= self.policy.min_profile_weight
+        ]
+        cached = await self._db.get_tag_classifications(
+            candidates,
+            ttl_days=self._tag_ttl_days(),
+        )
+
+        def priority(tag: str):
+            unresolved = (
+                cached.get(tag, {}).get("classification")
+                == TAG_CATEGORY_UNRESOLVED
+            )
+            return (
+                0 if self.policy.prefer_unresolved_first and unresolved else 1,
+                -abs(normalized_profile[tag]),
+                tag,
+            )
+
+        return sorted(candidates, key=priority)[:self.policy.max_tags_per_run]
+
+    def _effective_limit(self, requested: int | None) -> int:
+        if requested is None:
+            return self.policy.max_tags_per_run
+        return min(self.policy.max_tags_per_run, _positive_int(requested, 1))
+
+    def _tag_ttl_days(self) -> int:
+        classifier = self.config.get("tag_classifier")
+        classifier = classifier if isinstance(classifier, dict) else {}
+        return _positive_int(classifier.get("ttl_days", 30), 30)

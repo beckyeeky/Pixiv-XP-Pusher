@@ -238,6 +238,13 @@
     .review-csv-tools { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin: 0.8rem 0; }
     .review-csv-tools input[type="file"] { max-width: 260px; color: var(--text-secondary); }
     .review-csv-hint { color: var(--text-secondary); font-size: 0.82rem; margin-bottom: 0.8rem; }
+    .tag-ai-batch-panel { margin: 0.9rem 0; padding: 1rem; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); }
+    .tag-ai-batch-panel h3 { margin: 0 0 0.35rem; font-size: 1rem; }
+    .tag-ai-batch-panel p { margin: 0 0 0.75rem; color: var(--text-secondary); font-size: 0.84rem; }
+    .tag-ai-batch-controls { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+    .tag-ai-batch-controls input { width: 90px; padding: 0.45rem 0.55rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); }
+    .tag-ai-batch-controls button { padding: 0.5rem 0.8rem; border: none; border-radius: 6px; background: var(--accent); color: white; cursor: pointer; font-weight: 600; }
+    .tag-ai-batch-controls button:disabled { cursor: wait; opacity: 0.6; }
 </style>
 {% endblock %}
 
@@ -319,8 +326,19 @@
         <button type="button" onclick="loadReviewQueue()">刷新</button>
     </div>
     <div id="maintenanceStatus" class="maintenance-status">正在读取分类维护状态…</div>
+    {% set ai_batch_max = config.tag_classifier.maintenance.max_tags_per_run | default(40) %}
+    {% set ai_batch_default = 20 if ai_batch_max >= 20 else ai_batch_max %}
+    <div class="tag-ai-batch-panel">
+        <h3>🤖 AI 批量处理标签</h3>
+        <p>使用 Brave/Tavily 搜索与 DeepSeek 分类；只选择绝对画像权重 ≥ {{ config.tag_classifier.maintenance.min_profile_weight | default(1.0) }} 的未分类标签。系统配置上限为每次 {{ ai_batch_max }} 条。</p>
+        <div class="tag-ai-batch-controls">
+            <label for="tagAiBatchLimit">本次最多处理</label>
+            <input id="tagAiBatchLimit" type="number" min="1" max="{{ ai_batch_max }}" value="{{ ai_batch_default }}">
+            <span>条</span>
+            <button id="tagAiBatchButton" type="button" onclick="classifyAllWithGroundedJudge()">开始 AI 批量处理</button>
+        </div>
+    </div>
     <div class="review-csv-tools">
-         <button type="button" onclick="classifyAllWithGroundedJudge()">分类高影响维护批次</button>
         <button type="button" onclick="downloadReviewCsv()">下载待审核 CSV</button>
         <input type="file" id="reviewCsvFile" accept=".csv,text/csv" aria-label="待审核标签 CSV 文件">
         <button type="button" onclick="uploadReviewCsv()">上传并应用</button>
@@ -500,16 +518,25 @@ async function classifyWithGroundedJudge(tag) {
 
 async function classifyAllWithGroundedJudge() {
     const feedback = document.getElementById('reviewFeedback');
-    feedback.textContent = '正在分类当前高影响维护批次…';
+    const input = document.getElementById('tagAiBatchLimit');
+    const button = document.getElementById('tagAiBatchButton');
+    const configuredMax = Number(input.max) || 40;
+    const requested = Math.max(1, Math.min(configuredMax, Number.parseInt(input.value, 10) || configuredMax));
+    input.value = requested;
+    if (!confirm(`确认使用 AI 批量处理最多 ${requested} 个高权重未分类标签？不会处理低于权重阈值的标签。`)) return;
+    feedback.textContent = `正在使用 AI 批量处理，最多 ${requested} 条…`;
+    button.disabled = true;
     try {
-        const response = await fetch('/api/tag-reviews/ai-process-all', {method: 'POST'});
+        const response = await fetch(`/api/tag-reviews/ai-process-all?limit=${requested}`, {method: 'POST'});
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || '批量分类失败');
         await loadReviewQueue();
         const usage = payload.usage || {};
-        feedback.textContent = `已尝试 ${payload.attempted} 项：接受 ${payload.accepted}，仍未解决 ${payload.unresolved}，失败 ${payload.failed}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次。`;
+        feedback.textContent = `AI 批量处理完成（安全上限 ${payload.effective_limit} 条，权重阈值 ${payload.min_profile_weight}）：已尝试 ${payload.attempted}，接受 ${payload.accepted}，仍未解决 ${payload.unresolved}，失败 ${payload.failed}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次。`;
     } catch (error) {
-        feedback.textContent = `Grounded Judge 批量分类失败：${error.message}`;
+        feedback.textContent = `AI 批量处理失败：${error.message}`;
+    } finally {
+        button.disabled = false;
     }
 }
 

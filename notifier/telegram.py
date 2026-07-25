@@ -13,7 +13,7 @@ from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler
 
 from .base import BaseNotifier, DeliveryBatchResult
-from classification_maintenance import run_scheduled_maintenance
+from classification_maintenance import ClassificationMaintenance
 from config import load_config
 from pixiv_client import Illust, PixivClient
 from proxy_utils import normalize_proxy_url
@@ -383,14 +383,17 @@ class TelegramNotifier(BaseNotifier):
             ],
         ])
 
-    def _build_tag_review_menu(self) -> InlineKeyboardMarkup:
+    def _build_tag_review_menu(self, max_tags: int = 40) -> InlineKeyboardMarkup:
         """Build the tag-review menu without exposing Grounded Judge credentials."""
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 刷新待人工数", callback_data="menu:tag_review")],
             [InlineKeyboardButton("⭐ 查看常用 Tag", callback_data="menu:tag_review:common")],
             [InlineKeyboardButton("📋 查看高权重候选", callback_data="menu:tag_review:high_weight")],
             [InlineKeyboardButton("🔗 语义映射审核", callback_data="menu:tag_review:mapping")],
-            [InlineKeyboardButton("🤖 判定高影响批次", callback_data="menu:tag_review:run")],
+            [InlineKeyboardButton(
+                f"🤖 AI 批量处理（最多 {max_tags}）",
+                callback_data="menu:tag_review:run",
+            )],
             [InlineKeyboardButton("⬅️ 返回", callback_data="menu:main")],
         ])
 
@@ -571,18 +574,38 @@ class TelegramNotifier(BaseNotifier):
         )
 
     @staticmethod
-    def _tag_review_overview_text(count: int, high_weight_count: int) -> str:
+    def _tag_review_overview_text(
+        count: int, high_weight_count: int, max_tags: int = 40, minimum: float = 1.0,
+    ) -> str:
         return (
             "🏷️ *标签管理与审核*\n\n"
             f"当前待人工决定标签：*{count}* 个\n"
-            f"高权重未分类候选：*{high_weight_count}* 个（最多 40 个，权重 ≥ 1.0）\n\n"
-            "可查看常用 Tag、预览高权重候选后确认分类，或运行一次有上限的高影响维护批次。"
+            f"符合 AI 批处理条件：*{high_weight_count}* 个"
+            f"（绝对权重 ≥ {minimum:.2f}；单次配置上限 {max_tags}）\n\n"
+            "使用“AI 批量处理”可先选择本次最大数量，再二次确认；不会处理低于权重阈值的标签。"
         )
 
     def _build_high_weight_tag_confirmation_menu(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ 确认分类这批候选", callback_data="menu:tag_review:high_weight:confirm")],
             [InlineKeyboardButton("⬅️ 返回标签审核", callback_data="menu:tag_review")],
+        ])
+
+    def _build_tag_ai_batch_limit_menu(self, max_tags: int) -> InlineKeyboardMarkup:
+        choices = sorted({value for value in (5, 10, 20, max_tags) if value <= max_tags})
+        rows = [[InlineKeyboardButton(
+            f"最多 {value} 条", callback_data=f"menu:tag_review:run:pick_{value}",
+        )] for value in choices]
+        rows.append([InlineKeyboardButton("⬅️ 返回标签管理", callback_data="menu:tag_review")])
+        return InlineKeyboardMarkup(rows)
+
+    def _build_tag_ai_batch_confirmation_menu(self, limit: int) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                f"✅ 确认处理最多 {limit} 条",
+                callback_data=f"menu:tag_review:run:confirm_{limit}",
+            )],
+            [InlineKeyboardButton("⬅️ 重新选择数量", callback_data="menu:tag_review:run")],
         ])
 
     def _build_batch_menu(self) -> InlineKeyboardMarkup:
@@ -805,13 +828,17 @@ class TelegramNotifier(BaseNotifier):
         # 标签审核 / Grounded Judge
         elif action == "tag_review":
             if not sub_action:
+                config = load_config()
+                maintenance = ClassificationMaintenance(config)
+                limit = maintenance.policy.max_tags_per_run
+                minimum = maintenance.policy.min_profile_weight
                 count = await db.get_tag_review_count()
-                high_weight_candidates = await db.get_high_weight_unclassified_profile_tags(
-                    limit=40, min_profile_weight=1.0,
+                high_weight_candidates = await maintenance.preview()
+                text = self._tag_review_overview_text(
+                    count, len(high_weight_candidates), limit, minimum,
                 )
-                text = self._tag_review_overview_text(count, len(high_weight_candidates))
                 await query.edit_message_text(
-                    text, reply_markup=self._build_tag_review_menu(), parse_mode="Markdown"
+                    text, reply_markup=self._build_tag_review_menu(limit), parse_mode="Markdown"
                 )
             elif sub_action == "common":
                 sections = await db.get_xp_profile_display_sections()
@@ -957,26 +984,14 @@ class TelegramNotifier(BaseNotifier):
             elif sub_action == "high_weight":
                 chat_id = getattr(getattr(query, "message", None), "chat_id", 0)
                 config = load_config()
-                classifier_config = config.get("tag_classifier", {})
-                maintenance_config = classifier_config.get("maintenance", {}) if isinstance(classifier_config, dict) else {}
-                limit = int(maintenance_config.get("max_tags_per_run", 40))
-                minimum = float(maintenance_config.get("min_profile_weight", 1.0))
-                concurrency = int(maintenance_config.get("concurrency", 3))
+                maintenance = ClassificationMaintenance(config)
+                limit = maintenance.policy.max_tags_per_run
+                minimum = maintenance.policy.min_profile_weight
                 if detail_action == "confirm":
                     snapshots = getattr(self, "_high_weight_tag_review_snapshots", {})
                     candidates = snapshots.get(chat_id, [])
                     if not candidates:
                         await query.answer("请先查看候选列表", show_alert=True)
-                        return
-                    current = await db.get_high_weight_unclassified_profile_tags(limit=limit, min_profile_weight=minimum)
-                    current_tags = {item["tag"] for item in current}
-                    stale = [item["tag"] for item in candidates if item["tag"] not in current_tags]
-                    if stale:
-                        await query.edit_message_text(
-                            "候选列表已变化，请重新查看后再确认。",
-                            reply_markup=self._build_tag_review_menu(),
-                        )
-                        snapshots.pop(chat_id, None)
                         return
                     tags = [item["tag"] for item in candidates]
                     if getattr(self, "_tag_review_batch_running", False):
@@ -985,10 +1000,15 @@ class TelegramNotifier(BaseNotifier):
                     self._tag_review_batch_running = True
                     await query.edit_message_text(f"🤖 正在分类 {len(tags)} 个已确认的高权重候选…")
                     try:
-                        summary = await run_scheduled_maintenance(tags, config, concurrency=concurrency)
+                        summary = await maintenance.run_reviewed(tags)
                         await query.edit_message_text(
                             f"🤖 高权重候选分类完成：已接受 {summary['accepted']}，"
                             f"未解决 {summary['unresolved']}，失败 {summary['failed']}。",
+                            reply_markup=self._build_tag_review_menu(),
+                        )
+                    except ValueError:
+                        await query.edit_message_text(
+                            "候选列表已变化，请重新查看后再确认。",
                             reply_markup=self._build_tag_review_menu(),
                         )
                     except Exception as exc:
@@ -1001,7 +1021,7 @@ class TelegramNotifier(BaseNotifier):
                         self._tag_review_batch_running = False
                         snapshots.pop(chat_id, None)
                 else:
-                    candidates = await db.get_high_weight_unclassified_profile_tags(limit=limit, min_profile_weight=minimum)
+                    candidates = await maintenance.preview()
                     snapshots = getattr(self, "_high_weight_tag_review_snapshots", None)
                     if snapshots is None:
                         snapshots = self._high_weight_tag_review_snapshots = {}
@@ -1027,14 +1047,44 @@ class TelegramNotifier(BaseNotifier):
                     return
 
                 config = load_config()
-                classifier_config = config.get("tag_classifier", {})
-                maintenance_config = classifier_config.get("maintenance", {}) if isinstance(classifier_config, dict) else {}
-                limit = int(maintenance_config.get("max_tags_per_run", 40))
-                minimum = float(maintenance_config.get("min_profile_weight", 1.0))
-                concurrency = int(maintenance_config.get("concurrency", 3))
-                items = await db.get_high_weight_unclassified_profile_tags(
-                    limit=limit, min_profile_weight=minimum,
-                )
+                maintenance = ClassificationMaintenance(config)
+                limit = maintenance.policy.max_tags_per_run
+                minimum = maintenance.policy.min_profile_weight
+                if not detail_action:
+                    await query.edit_message_text(
+                        "🤖 *AI 批量处理标签*\n\n"
+                        f"只处理绝对画像权重 ≥ {minimum:.2f} 的未分类标签。\n"
+                        f"系统配置单次最多 {limit} 条，请选择本次安全上限：",
+                        reply_markup=self._build_tag_ai_batch_limit_menu(limit),
+                        parse_mode="Markdown",
+                    )
+                    return
+                if detail_action.startswith("pick_"):
+                    try:
+                        requested = int(detail_action.removeprefix("pick_"))
+                    except ValueError:
+                        await query.answer("批处理数量无效", show_alert=True)
+                        return
+                    effective_limit = max(1, min(limit, requested))
+                    await query.edit_message_text(
+                        "⚠️ *确认 AI 批量处理*\n\n"
+                        f"本次最多处理 *{effective_limit}* 条，"
+                        f"且只选择绝对画像权重 ≥ {minimum:.2f} 的未分类标签。\n"
+                        "将调用 Brave/Tavily 搜索与 DeepSeek 分类。",
+                        reply_markup=self._build_tag_ai_batch_confirmation_menu(effective_limit),
+                        parse_mode="Markdown",
+                    )
+                    return
+                if not detail_action.startswith("confirm_"):
+                    await query.answer("批处理操作无效", show_alert=True)
+                    return
+                try:
+                    requested = int(detail_action.removeprefix("confirm_"))
+                except ValueError:
+                    await query.answer("批处理数量无效", show_alert=True)
+                    return
+                effective_limit = max(1, min(limit, requested))
+                items = await maintenance.preview(effective_limit)
                 if not items:
                     await query.edit_message_text(
                         "🏷️ 当前没有达到维护阈值的未分类标签。",
@@ -1045,16 +1095,16 @@ class TelegramNotifier(BaseNotifier):
                 tags = [item["tag"] for item in items]
                 self._tag_review_batch_running = True
                 await query.edit_message_text(
-                    f"🤖 正在判定 {len(tags)} 个高影响标签…",
+                    f"🤖 正在 AI 批量处理 {len(tags)} 个标签"
+                    f"（本次上限 {effective_limit}）…",
                 )
                 try:
-                    summary = await run_scheduled_maintenance(
-                        tags, config, concurrency=concurrency,
-                    )
+                    summary = await maintenance.run_tags(tags)
                     usage = summary["usage"]
                     remaining = await db.get_tag_review_count()
                     text = (
-                        "🤖 *高影响标签判定完成*\n\n"
+                        "🤖 *AI 批量处理完成*\n\n"
+                        f"本次安全上限：{effective_limit}\n"
                         f"已尝试：{summary['attempted']}\n"
                         f"已接受：{summary['accepted']}\n"
                         f"仍未解决：{summary['unresolved']}\n"
@@ -3620,14 +3670,18 @@ class TelegramNotifier(BaseNotifier):
             except Exception as exc:
                 logger.debug(f"删除 /tags 命令失败: {exc}")
 
-            from database import get_high_weight_unclassified_profile_tags, get_tag_review_count
+            from database import get_tag_review_count
+            config = load_config()
+            maintenance = ClassificationMaintenance(config)
+            limit = maintenance.policy.max_tags_per_run
+            minimum = maintenance.policy.min_profile_weight
             count = await get_tag_review_count()
-            high_weight_candidates = await get_high_weight_unclassified_profile_tags(
-                limit=40, min_profile_weight=1.0,
-            )
+            high_weight_candidates = await maintenance.preview()
             await update.message.reply_text(
-                self._tag_review_overview_text(count, len(high_weight_candidates)),
-                reply_markup=self._build_tag_review_menu(),
+                self._tag_review_overview_text(
+                    count, len(high_weight_candidates), limit, minimum,
+                ),
+                reply_markup=self._build_tag_review_menu(limit),
                 parse_mode="Markdown",
             )
 

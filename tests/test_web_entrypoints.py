@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from inspect import signature
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import yaml
 from fastapi import HTTPException
@@ -94,9 +94,17 @@ class WebEntrypointTests(unittest.TestCase):
 
         canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
         try:
-            with patch.object(web_app_module, "classify_and_activate_tag", side_effect=classify) as activate:
-                    with TestClient(canonical_app) as client:
-                        response = client.post("/api/tag-reviews/white_hair/classify")
+            maintenance = Mock()
+            maintenance.classify_tag = AsyncMock(
+                side_effect=lambda tag: classify(tag, {})
+            )
+            with patch.object(
+                web_app_module,
+                "ClassificationMaintenance",
+                return_value=maintenance,
+            ):
+                with TestClient(canonical_app) as client:
+                    response = client.post("/api/tag-reviews/white_hair/classify")
         finally:
             canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
 
@@ -105,7 +113,7 @@ class WebEntrypointTests(unittest.TestCase):
         self.assertEqual(response.json()["usage"], {
             "input": 11, "output": 7, "thoughts": 0, "tool_use_prompt": 3, "total": 21, "search_queries": 1,
         })
-        activate.assert_awaited_once()
+        maintenance.classify_tag.assert_awaited_once_with("white_hair")
 
     def test_grounded_judge_invalid_result_leaves_tag_in_review_queue(self):
         async def authenticated():
@@ -113,14 +121,18 @@ class WebEntrypointTests(unittest.TestCase):
 
         canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
         try:
-            with patch.object(web_app_module, "classify_and_activate_tag", side_effect=ValueError("Grounded Judge 明确标为 unresolved")) as activate:
-                    with TestClient(canonical_app) as client:
-                        response = client.post("/api/tag-reviews/ambiguous/classify")
+            maintenance = Mock()
+            maintenance.classify_tag = AsyncMock(
+                side_effect=ValueError("Grounded Judge 明确标为 unresolved")
+            )
+            with patch.object(web_app_module, "ClassificationMaintenance", return_value=maintenance):
+                with TestClient(canonical_app) as client:
+                    response = client.post("/api/tag-reviews/ambiguous/classify")
         finally:
             canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
 
         self.assertEqual(response.status_code, 422)
-        activate.assert_awaited_once()
+        maintenance.classify_tag.assert_awaited_once_with("ambiguous")
 
     def test_grounded_judge_does_not_replace_a_human_decision(self):
         async def authenticated():
@@ -129,14 +141,16 @@ class WebEntrypointTests(unittest.TestCase):
         result = {"tag": "reviewed", "classification": "feature", "explanation": "Trait.", "languages": "en", "status": "human_override"}
         canonical_app.dependency_overrides[web_app_module.require_auth] = authenticated
         try:
-            with patch.object(web_app_module, "classify_and_activate_tag", return_value=result) as activate:
+            maintenance = Mock()
+            maintenance.classify_tag = AsyncMock(return_value=result)
+            with patch.object(web_app_module, "ClassificationMaintenance", return_value=maintenance):
                 with TestClient(canonical_app) as client:
                     response = client.post("/api/tag-reviews/reviewed/classify")
         finally:
             canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
 
         self.assertEqual(response.status_code, 409)
-        activate.assert_awaited_once()
+        maintenance.classify_tag.assert_awaited_once_with("reviewed")
 
     def test_authenticated_bulk_grounded_judge_reports_mixed_outcomes(self):
         summary = {
@@ -149,21 +163,27 @@ class WebEntrypointTests(unittest.TestCase):
             "max_tags_per_run": 3, "min_profile_weight": 1.5, "concurrency": 2,
         }}}
 
+        manager = Mock()
+        manager.run_eligible = AsyncMock(return_value={
+            **summary,
+            "requested_limit": 2,
+            "effective_limit": 2,
+            "configured_limit": 3,
+            "min_profile_weight": 1.5,
+        })
         with patch.object(web_app_module, "load_config", return_value=runtime_config), \
-             patch.object(web_app_module.db, "get_high_weight_unclassified_profile_tags", new=AsyncMock(return_value=[
-                {"tag": "resolved"}, {"tag": "uncertain"}, {"tag": "offline"},
-            ])) as select, patch.object(web_app_module, "run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run:
-            response = asyncio.run(web_app_module.classify_all_tag_reviews(_=None))
+             patch.object(web_app_module, "ClassificationMaintenance", return_value=manager):
+            response = asyncio.run(web_app_module.classify_all_tag_reviews(limit=2, _=None))
 
         self.assertEqual(response["attempted"], 3)
         self.assertEqual(response["accepted"], 1)
         self.assertEqual(response["unresolved"], 1)
         self.assertEqual(response["failed"], 1)
         self.assertEqual(response["usage"], {"input": 4, "output": 3, "thoughts": 2, "tool_use_prompt": 1, "total": 10, "search_queries": 2})
-        select.assert_awaited_once_with(limit=3, min_profile_weight=1.5)
-        run.assert_awaited_once_with(
-            ["resolved", "uncertain", "offline"], runtime_config, concurrency=2,
-        )
+        self.assertEqual(response["requested_limit"], 2)
+        self.assertEqual(response["effective_limit"], 2)
+        self.assertEqual(response["configured_limit"], 3)
+        manager.run_eligible.assert_awaited_once_with(2)
     def test_tag_review_apis_delegate_to_review_queue(self):
         with patch.object(web_app_module.db, "get_tag_review_queue", return_value=[{"tag": "needs_review"}]) as get_queue, \
              patch.object(web_app_module.db, "review_tag_classification") as review:
@@ -235,6 +255,15 @@ class WebEntrypointTests(unittest.TestCase):
         self.assertIn("确认批量应用", template)
         self.assertIn("/api/tag-mapping-ai-batch-preview", template)
         self.assertIn("/api/tag-mapping-ai-batch-apply", template)
+
+    def test_tags_page_has_explicit_bounded_ai_tag_batch_control(self):
+        template = (Path(web_app_module.TEMPLATES_DIR) / "tags.html").read_text(encoding="utf-8")
+
+        self.assertIn("🤖 AI 批量处理标签", template)
+        self.assertIn('id="tagAiBatchLimit"', template)
+        self.assertIn('id="tagAiBatchButton"', template)
+        self.assertIn("开始 AI 批量处理", template)
+        self.assertIn("不会处理低于权重阈值的标签", template)
 
     def test_authenticated_alias_api_returns_searchable_page_and_total(self):
         aliases = [{

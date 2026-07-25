@@ -13,7 +13,7 @@
 - `/mute`, `/unmute`：标签静音
 - `/block_artist`, `/unblock_artist`：画师屏蔽
 - `/batch`：批量模式设置
-- `/tags`：打开 `🏷️ 标签管理与审核`；查看常用 Tag、待人工决定数与高影响未分类候选，并可预览后确认 Grounded Judge 分类或运行一个受配置阈值和批次上限保护的维护批次
+- `/tags`：打开 `🏷️ 标签管理与审核`；“AI 批量处理”会先选择本次最大数量，再二次确认，只处理达到配置权重阈值的未分类标签
   - `🔗 语义映射审核`：每次显示一个 Tag Mapping Candidate review group。浏览和跳过不写入；接受为 Tag Alias、接受为 Search Alias 或拒绝都需要单独预览并确认。确认时会重新读取候选，AI Relationship Recommendation 只作为建议，不能自动建立 Alias。
 - `/menu` → `🏷️ 标签审核`：与 `/tags` 打开同一标签管理与审核菜单
 - `/rich`：Rich Message 模式设置（inline 按钮，或 `on` / `off` / `fallback on|off` / `mode photo|rich_card|hybrid` / `test`）

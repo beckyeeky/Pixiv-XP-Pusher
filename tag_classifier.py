@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 import database as db
-from classification_maintenance import run_scheduled_maintenance
+from classification_maintenance import ClassificationMaintenance
 from profiler import DEFAULT_IP_TAGS
 from tag_categories import (
     TAG_CATEGORY_ARTIST,
@@ -50,10 +50,6 @@ class TagClassifier:
         self.base_url = "https://api.deepseek.com/v1"
         self.api_key = ""
         maintenance_cfg = cfg.get("maintenance") if isinstance(cfg.get("maintenance"), dict) else {}
-        self.maintenance_max_tags = self._positive_int(maintenance_cfg.get("max_tags_per_run", 40), 40)
-        self.maintenance_concurrency = self._positive_int(maintenance_cfg.get("concurrency", 10), 10)
-        self.maintenance_min_weight = float(maintenance_cfg.get("min_profile_weight", 0.0) or 0.0)
-        self.prefer_unresolved_first = bool(maintenance_cfg.get("prefer_unresolved_first", True))
         self.providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
         self.models = cfg.get("models") if isinstance(cfg.get("models"), dict) else {}
         self.grounded_judge_config = {
@@ -61,6 +57,11 @@ class TagClassifier:
             "providers": self.providers,
             "models": self.models,
         }
+        self.maintenance = ClassificationMaintenance(self.grounded_judge_config)
+        self.maintenance_max_tags = self.maintenance.policy.max_tags_per_run
+        self.maintenance_concurrency = self.maintenance.policy.concurrency
+        self.maintenance_min_weight = self.maintenance.policy.min_profile_weight
+        self.prefer_unresolved_first = self.maintenance.policy.prefer_unresolved_first
         grounded_cfg = cfg.get("grounded_judge") if isinstance(cfg.get("grounded_judge"), dict) else {}
         self.search_first_enabled = grounded_cfg.get("backend", "gemini") == "search_first"
         self.legacy_api_key = cfg.get("api_key", "")
@@ -158,26 +159,7 @@ class TagClassifier:
 
     async def maintain_profile_tags(self, tags: list[str] | dict[str, float]) -> dict:
         """Run selected tags through the same one-tag Grounded Judge used by review."""
-        selected_tags = await self._select_maintenance_tags(tags)
-        summary = await run_scheduled_maintenance(
-            selected_tags, self.grounded_judge_config, concurrency=self.maintenance_concurrency,
-        )
-        await db.set_state(
-            "runtime.last_classification_maintenance_summary",
-            json.dumps(summary, ensure_ascii=False),
-        )
-        return summary
-
-    async def _select_maintenance_tags(self, tags: list[str] | dict[str, float]) -> list[str]:
-        if isinstance(tags, dict):
-            profile = {normalize_tag(tag): float(weight) for tag, weight in tags.items() if normalize_tag(tag)}
-            candidates = [tag for tag, weight in profile.items() if abs(weight) >= self.maintenance_min_weight]
-            cached = await db.get_tag_classifications(candidates, ttl_days=self.ttl_days)
-            def priority(tag):
-                unresolved = cached.get(tag, {}).get("classification") == TAG_CATEGORY_UNRESOLVED
-                return (0 if self.prefer_unresolved_first and unresolved else 1, -abs(profile[tag]), tag)
-            return sorted(candidates, key=priority)[:self.maintenance_max_tags]
-        return list(dict.fromkeys(normalize_tag(tag) for tag in tags if normalize_tag(tag)))[:self.maintenance_max_tags]
+        return await self.maintenance.run_profile(tags)
 
     async def _collect_machine_evidence(self, tags: list[str], cached: dict[str, list[dict]]) -> dict[str, list[tuple[str, str, float]]]:
         gathered: dict[str, list[tuple[str, str, float]]] = {}
