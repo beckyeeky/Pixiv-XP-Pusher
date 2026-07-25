@@ -16,6 +16,7 @@ from tag_categories import (
     normalize_tag_category,
 )
 from tag_mapping import would_create_alias_cycle
+from push_schedule import DEFAULT_PUSH_SCHEDULE
 from tag_relationship_judge import (
     MERGE_PRINCIPLES_VERSION,
     hash_relationship_evidence,
@@ -29,7 +30,6 @@ DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
 SCHEMA_VERSION = 7
 TAG_EVIDENCE_FRESHNESS_DAYS = 60
 TAG_MAPPING_EVIDENCE_HASH_STATE = "tag_mapping_evidence_hash_semantic_v2"
-DEFAULT_PUSH_SCHEDULE = "30 9 * * *,0 21 * * *"
 
 
 async def init_db():
@@ -2268,15 +2268,6 @@ async def set_state(key: str, value: str):
             (key, value, datetime.now())
         )
         await db.commit()
-
-
-async def get_or_initialize_push_schedule() -> str:
-    """Return the database-owned push schedule, creating its safe default once."""
-    schedule = str(await get_state("schedule_cron") or "").strip()
-    if schedule:
-        return schedule
-    await set_state("schedule_cron", DEFAULT_PUSH_SCHEDULE)
-    return DEFAULT_PUSH_SCHEDULE
 
 
 # ============ 推送统计 ============

@@ -11,6 +11,11 @@ import aiohttp
 
 from .base import BaseNotifier
 from pixiv_client import Illust
+from push_schedule import (
+    DatabasePushScheduleState,
+    PushSchedule,
+    PushScheduleModule,
+)
 from utils import format_xp_profile_lines, get_pixiv_cat_url
 import base64
 
@@ -481,38 +486,29 @@ class OneBotNotifier(BaseNotifier):
             # --- /schedule ---
             elif cmd == "/schedule":
                 try:
-                    from database import get_or_initialize_push_schedule
-                    import re
-                    
-                    current_cron = await get_or_initialize_push_schedule()
+                    push_schedule = PushScheduleModule(DatabasePushScheduleState())
+                    current_schedule = await push_schedule.get()
                     
                     if not args:
-                        await self._send_message(f"⏰ 当前定时: {current_cron}\n修改: /schedule 9:30,21:00", "private", sender_id)
+                        await self._send_message(
+                            f"⏰ 当前定时: {current_schedule.description}\n修改: /schedule 9:30,21:00",
+                            "private",
+                            sender_id,
+                        )
                         return
                     
                     time_input = args[0].strip()
-                    # 简单校验
-                    if not re.match(r"^[\d:,]+$", time_input):
-                         await self._send_message("❌ 格式错误，示例: 12:30 或 9:00,21:30", "private", sender_id)
-                         return
-
-                    # 转换逻辑 (复用): "9:30" -> "30 9 * * *"
-                    new_crons = []
-                    for t in time_input.split(","):
-                         t = t.strip()
-                         if ":" in t:
-                             parts = t.split(":")
-                             h, m = int(parts[0]), int(parts[1])
-                             new_crons.append(f"{m} {h} * * *")
-                         else:
-                             # 假设是小时
-                             new_crons.append(f"0 {int(t)} * * *")
-                    
-                    final_cron_str = ", ".join(new_crons)
+                    requested_schedule = PushSchedule.from_intent(time_input)
                     
                     if self.on_action:
-                         await self.on_action("update_schedule", final_cron_str)
-                         await self._send_message(f"✅ 定时已更新为: {final_cron_str}", "private", sender_id)
+                         await self.on_action(
+                             "update_schedule", requested_schedule.serialized
+                         )
+                         await self._send_message(
+                             f"✅ 定时已更新为: {requested_schedule.description}",
+                             "private",
+                             sender_id,
+                         )
                     else:
                          await self._send_message("❌ 无法更新调度", "private", sender_id)
                          

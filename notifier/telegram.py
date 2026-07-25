@@ -16,6 +16,11 @@ from .base import BaseNotifier, DeliveryBatchResult
 from classification_maintenance import ClassificationMaintenance
 from config import load_config
 from pixiv_client import Illust, PixivClient
+from push_schedule import (
+    DatabasePushScheduleState,
+    PushSchedule,
+    PushScheduleModule,
+)
 from proxy_utils import normalize_proxy_url
 from utils import escape_telegram_markdown, format_xp_profile_lines, get_pixiv_cat_url
 from telegram_rich import build_input_rich_message, normalize_rich_message_config
@@ -1506,9 +1511,9 @@ class TelegramNotifier(BaseNotifier):
     async def start_polling(self):
         """启动Bot轮询（用于接收反馈）"""
         from telegram.ext import MessageHandler, filters, CommandHandler
-        from apscheduler.triggers.cron import CronTrigger
 
         from telegram.request import HTTPXRequest
+        push_schedule = PushScheduleModule(DatabasePushScheduleState())
 
         # 增加超时以减少 "Server disconnected" 错误
         # 长轮询需要更长的 read_timeout（Telegram 服务端默认最多等待 50 秒）
@@ -2016,26 +2021,12 @@ class TelegramNotifier(BaseNotifier):
                         await message.reply_text(f"✅ 每日推送上限已设置为: `{limit}`", parse_mode="Markdown")
 
                     elif input_type == "schedule_add":
-                        # 添加时间点
-                        import re
-                        if not re.match(r'^\d{1,2}:\d{2}$', text):
+                        try:
+                            current = await push_schedule.get()
+                            schedule_data = current.with_added(text).serialized
+                        except ValueError:
                             await message.reply_text("❌ 格式错误，请使用 HH:MM (如 14:30)")
                             return
-                        h, m = text.split(":")
-                        new_cron = f"{m} {h} * * *"
-
-                        # 主推送计划只保存在数据库。
-                        from database import get_or_initialize_push_schedule
-                        current = await get_or_initialize_push_schedule()
-
-                        if current and "," in current:
-                            # 已经是多个时间点，追加
-                            schedule_data = f"{current},{new_cron}"
-                        elif current:
-                            # 单个时间点，转为多个
-                            schedule_data = f"{current},{new_cron}"
-                        else:
-                            schedule_data = new_cron
 
                         if self.on_action:
                             await self.on_action("update_schedule", schedule_data)
@@ -2051,7 +2042,7 @@ class TelegramNotifier(BaseNotifier):
                     elif input_type == "schedule_custom":
                         # 自定义 Cron
                         try:
-                            CronTrigger.from_crontab(text)
+                            PushSchedule.from_intent(text)
                             if self.on_action:
                                 await self.on_action("update_schedule", text)
                                 # 删除用户输入消息
@@ -2969,32 +2960,24 @@ class TelegramNotifier(BaseNotifier):
             if args:
                 # 有参数时直接设置（向后兼容）
                 input_str = " ".join(args)
-
-                # 解析时间格式
-                import re
-                time_pattern = re.compile(r'^(\d{1,2}:\d{2})(,\d{1,2}:\d{2})*$')
-
-                if time_pattern.match(input_str.replace(" ", "")):
-                    times = [t.strip() for t in input_str.replace(" ", "").split(",")]
-                    cron_list = []
-                    for t in times:
-                        h, m = t.split(":")
-                        cron_list.append(f"{m} {h} * * *")
-                    schedule_data = ",".join(cron_list)
-                    display_times = ", ".join(times)
-                else:
-                    try:
-                        CronTrigger.from_crontab(input_str)
-                        schedule_data = input_str
-                        display_times = input_str
-                    except ValueError:
-                        await update.message.reply_text("❌ 格式错误，请使用 `9:30` 或 Cron 表达式", parse_mode="Markdown")
-                        return
+                try:
+                    requested_schedule = PushSchedule.from_intent(input_str)
+                except ValueError:
+                    await update.message.reply_text(
+                        "❌ 格式错误，请使用 `9:30` 或 Cron 表达式",
+                        parse_mode="Markdown",
+                    )
+                    return
 
                 try:
                     if self.on_action:
-                        await self.on_action("update_schedule", schedule_data)
-                        await update.message.reply_text(f"✅ 定时任务已更新为: `{display_times}`", parse_mode="Markdown")
+                        await self.on_action(
+                            "update_schedule", requested_schedule.serialized
+                        )
+                        await update.message.reply_text(
+                            f"✅ 定时任务已更新为: `{requested_schedule.description}`",
+                            parse_mode="Markdown",
+                        )
                     else:
                         await update.message.reply_text("⚠️ 内部错误: 未配置 Action 回调")
                 except Exception as e:
@@ -3006,16 +2989,11 @@ class TelegramNotifier(BaseNotifier):
 
         async def _show_schedule_menu(message):
             """显示定时任务设置菜单"""
-            # 主推送计划只保存在数据库。
-            from database import get_or_initialize_push_schedule
-            schedule = await get_or_initialize_push_schedule()
-
-            # 解析 cron 为友好显示
-            display_time = _cron_to_friendly(schedule)
+            schedule = await push_schedule.get()
 
             lines = [
                 "⏰ *推送时间设置*\n",
-                f"当前: `{display_time}`\n",
+                f"当前: `{schedule.description}`\n",
                 "选择预设时间或自定义:"
             ]
 
@@ -3044,34 +3022,6 @@ class TelegramNotifier(BaseNotifier):
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
-
-        def _cron_to_friendly(cron_str: str) -> str:
-            """将 cron 表达式转换为友好显示"""
-            # 处理多个 cron（逗号分隔）
-            if "," in cron_str:
-                crons = cron_str.split(",")
-                return "; ".join([_cron_to_friendly(c) for c in crons])
-
-            parts = cron_str.split()
-            if len(parts) != 5:
-                return cron_str  # 无法解析，返回原样
-
-            m, h, dom, mon, dow = parts
-
-            # 简单映射
-            if dom == "*" and mon == "*" and dow == "*":
-                if m == "0" and h == "*":
-                    return "每小时整点"
-                if m == "0" and h.startswith("*/"):
-                    interval = h[2:]
-                    return f"每{interval}小时整点"
-                if "," in h:
-                    hours = h.split(",")
-                    return f"每天 {', '.join([f'{h}:{m}' for h in hours])}"
-                if h.isdigit() and m.isdigit():
-                    return f"每天 {h}:{m.zfill(2)}"
-
-            return cron_str  # 复杂表达式返回原样
 
         # 处理 schedule 相关回调
         async def _handle_schedule_callback(query, data: str):
@@ -3102,27 +3052,15 @@ class TelegramNotifier(BaseNotifier):
 
             if data.startswith("schedule_set:"):
                 time_str = data.split(":", 1)[1]
-
-                # 转换为 cron
-                if ":" in time_str and "/" not in time_str:
-                    # 友好格式: 9:30 或 9:30,21:00
-                    times = time_str.split(",")
-                    cron_list = []
-                    for t in times:
-                        h, m = t.split(":")
-                        cron_list.append(f"{m} {h} * * *")
-                    schedule_data = ",".join(cron_list)
-                    display = time_str
-                else:
-                    # 已经是 cron
-                    schedule_data = time_str
-                    display = _cron_to_friendly(time_str)
+                requested_schedule = PushSchedule.from_intent(time_str)
 
                 try:
                     if self.on_action:
-                        await self.on_action("update_schedule", schedule_data)
+                        await self.on_action(
+                            "update_schedule", requested_schedule.serialized
+                        )
                         await query.edit_message_text(
-                            f"✅ 定时任务已更新为: `{display}`",
+                            f"✅ 定时任务已更新为: `{requested_schedule.description}`",
                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data="schedule_cancel")]]),
                             parse_mode="Markdown"
                         )

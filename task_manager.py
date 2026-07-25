@@ -21,6 +21,7 @@ from push_run import (
     record_maintenance_completion,
 )
 from push_stats import PushStats, create_stats
+from push_schedule import DatabasePushScheduleState, PushScheduleModule
 from related_recommender import RelatedRecommender
 logger = logging.getLogger(__name__)
 
@@ -44,70 +45,6 @@ def _parse_datetime(value: str | None) -> datetime | None:
     except (TypeError, ValueError):
         logger.warning("无法解析时间值: %s", value)
         return None
-
-
-def _split_schedule_crons(schedule_str: str) -> list[str]:
-    """兼容单 cron 与旧格式的多 cron 字符串。"""
-    candidate = schedule_str.strip()
-    if not candidate:
-        return []
-
-    try:
-        CronTrigger.from_crontab(candidate)
-        logger.info(f"识别为单一定时任务: {candidate}")
-        return [candidate]
-    except ValueError:
-        potential_crons = [c.strip() for c in candidate.split(",") if c.strip()]
-        valid_crons = []
-        for cron_expr in potential_crons:
-            try:
-                CronTrigger.from_crontab(cron_expr)
-                valid_crons.append(cron_expr)
-            except ValueError:
-                logger.warning(f"忽略无效的 Cron 表达式片段: {cron_expr}")
-
-        if valid_crons:
-            logger.info(f"识别为 {len(valid_crons)} 个独立定时任务")
-            return valid_crons
-
-        return [candidate]
-
-
-def _get_min_schedule_interval(cron_list: list[str]) -> timedelta:
-    """估算多个 Cron 中最短的触发间隔，失败时回退到 4 小时。"""
-    fallback = timedelta(hours=4)
-    if not cron_list:
-        return fallback
-
-    all_fire_times = []
-    now = datetime.now()
-
-    for cron_expr in cron_list:
-        try:
-            trigger = CronTrigger.from_crontab(cron_expr)
-        except ValueError:
-            logger.warning("无法为最近运行保护解析 Cron，使用回退间隔: %s", cron_expr)
-            return fallback
-
-        previous_fire_time = None
-        current_time = now
-        for _ in range(8):
-            next_fire_time = trigger.get_next_fire_time(previous_fire_time, current_time)
-            if next_fire_time is None:
-                break
-            fire_time = next_fire_time.replace(tzinfo=None) if next_fire_time.tzinfo else next_fire_time
-            all_fire_times.append(fire_time)
-            previous_fire_time = next_fire_time
-            current_time = next_fire_time
-
-    unique_fire_times = sorted(set(all_fire_times))
-    deltas = [
-        later - earlier
-        for earlier, later in zip(unique_fire_times, unique_fire_times[1:])
-        if later > earlier
-    ]
-
-    return min(deltas) if deltas else fallback
 
 
 async def _get_last_successful_push_at() -> datetime | None:
@@ -176,6 +113,7 @@ _related_chain_lock = asyncio.Lock()
 
 async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfiler, sync_client: PixivClient = None):
     """创建并配置推送器（支持多推送渠道）"""
+    push_schedule = PushScheduleModule(DatabasePushScheduleState())
     # sync_client 用于 on_action 回调中的 main_task 调用
     if sync_client is None:
         sync_client = client
@@ -374,39 +312,24 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
                 return None
              
         elif action == "update_schedule":
-            # 更新调度计划 (支持多个时间)
-            schedule_str = str(data)
-            logger.info(f"📅 收到调度更新请求: {schedule_str}")
+            logger.info(f"📅 收到调度更新请求: {data}")
             try:
-                # 1. 持久化
-                from database import set_state
-                await set_state("schedule_cron", schedule_str)
-                
-                # 2. 如果 scheduler 实例存在，重新调度
-                if 'scheduler' in config:
-                    sched = config['scheduler']
-                    
-                    # 移除所有旧的 push_job
-                    for job in sched.get_jobs():
-                        if job.id.startswith('push_job'):
-                            sched.remove_job(job.id)
-                    
-                    # 添加新的任务
-                    cron_list = [c.strip() for c in schedule_str.split(",") if c.strip()]
-                    for i, cron_expr in enumerate(cron_list):
-                        try:
-                            sched.add_job(
-                                main_task, 
-                                CronTrigger.from_crontab(cron_expr),
-                                args=[config, client, profiler, notifiers, sync_client],
-                                id=f'push_job_{i}'
-                            )
-                        except Exception as e:
-                            logger.error(f"添加任务失败 ({cron_expr}): {e}")
-                    
-                    logger.info(f"✅ 调度任务已更新，共 {len(cron_list)} 个时间点")
+                schedule = await push_schedule.update(str(data))
+                scheduler = config.get("scheduler")
+                if scheduler is not None and hasattr(scheduler, "add_job"):
+                    schedule.install(
+                        scheduler,
+                        main_task,
+                        [config, client, profiler, notifiers, sync_client],
+                        replace=True,
+                    )
+                logger.info(
+                    "✅ 调度任务已更新，共 %s 个时间点",
+                    len(schedule.cron_expressions),
+                )
             except Exception as e:
                 logger.error(f"更新调度失败: {e}")
+                raise
     
     notifiers = []
     
@@ -777,9 +700,9 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
     """启动调度器 (Daemon Mode)"""
     main_client, sync_client, profiler, notifiers = await setup_services(config)
     scheduler_cfg = config.get("scheduler", {})
-    schedule_str = await db_module.get_or_initialize_push_schedule()
-    cron_list = _split_schedule_crons(schedule_str)
-    min_interval = _get_min_schedule_interval(cron_list)
+    push_schedule = PushScheduleModule(DatabasePushScheduleState())
+    schedule = await push_schedule.get()
+    min_interval = schedule.minimum_interval()
     
     # Start Listeners (Background)
     if notifiers:
@@ -810,19 +733,14 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
     # 将 scheduler 注入到 config 中以便 callback 访问
     config['scheduler'] = scheduler
     
-    for i, cron_expr in enumerate(cron_list):
-        try:
-            scheduler.add_job(
-                main_task, 
-                CronTrigger.from_crontab(cron_expr),
-                args=[config, main_client, profiler, notifiers, sync_client],
-                id=f'push_job_{i}',
-                coalesce=coalesce,
-                misfire_grace_time=3600
-            )
-            logger.info(f"已添加定时任务 #{i+1}: {cron_expr}")
-        except Exception as e:
-            logger.error(f"添加定时任务失败 ({cron_expr}): {e}")
+    schedule.install(
+        scheduler,
+        main_task,
+        [config, main_client, profiler, notifiers, sync_client],
+        coalesce=coalesce,
+    )
+    for index, cron_expression in enumerate(schedule.cron_expressions, start=1):
+        logger.info("已添加定时任务 #%s: %s", index, cron_expression)
     
     # 每日维护任务 (日报 + 清理)
     daily_cron = scheduler_cfg.get("daily_report_cron", "0 0 * * *")  # 默认每天00:00
@@ -840,7 +758,10 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
         logger.error(f"添加每日维护任务失败: {e}")
     
     scheduler.start()
-    logger.info(f"调度器已启动，共 {len(cron_list)} 个推送任务 + 1 个每日维护任务")
+    logger.info(
+        "调度器已启动，共 %s 个推送任务 + 1 个每日维护任务",
+        len(schedule.cron_expressions),
+    )
     
     try:
         while True:

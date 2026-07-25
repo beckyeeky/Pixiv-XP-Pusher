@@ -236,15 +236,13 @@ class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
             raise asyncio.CancelledError()
 
         async def fake_get_state(key):
-            if key == "schedule_cron":
-                return None
             if key == "runtime.last_successful_push_at":
                 return (datetime.now() - timedelta(hours=1)).isoformat()
             return None
 
         with patch.object(task_manager, "setup_services", new=AsyncMock(return_value=(AsyncMock(), AsyncMock(), AsyncMock(), []))), \
              patch.object(task_manager, "AsyncIOScheduler", return_value=scheduler), \
-             patch.object(task_manager.db_module, "get_or_initialize_push_schedule", new=AsyncMock(return_value="0 12 * * *")), \
+             patch.object(task_manager.DatabasePushScheduleState, "read", new=AsyncMock(return_value="0 12 * * *")), \
              patch.object(task_manager.db_module, "get_state", new=AsyncMock(side_effect=fake_get_state)), \
              patch.object(task_manager.db_module, "get_last_push_at", new=AsyncMock(return_value=None)), \
              patch.object(task_manager.asyncio, "create_task") as mock_create_task, \
@@ -265,7 +263,7 @@ class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(task_manager, "setup_services", new=AsyncMock(return_value=(AsyncMock(), AsyncMock(), AsyncMock(), []))), \
              patch.object(task_manager, "AsyncIOScheduler", return_value=scheduler), \
-             patch.object(task_manager.db_module, "get_or_initialize_push_schedule", new=AsyncMock(return_value="30 9 * * *,0 21 * * *")) as get_schedule, \
+             patch.object(task_manager.DatabasePushScheduleState, "read", new=AsyncMock(return_value="30 9 * * *,0 21 * * *")) as get_schedule, \
              patch.object(task_manager.asyncio, "sleep", new=AsyncMock(side_effect=fake_sleep)):
             with self.assertRaises(asyncio.CancelledError):
                 await task_manager.run_scheduler(config, run_immediately=False)

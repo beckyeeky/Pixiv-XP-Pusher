@@ -33,6 +33,7 @@ from config import (
 )
 from proxy_utils import normalize_proxy_url
 from provider_model_graph import settings_rules as provider_model_settings_rules
+from push_schedule import DatabasePushScheduleState, PushScheduleModule
 from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
 from classification_maintenance import ClassificationMaintenance
 from tag_mapping import AITagMappingCandidateGenerator
@@ -360,11 +361,11 @@ async def settings_page(request: Request):
         return RedirectResponse("/", status_code=302)
 
     config = build_settings_view_config(_redact_sensitive_config(load_config()))
-    push_schedule = await db.get_or_initialize_push_schedule()
+    push_schedule = await PushScheduleModule(DatabasePushScheduleState()).get()
     return render_template(request, "settings_v2.html", {
         "active_page": "settings",
         "config": config,
-        "push_schedule": push_schedule,
+        "push_schedule": push_schedule.description,
         "known_llm_models": get_known_model_catalog("llm"),
         "known_embedding_models": get_known_model_catalog("embedding"),
         "provider_model_rules": provider_model_settings_rules(),
