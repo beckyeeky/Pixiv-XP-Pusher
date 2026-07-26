@@ -14,7 +14,7 @@ from delivery_reconciliation import (
     DeliveryReconciliationModule,
 )
 from fetcher import ContentFetcher
-from filter import ContentFilter
+from filter import ContentFilter, ensure_current_profile_embedding
 from pixiv_client import PixivClient
 from profiler import XPProfiler
 from push_stats import PushStats
@@ -225,6 +225,11 @@ class PushRun:
                 logger.warning("跳过 semantic vector Exploration：必须启用 filter.daily_slate")
             elif embedder is not None and embedder.enabled and vector_cfg.get("enabled", False):
                 try:
+                    await ensure_current_profile_embedding(
+                        embedder,
+                        xp_profile,
+                        self.config.get("pixiv", {}).get("user_id", 0),
+                    )
                     explorer = SemanticVectorExplorer(
                         vector_cfg,
                         model=embedder.model,

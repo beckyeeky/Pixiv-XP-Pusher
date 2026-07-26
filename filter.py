@@ -15,6 +15,7 @@ from daily_slate import (
     PreferenceContributions,
     calculate_preference_contributions,
 )
+from embedder import profile_embedding_hash
 from tag_mapping import TagIdentityResolver
 from utils import normalize_tag
 
@@ -26,6 +27,45 @@ class ContentFilterResult:
     selected: tuple[Illust, ...]
     ranked: tuple[Illust, ...]
     daily_slate: DailySlateResult | None = None
+
+
+async def ensure_current_profile_embedding(
+    embedder,
+    xp_profile: dict[str, float],
+    user_id: int,
+) -> list[float] | None:
+    """Return the current profile vector, creating its normal cache entry if needed."""
+    if not embedder or not embedder.enabled or not xp_profile or user_id <= 0:
+        return None
+
+    profile_hash = profile_embedding_hash(xp_profile)
+    user_embedding = await db.get_current_user_embedding(
+        user_id,
+        embedder.model,
+        profile_hash,
+    )
+    if user_embedding:
+        logger.debug("使用缓存的用户 Embedding")
+        return user_embedding
+
+    top_tags = [
+        tag
+        for tag, _weight in sorted(
+            xp_profile.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:15]
+    ]
+    user_embedding = await embedder.embed_tags(top_tags)
+    if user_embedding:
+        await db.save_user_embedding(
+            user_id,
+            user_embedding,
+            embedder.model,
+            profile_hash,
+        )
+        logger.info("已更新用户画像 Embedding")
+    return user_embedding
 
 
 def calculate_match_score(
@@ -352,23 +392,11 @@ class ContentFilter:
         
         if self.embedder and self.embedder.enabled and xp_profile and user_id > 0:
             try:
-                # 计算 XP Profile 哈希，判断是否需要更新用户 Embedding
-                from embedder import profile_embedding_hash
-                profile_hash = profile_embedding_hash(xp_profile)
-                
-                # 获取或更新用户 Embedding（仅接受与当前模型、画像哈希一致的缓存）
-                user_embedding = await db.get_current_user_embedding(
-                    user_id, self.embedder.model, profile_hash
+                user_embedding = await ensure_current_profile_embedding(
+                    self.embedder,
+                    xp_profile,
+                    user_id,
                 )
-                if user_embedding:
-                    logger.debug("使用缓存的用户 Embedding")
-                else:
-                    # 重新计算
-                    top_tags = [t for t, _ in sorted(xp_profile.items(), key=lambda x: x[1], reverse=True)[:15]]
-                    user_embedding = await self.embedder.embed_tags(top_tags)
-                    if user_embedding:
-                        await db.save_user_embedding(user_id, user_embedding, self.embedder.model, profile_hash)
-                        logger.info("已更新用户画像 Embedding")
                 
                 # 批量获取作品 Embedding 缓存
                 illust_ids = [ill.id for ill in unique_result]

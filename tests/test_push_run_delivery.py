@@ -12,7 +12,7 @@ sys.modules.setdefault(
 
 from notifier.base import DELIVERY_DELIVERED, DELIVERY_QUEUED, DeliveryBatchResult, DeliveryItem
 from delivery_reconciliation import DeliveryReconciliationModule
-from push_run import PushRun, start_profile_maintenance
+from push_run import PushRun, VectorExplorationBatch, start_profile_maintenance
 from push_stats import PushStats
 
 
@@ -41,6 +41,61 @@ class MemoryDeliveryPersistence:
 
 
 class PushRunDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_current_profile_embedding_is_ready_before_vector_exploration(self):
+        stats = PushStats()
+        client = AsyncMock()
+        client.fetch_following.return_value = set()
+        profiler = AsyncMock()
+        profiler.get_top_tags.return_value = [("feature", 1.0)]
+        embedder = SimpleNamespace(
+            enabled=True,
+            model="embed-v1",
+            embed_tags=AsyncMock(return_value=[1.0, 0.0]),
+        )
+        runner = PushRun(
+            config={
+                "pixiv": {"user_id": 7},
+                "profiler": {},
+                "fetcher": {
+                    "semantic_vector_exploration": {"enabled": True},
+                },
+                "filter": {"daily_slate": {"enabled": True}},
+            },
+            client=client,
+            profiler=profiler,
+            notifiers=[],
+            stats=stats,
+            send_summary=False,
+        )
+        filter_result = SimpleNamespace(selected=[], ranked=[])
+        content_filter = SimpleNamespace(
+            filter_with_result=AsyncMock(return_value=filter_result),
+        )
+        save_user_embedding = AsyncMock()
+        cache_ready_at_retrieve = []
+
+        async def retrieve(*_args, **_kwargs):
+            cache_ready_at_retrieve.append(save_user_embedding.await_count > 0)
+            return VectorExplorationBatch(None, [])
+
+        with patch.object(runner, "_build_tag_classifier", return_value=None), \
+             patch.object(runner, "_build_embedder", return_value=embedder), \
+             patch.object(runner, "_build_ai_scorer", return_value=None), \
+             patch.object(runner, "_push_filtered", new=AsyncMock()), \
+             patch("push_run.ContentFetcher") as fetcher_type, \
+             patch("push_run.ContentFilter", return_value=content_filter), \
+             patch("push_run.SemanticVectorExplorer.retrieve", side_effect=retrieve), \
+             patch("push_run.db_module.get_xp_profile", new=AsyncMock(return_value={"feature": 1.0})), \
+             patch("push_run.db_module.get_current_user_embedding", new=AsyncMock(return_value=None)), \
+             patch("push_run.db_module.save_user_embedding", new=save_user_embedding), \
+             patch("push_run.db_module.set_state", new=AsyncMock()):
+            fetcher_type.return_value.fetch_content = AsyncMock(return_value=[])
+            await runner.execute()
+
+        self.assertEqual(cache_ready_at_retrieve, [True])
+        embedder.embed_tags.assert_awaited_once_with(["feature"])
+        save_user_embedding.assert_awaited_once()
+
     async def test_active_maintenance_is_reused_instead_of_started_twice(self):
         started = asyncio.Event()
         release = asyncio.Event()
