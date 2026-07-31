@@ -61,7 +61,7 @@ class AIScorer:
 候选作品:
 {candidates}
 
-返回 JSON 数组，格式: [{{"id": 123, "score": 0.85}}]
+返回 JSON 对象，格式: {{"scores": [{{"id": 123, "score": 0.85}}]}}
 只返回 JSON，不要解释。"""
 
     def __init__(self, config: dict):
@@ -150,21 +150,14 @@ class AIScorer:
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=1000
+                max_tokens=1000,
+                response_format={"type": "json_object"},
             )
-            
-            content = response.choices[0].message.content.strip()
-            
-            # 解析 JSON
-            # 尝试提取 JSON 数组
-            if "```" in content:
-                # 去除 markdown 代码块
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-                content = content.strip()
-            
-            scores = json.loads(content)
+
+            choice = response.choices[0]
+            content = choice.message.content or ""
+            finish_reason = getattr(choice, "finish_reason", None)
+            scores = self._parse_scores(content)
             
             # 转换为字典
             result = {}
@@ -177,9 +170,49 @@ class AIScorer:
             logger.info(f"AI 评分完成: {len(result)}/{len(candidates)} 个作品")
             return result
             
-        except Exception as e:
-            logger.error(f"AI 评分失败: {e}")
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError, IndexError) as e:
+            logger.error(
+                "AI 评分响应无效: %s (content_length=%d, content_excerpt=%r, finish_reason=%s)",
+                e,
+                len(content.strip()) if "content" in locals() else 0,
+                self._response_excerpt(content) if "content" in locals() else None,
+                finish_reason if "finish_reason" in locals() else None,
+            )
             return {}
+        except Exception as e:
+            logger.error("AI 评分请求失败: %s", e)
+            return {}
+
+    @staticmethod
+    def _response_excerpt(content: object, limit: int = 160) -> str | None:
+        text = " ".join(str(content or "").split())
+        if not text:
+            return None
+        return text[:limit] + ("…" if len(text) > limit else "")
+
+    @staticmethod
+    def _parse_scores(content: object) -> list[dict]:
+        text = str(content or "").strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            lines = lines[1:]
+            if lines and lines[-1].strip().startswith("```"):
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            scores = payload.get("scores")
+        elif isinstance(payload, list):
+            scores = payload  # compatibility with responses produced before JSON-object mode
+        else:
+            raise ValueError("AI scorer response must be a JSON object or array")
+
+        if not isinstance(scores, list):
+            raise ValueError("AI scorer response field 'scores' must be an array")
+        if not all(isinstance(item, dict) for item in scores):
+            raise ValueError("AI scorer scores must be objects")
+        return scores
     
     def blend_scores(
         self,
