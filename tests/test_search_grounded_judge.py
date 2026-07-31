@@ -225,6 +225,30 @@ class SearchGroundedJudgeTests(unittest.TestCase):
 
         self.assertIsInstance(runtime, module.ConfiguredSearchGroundedJudge)
 
+    def test_production_adapter_preserves_grounding_diagnostics_and_model(self):
+        import search_grounded_judge as module
+
+        judge = SimpleNamespace(classify=lambda _tag, _translation: None)
+
+        async def classify(_tag, _translation):
+            return {
+                "tag": "white_hair", "classification": "feature",
+                "explanation": "A visual trait.", "languages": "en",
+                "search_provider": "brave", "search_pool_id": "brave-a",
+                "source_urls": ["https://example.test/white-hair"],
+                "evidence_excerpt": ["White hair is a visual trait."],
+                "search_trace": [{"provider": "brave", "outcome": "success"}],
+                "usage": {"input": 10, "total": 10},
+            }
+
+        judge.classify = classify
+        adapter = module.ConfiguredSearchGroundedJudge(judge, model="deepseek-v4-flash")
+        result = asyncio.run(adapter.classify("white_hair", None))
+
+        self.assertEqual(result["classifier_model"], "deepseek-v4-flash")
+        self.assertEqual(result["search_provider"], "brave")
+        self.assertEqual(result["source_urls"], ["https://example.test/white-hair"])
+
 
 class SearchProviderAdapterTests(unittest.TestCase):
     def test_brave_llm_context_uses_one_japanese_search_and_returns_extracted_snippets(self):

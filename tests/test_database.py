@@ -13,6 +13,46 @@ from tag_relationship_judge import relationship_evidence, relationship_evidence_
 
 
 class DatabaseInitTests(unittest.TestCase):
+    def test_ai_classification_record_round_trips_grounding_provenance(self):
+        async def run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                await database.activate_ai_tag_classification(
+                    "white_hair", "feature", "A visual trait.", "en",
+                    grounding_provenance={
+                        "schema_version": 1,
+                        "search_provider": "brave",
+                        "source_urls": ["https://example.test/white-hair"],
+                    },
+                )
+                return await database.get_ai_tag_classification_record("white_hair")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            record = asyncio.run(run(Path(tmpdir) / "pixiv_xp.db"))
+
+        self.assertEqual(record["grounding_provenance"]["search_provider"], "brave")
+
+    def test_init_db_migrates_ai_records_to_grounding_provenance(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "pixiv_xp.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """CREATE TABLE ai_tag_classification_records (
+                       tag TEXT PRIMARY KEY, classification TEXT NOT NULL,
+                       explanation TEXT NOT NULL, languages TEXT NOT NULL,
+                       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"""
+                )
+            with patch.object(database, "DB_PATH", db_path):
+                database._init_db_sync()
+            with sqlite3.connect(db_path) as conn:
+                columns = {
+                    row[1] for row in conn.execute(
+                        "PRAGMA table_info(ai_tag_classification_records)"
+                    )
+                }
+
+        self.assertIn("grounding_provenance", columns)
+
     def test_database_initializes_default_push_schedule(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "pixiv_xp.db"

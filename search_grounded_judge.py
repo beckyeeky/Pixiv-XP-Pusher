@@ -569,8 +569,9 @@ class SearchGroundedJudge:
 class ConfiguredSearchGroundedJudge:
     """Production adapter that converts conservative shadow outcomes into activation records."""
 
-    def __init__(self, judge: SearchGroundedJudge):
+    def __init__(self, judge: SearchGroundedJudge, *, model: str = ""):
         self._judge = judge
+        self._model = str(model or "").strip()
 
     async def classify(self, tag: str, translation: str | None) -> dict:
         result = await self._judge.classify(tag, translation)
@@ -580,7 +581,20 @@ class ConfiguredSearchGroundedJudge:
             error.usage = usage
             raise error
         record = validate_ai_classification_record(result, tag)
-        return {**record, "usage": usage}
+        diagnostics = {
+            key: result.get(key)
+            for key in (
+                "search_provider", "search_pool_id", "source_urls",
+                "evidence_excerpt", "search_trace",
+            )
+            if result.get(key) is not None
+        }
+        return {
+            **record,
+            **diagnostics,
+            "classifier_model": self._model,
+            "usage": usage,
+        }
 
 
 _PRODUCTION_RUNTIMES: dict[str, ConfiguredSearchGroundedJudge] = {}
@@ -662,7 +676,7 @@ def build_configured_search_grounded_judge(config: dict) -> ConfiguredSearchGrou
                 base_url=base_url or "https://api.deepseek.com/v1", timeout_seconds=timeout,
                 max_output_tokens=int(grounded.get("max_output_tokens") or 1024),
             ),
-        ))
+        ), model=str(model.get("model") or ""))
         _PRODUCTION_RUNTIMES.clear()
         _PRODUCTION_RUNTIMES[signature] = runtime
         return runtime
