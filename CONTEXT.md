@@ -145,8 +145,8 @@ A Grounded Judge path in which one ordered Search Quota Pool supplies evidence t
 _Avoid_: Multi-provider consensus, search-only classification
 
 **AI Classification Record**:
-The complete persisted result from a Grounded Judge: `tag`, `classification`, `explanation`, and `languages`. `languages` stores one primary ISO language code; explanation is the full human-readable basis for review, not separately stored evidence or a second classification.
-_Avoid_: Tag Evidence, Judge vote, source record
+The complete persisted result from a Grounded Judge: `tag`, `classification`, `explanation`, `languages`, and optional bounded Grounding provenance. `languages` stores one primary ISO language code. Grounding provenance records the classifier Model, Search Provider and pool, source URLs, short evidence excerpts, a redacted Search trace, and token/search usage on the same decision; it is not Tag Evidence or a second classification. Human-readable explanation remains the primary review basis.
+_Avoid_: Tag Evidence, Judge vote, separate source record, raw provider response
 
 **Human Classification**:
 A Tag Category explicitly chosen by a human reviewer. It permanently overrides an AI Classification Record for that Normalized Tag.

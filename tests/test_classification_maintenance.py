@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -42,6 +43,36 @@ class ScheduledClassificationMaintenanceTests(unittest.TestCase):
             result = asyncio.run(maintenance.classify_and_activate_tag("reviewed", {"tag_classifier": {}}))
 
         self.assertEqual(result["status"], "human_override")
+
+    def test_activation_persists_bounded_redacted_grounding_provenance(self):
+        record = {
+            "tag": "reviewed", "classification": "feature", "explanation": "trait", "languages": "en",
+            "classifier_model": "deepseek-v4-flash",
+            "search_provider": "brave", "search_pool_id": "brave-a",
+            "source_urls": ["https://example.test/source"],
+            "evidence_excerpt": ["A concise source excerpt."],
+            "search_trace": [{
+                "provider": "brave", "outcome": "success", "pool_id": "brave-a",
+                "error": "must not be persisted",
+            }],
+            "usage": {"input": 10, "output": 4, "total": 14, "secret": "drop-me"},
+        }
+        with patch.object(maintenance.db, "get_translated_tag", new=AsyncMock(return_value=None)), \
+             patch.object(maintenance, "classify_single_tag", new=AsyncMock(return_value=record)), \
+             patch.object(
+                 maintenance.db, "activate_ai_tag_classification", new=AsyncMock(return_value=True),
+             ) as activate:
+            result = asyncio.run(maintenance.classify_and_activate_tag("reviewed", {}))
+
+        self.assertEqual(result["status"], "accepted")
+        provenance = activate.await_args.kwargs["grounding_provenance"]
+        self.assertEqual(provenance["classifier_model"], "deepseek-v4-flash")
+        self.assertEqual(provenance["source_urls"], ["https://example.test/source"])
+        self.assertEqual(provenance["search_trace"], [{
+            "provider": "brave", "outcome": "success", "pool_id": "brave-a",
+        }])
+        self.assertEqual(provenance["usage"], {"input": 10, "output": 4, "total": 14})
+        self.assertNotIn("secret", json.dumps(provenance))
 
     def test_unresolved_result_stays_reviewable_and_keeps_its_usage(self):
         error = ValueError("Grounded Judge 明确标为 unresolved")

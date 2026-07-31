@@ -27,7 +27,7 @@ from utils import normalize_tag
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 TAG_EVIDENCE_FRESHNESS_DAYS = 60
 TAG_MAPPING_EVIDENCE_HASH_STATE = "tag_mapping_evidence_hash_semantic_v2"
 
@@ -231,6 +231,7 @@ def _init_db_sync():
                 classification TEXT NOT NULL,
                 explanation TEXT NOT NULL,
                 languages TEXT NOT NULL,
+                grounding_provenance TEXT NOT NULL DEFAULT '{}',
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             
@@ -356,6 +357,17 @@ def _init_db_sync():
             (DEFAULT_PUSH_SCHEDULE,),
         )
         db.commit()
+
+        ai_record_columns = {
+            row[1] for row in db.execute("PRAGMA table_info(ai_tag_classification_records)")
+        }
+        if "grounding_provenance" not in ai_record_columns:
+            db.execute(
+                "ALTER TABLE ai_tag_classification_records "
+                "ADD COLUMN grounding_provenance TEXT NOT NULL DEFAULT '{}'"
+            )
+            db.commit()
+            logger.info("迁移：AI Classification Record 添加 Grounding provenance")
 
         candidate_columns = {
             row[1] for row in db.execute("PRAGMA table_info(tag_mapping_candidates)")
@@ -1568,12 +1580,24 @@ async def review_tag_classification(normalized_tag: str, classification: str) ->
         await db.commit()
 
 
-async def activate_ai_tag_classification(tag: str, classification: str, explanation: str, languages: str) -> bool:
+async def activate_ai_tag_classification(
+    tag: str,
+    classification: str,
+    explanation: str,
+    languages: str,
+    *,
+    grounding_provenance: dict | None = None,
+) -> bool:
     """Persist a complete AI Classification Record unless a human owns the tag."""
     tag = normalize_tag(tag)
     category = normalize_tag_category(classification)
     if not tag or category == TAG_CATEGORY_UNRESOLVED or not explanation or not languages:
         raise ValueError("AI Classification Record 无效")
+    if grounding_provenance is not None and not isinstance(grounding_provenance, dict):
+        raise ValueError("Grounding provenance 必须是对象")
+    provenance_json = json.dumps(
+        grounding_provenance or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT classification, source FROM tag_classification_cache WHERE normalized_tag = ?", (tag,)
@@ -1587,11 +1611,13 @@ async def activate_ai_tag_classification(tag: str, classification: str, explanat
                 (tag, TAG_CATEGORY_UNRESOLVED),
             )
         await db.execute(
-            """INSERT INTO ai_tag_classification_records (tag, classification, explanation, languages, updated_at)
-               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """INSERT INTO ai_tag_classification_records
+               (tag, classification, explanation, languages, grounding_provenance, updated_at)
+               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                ON CONFLICT(tag) DO UPDATE SET classification=excluded.classification,
-               explanation=excluded.explanation, languages=excluded.languages, updated_at=CURRENT_TIMESTAMP""",
-            (tag, category, explanation, languages),
+               explanation=excluded.explanation, languages=excluded.languages,
+               grounding_provenance=excluded.grounding_provenance, updated_at=CURRENT_TIMESTAMP""",
+            (tag, category, explanation, languages, provenance_json),
         )
         await db.execute(
             "UPDATE tag_classification_cache SET classification = ?, source = 'ai', updated_at = CURRENT_TIMESTAMP WHERE normalized_tag = ?",
@@ -1628,10 +1654,20 @@ async def get_ai_tag_classification_record(tag: str) -> dict | None:
     tag = normalize_tag(tag)
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT tag, classification, explanation, languages FROM ai_tag_classification_records WHERE tag = ?", (tag,)
+            "SELECT tag, classification, explanation, languages, grounding_provenance "
+            "FROM ai_tag_classification_records WHERE tag = ?", (tag,)
         )
         row = await cursor.fetchone()
-    return dict(zip(("tag", "classification", "explanation", "languages"), row)) if row else None
+    if not row:
+        return None
+    record = dict(zip(
+        ("tag", "classification", "explanation", "languages", "grounding_provenance"), row
+    ))
+    try:
+        record["grounding_provenance"] = json.loads(record["grounding_provenance"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        record["grounding_provenance"] = {}
+    return record
 
 
 async def review_tag_classifications_batch(items: list[tuple[str, str]]) -> list[str]:

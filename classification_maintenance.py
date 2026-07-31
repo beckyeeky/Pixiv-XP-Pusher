@@ -15,6 +15,54 @@ from utils import normalize_tag
 
 USAGE_KEYS = ("input", "output", "thoughts", "tool_use_prompt", "total", "search_queries")
 SUMMARY_STATE_KEY = "runtime.last_classification_maintenance_summary"
+GROUNDING_TEXT_FIELDS = ("classifier_model", "search_provider", "search_pool_id")
+
+
+def _bounded_text(value, limit: int) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def grounding_provenance(result: dict) -> dict:
+    """Build the bounded, non-secret provenance stored on one AI decision."""
+    if not isinstance(result, dict) or not any(
+        result.get(key) for key in (*GROUNDING_TEXT_FIELDS, "source_urls", "evidence_excerpt", "search_trace")
+    ):
+        return {}
+    provenance = {"schema_version": 1, "backend": "search_first"}
+    for key in GROUNDING_TEXT_FIELDS:
+        value = _bounded_text(result.get(key), 200)
+        if value:
+            provenance[key] = value
+    provenance["source_urls"] = [
+        value for item in (result.get("source_urls") or [])[:5]
+        if (value := _bounded_text(item, 1000))
+    ]
+    provenance["evidence_excerpt"] = [
+        value for item in (result.get("evidence_excerpt") or [])[:3]
+        if (value := _bounded_text(item, 500))
+    ]
+    provenance["search_trace"] = []
+    for item in (result.get("search_trace") or [])[:4]:
+        if not isinstance(item, dict):
+            continue
+        trace = {}
+        for key in ("provider", "outcome", "pool_id"):
+            value = _bounded_text(item.get(key), 200)
+            if value:
+                trace[key] = value
+        if trace:
+            provenance["search_trace"].append(trace)
+    usage = {}
+    raw_usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+    for key in USAGE_KEYS:
+        if key not in raw_usage:
+            continue
+        try:
+            usage[key] = max(0, int(raw_usage[key]))
+        except (TypeError, ValueError):
+            continue
+    provenance["usage"] = usage
+    return provenance
 
 
 def _positive_int(value, default: int) -> int:
@@ -58,11 +106,15 @@ def empty_usage() -> dict[str, int]:
 async def classify_and_activate_tag(tag: str, config: dict) -> dict:
     """Run the exact Grounded Judge operation used by one manual review."""
     translation = await db.get_translated_tag(tag)
-    result = await classify_single_tag(tag, translation, config)
-    result = validate_ai_classification_record(result, tag)
+    raw_result = await classify_single_tag(tag, translation, config)
+    result = validate_ai_classification_record(raw_result, tag)
+    provenance = grounding_provenance(raw_result)
     activated = await db.activate_ai_tag_classification(
         result["tag"], result["classification"], result["explanation"], result["languages"],
+        grounding_provenance=provenance,
     )
+    if isinstance(raw_result.get("usage"), dict):
+        result["usage"] = raw_result["usage"]
     if not activated:
         return {**result, "status": "human_override"}
     return {**result, "status": "accepted"}
