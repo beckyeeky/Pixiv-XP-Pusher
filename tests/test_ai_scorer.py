@@ -43,6 +43,7 @@ class AIScorerTests(unittest.TestCase):
 
         self.assertEqual(scores, {1: 0.85})
         self.assertEqual(completions.requests[0]["response_format"], {"type": "json_object"})
+        self.assertEqual(completions.requests[0]["max_tokens"], 3000)
 
     def test_accepts_legacy_array_in_fenced_json_response(self):
         scorer, _ = _scorer('```json\n[{"id": 2, "score": 0.4}]\n```')
