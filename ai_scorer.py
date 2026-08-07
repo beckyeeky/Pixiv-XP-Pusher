@@ -152,6 +152,7 @@ class AIScorer:
                 temperature=0.3,
                 max_tokens=3000,
                 response_format={"type": "json_object"},
+                extra_body={"thinking": {"type": "disabled"}},
             )
 
             choice = response.choices[0]
