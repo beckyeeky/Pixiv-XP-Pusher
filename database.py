@@ -3064,6 +3064,15 @@ async def cleanup_old_embeddings(days: int = 60) -> int:
         return cursor.rowcount
 
 
+async def delete_illust_embedding(illust_id: int) -> None:
+    """Remove a work vector that can no longer be hydrated from Pixiv."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM illust_embeddings WHERE illust_id = ?", (illust_id,)
+        )
+        await db.commit()
+
+
 # ============ MAB 策略统计汇总 (/stats) ============
 async def get_all_strategy_stats() -> dict[str, dict]:
     """

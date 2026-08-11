@@ -59,7 +59,9 @@ class SemanticVectorExplorerTests(unittest.IsolatedAsyncioTestCase):
             "semantic_vector_explorer.db.start_vector_exploration_run", new=AsyncMock(),
         ) as start_run, patch(
             "semantic_vector_explorer.db.record_vector_exploration_candidates", new=AsyncMock(),
-        ) as record:
+        ) as record, patch(
+            "semantic_vector_explorer.db.delete_illust_embedding", new=AsyncMock(),
+        ) as delete_embedding:
             batch = await explorer.retrieve(user_id=7, profile={"tag": 1.0}, exclude_ids={9})
 
         self.assertIsNotNone(batch.run_id)
@@ -73,6 +75,7 @@ class SemanticVectorExplorerTests(unittest.IsolatedAsyncioTestCase):
         rows = record.await_args.args[1]
         self.assertEqual([row["illust_id"] for row in rows], [1, 2])
         self.assertEqual([row["retrieval_rank"] for row in rows], [1, 2])
+        delete_embedding.assert_awaited_once_with(3)
 
     async def test_retrieve_skips_without_current_cached_profile_vector(self):
         explorer = SemanticVectorExplorer(

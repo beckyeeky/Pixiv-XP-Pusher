@@ -176,6 +176,10 @@ class SemanticVectorExplorer:
         audit_rows = []
         for (illust_id, similarity), illust in loaded:
             if illust is None:
+                await db.delete_illust_embedding(illust_id)
+                logger.info(
+                    "移除不可用作品的 Embedding 缓存: illust_id=%s", illust_id,
+                )
                 continue
             illust.source = VECTOR_EXPLORATION_SOURCE
             illust.exploration_only = True
