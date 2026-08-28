@@ -15,6 +15,10 @@ _LANGUAGE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]+)?$", re.IGNORECASE)
 logger = logging.getLogger(__name__)
 
 
+class GroundedJudgeDeferredError(RuntimeError):
+    """Classification could not run because its external evidence path is unavailable."""
+
+
 @dataclass(frozen=True)
 class GeminiJudgeConfig:
     api_key: str

@@ -18,7 +18,7 @@ try:
 except ImportError:  # pragma: no cover - dependency is declared in requirements.txt
     AsyncOpenAI = None
 
-from grounded_judge import validate_ai_classification_record
+from grounded_judge import GroundedJudgeDeferredError, validate_ai_classification_record
 
 
 class SearchError(Exception):
@@ -57,8 +57,12 @@ class MonthlyQuotaUsageLedger:
 
     def __init__(self, path: Path, *, month: str | None = None):
         self._path = path
-        self._month = month or datetime.now().strftime("%Y-%m")
+        self._fixed_month = month
         self._lock = threading.Lock()
+
+    def current_month(self) -> str:
+        """Return the local calendar month used for the active quota period."""
+        return self._fixed_month or datetime.now().strftime("%Y-%m")
 
     def _read_unlocked(self) -> dict:
         if not self._path.exists():
@@ -73,7 +77,7 @@ class MonthlyQuotaUsageLedger:
 
     def initial_usage(self) -> dict[str, int]:
         with self._lock:
-            month_usage = self._read_unlocked()["months"].get(self._month, {})
+            month_usage = self._read_unlocked()["months"].get(self.current_month(), {})
         if not isinstance(month_usage, dict):
             raise ValueError(f"Quota 用量账本月份格式无效: {self._path}")
         return {str(pool_id): max(0, int(used or 0)) for pool_id, used in month_usage.items()}
@@ -81,7 +85,7 @@ class MonthlyQuotaUsageLedger:
     def save(self, statuses: list[Mapping[str, object]]) -> None:
         with self._lock:
             data = self._read_unlocked()
-            month_usage = data["months"].setdefault(self._month, {})
+            month_usage = data["months"].setdefault(self.current_month(), {})
             for status in statuses:
                 pool_id = str(status.get("pool_id") or "").strip()
                 if pool_id:
@@ -93,7 +97,7 @@ class MonthlyQuotaUsageLedger:
 
 
 class SearchCredentialPool:
-    """Quota-first routing across independent credential pools.
+    """Utilization-balanced routing across independent credential pools.
 
     A retry remains on the selected pool. A quota failure makes that pool
     unavailable for the rest of the process and immediately advances to the
@@ -104,6 +108,7 @@ class SearchCredentialPool:
         self, pools: list[SearchPoolConfig], *,
         initial_requests_used: Mapping[str, int] | None = None,
         on_usage_change: Callable[[list[dict]], None] | None = None,
+        quota_period: Callable[[], str] | None = None,
     ):
         if not pools:
             raise ValueError("至少需要一个搜索 Quota Pool")
@@ -123,6 +128,22 @@ class SearchCredentialPool:
         self._next_index = 0
         self._selection_lock = asyncio.Lock()
         self._on_usage_change = on_usage_change
+        self._quota_period = quota_period
+        self._active_quota_period = quota_period() if quota_period else None
+
+    def _reset_for_new_quota_period(self) -> None:
+        if self._quota_period is None:
+            return
+        current_period = self._quota_period()
+        if current_period == self._active_quota_period:
+            return
+        for state in self._states.values():
+            state.requests_used = 0
+            state.exhausted = False
+        self._next_index = 0
+        self._active_quota_period = current_period
+        if self._on_usage_change:
+            self._on_usage_change(self.status())
 
     def status(self) -> list[dict[str, int | str | bool | None]]:
         """Return redacted, report-safe pool usage."""
@@ -137,12 +158,22 @@ class SearchCredentialPool:
         ]
 
     def _select_pool(self) -> tuple[int, SearchPoolConfig]:
+        selected: tuple[float, int, SearchPoolConfig] | None = None
         for offset in range(len(self._pools)):
             index = (self._next_index + offset) % len(self._pools)
             pool = self._pools[index]
             state = self._states[pool.pool_id]
-            if not state.exhausted:
-                return index, pool
+            if state.exhausted:
+                continue
+            utilization = (
+                state.requests_used / pool.request_limit
+                if pool.request_limit is not None
+                else float(state.requests_used)
+            )
+            if selected is None or utilization < selected[0]:
+                selected = (utilization, index, pool)
+        if selected is not None:
+            return selected[1], selected[2]
         raise PoolQuotaExhausted("所有搜索 Quota Pool 的免费额度均已耗尽")
 
     def _reserve(self, index: int, pool: SearchPoolConfig) -> None:
@@ -153,12 +184,13 @@ class SearchCredentialPool:
             state.exhausted = True
             self._next_index = (index + 1) % len(self._pools)
         else:
-            self._next_index = index
+            self._next_index = (index + 1) % len(self._pools)
         if self._on_usage_change:
             self._on_usage_change(self.status())
 
     async def _reserve_next_pool(self) -> tuple[int, SearchPoolConfig]:
         async with self._selection_lock:
+            self._reset_for_new_quota_period()
             index, pool = self._select_pool()
             self._reserve(index, pool)
             return index, pool
@@ -291,7 +323,7 @@ def _safe_error_detail(body: Mapping | None) -> str:
 
 def _raise_for_search_status(provider: str, status: int, body: Mapping | None = None) -> None:
     detail = _safe_error_detail(body)
-    if status == 429:
+    if status in {429, 432}:
         raise PoolQuotaExhausted(f"{provider} Quota Pool 已达到额度或限流{detail}")
     if status in {401, 403}:
         raise PoolUnavailable(f"{provider} Quota Pool 凭据不可用{detail}")
@@ -496,12 +528,14 @@ class SearchGroundedJudge:
         evidence = None
         errors = []
         search_trace = []
+        search_errors: list[Exception] = []
         search_attempts = 0
         for provider_name, client in (("brave", self._brave), ("tavily", self._tavily)):
             try:
                 search_attempts += 1
                 evidence = await client.search(query)
             except SearchError as exc:
+                search_errors.append(exc)
                 errors.append(str(exc))
                 search_trace.append({"provider": provider_name, "outcome": "no_evidence", "error": str(exc)})
                 continue
@@ -512,10 +546,15 @@ class SearchGroundedJudge:
             search_trace.append({"provider": provider_name, "outcome": "no_evidence", "error": "empty_search_response"})
             evidence = None
         if evidence is None:
+            reason = (
+                "search_unavailable"
+                if search_errors and all(not isinstance(exc, SearchNoEvidence) for exc in search_errors)
+                else "no_search_evidence"
+            )
             return {
                 "tag": tag,
                 "classification": "unresolved",
-                "reason": "no_search_evidence",
+                "reason": reason,
                 "errors": errors,
                 "search_trace": search_trace,
                 "usage": {"search_queries": search_attempts},
@@ -577,6 +616,10 @@ class ConfiguredSearchGroundedJudge:
         result = await self._judge.classify(tag, translation)
         usage = result.get("usage") or {}
         if result.get("classification") == "unresolved":
+            if result.get("reason") == "search_unavailable":
+                error = GroundedJudgeDeferredError("Grounded Judge 搜索基础设施暂不可用")
+                error.usage = usage
+                raise error
             error = ValueError("Grounded Judge 明确标为 unresolved")
             error.usage = usage
             raise error
@@ -657,10 +700,12 @@ def build_configured_search_grounded_judge(config: dict) -> ConfiguredSearchGrou
         brave_pool = SearchCredentialPool(
             search_pools("brave_providers", "brave_search", "brave_request_limit"),
             initial_requests_used=initial_usage, on_usage_change=ledger.save,
+            quota_period=ledger.current_month,
         )
         tavily_pool = SearchCredentialPool(
             search_pools("tavily_providers", "tavily_search", "tavily_request_limit"),
             initial_requests_used=initial_usage, on_usage_change=ledger.save,
+            quota_period=ledger.current_month,
         )
         timeout = float(grounded.get("timeout_seconds") or 45)
         brave_provider = providers[grounded["brave_providers"][0]]

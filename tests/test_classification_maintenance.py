@@ -15,6 +15,26 @@ from tag_classifier import TagClassifier
 
 
 class ScheduledClassificationMaintenanceTests(unittest.TestCase):
+    def test_search_unavailable_is_deferred_without_overwriting_classification(self):
+        from grounded_judge import GroundedJudgeDeferredError
+
+        error = GroundedJudgeDeferredError("all search pools exhausted")
+        error.usage = {"search_queries": 2}
+
+        async def classify(_tag, _config):
+            raise error
+
+        with patch.object(maintenance.db, "mark_ai_tag_unresolved", new=AsyncMock()) as mark:
+            summary = asyncio.run(
+                maintenance.run_scheduled_maintenance(["white_hair"], {}, classify)
+            )
+
+        self.assertEqual(summary["deferred"], 1)
+        self.assertEqual(summary["unresolved"], 0)
+        self.assertEqual(summary["items"][0]["status"], "deferred")
+        self.assertEqual(summary["usage"]["search_queries"], 2)
+        mark.assert_not_awaited()
+
     def test_uses_the_single_tag_path_and_aggregates_usage(self):
         async def run():
             classify = AsyncMock(side_effect=[

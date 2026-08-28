@@ -9,6 +9,58 @@ from unittest.mock import patch
 
 
 class SearchCredentialPoolTests(unittest.TestCase):
+    def test_resets_in_memory_quota_when_the_natural_month_changes(self):
+        from search_grounded_judge import PoolQuotaExhausted, SearchCredentialPool, SearchPoolConfig
+
+        period = ["2026-08"]
+        pool = SearchCredentialPool(
+            [SearchPoolConfig("tavily-a", "secret-a", request_limit=1)],
+            initial_requests_used={"tavily-a": 1},
+            quota_period=lambda: period[0],
+        )
+
+        async def request(selected):
+            return selected.pool_id
+
+        with self.assertRaises(PoolQuotaExhausted):
+            asyncio.run(pool.search(request))
+
+        period[0] = "2026-09"
+        self.assertEqual(asyncio.run(pool.search(request)), "tavily-a")
+        self.assertEqual(pool.status()[0]["requests_used"], 1)
+
+    def test_balances_requests_by_lowest_used_quota_ratio(self):
+        from search_grounded_judge import SearchCredentialPool, SearchPoolConfig
+
+        pool = SearchCredentialPool([
+            SearchPoolConfig("tavily-a", "secret-a", request_limit=4),
+            SearchPoolConfig("tavily-b", "secret-b", request_limit=4),
+        ], initial_requests_used={"tavily-a": 2, "tavily-b": 0})
+
+        async def request(selected):
+            return selected.pool_id
+
+        async def run():
+            return [await pool.search(request) for _ in range(3)]
+
+        self.assertEqual(asyncio.run(run()), ["tavily-b", "tavily-b", "tavily-a"])
+
+    def test_round_robins_pools_with_equal_quota_utilization(self):
+        from search_grounded_judge import SearchCredentialPool, SearchPoolConfig
+
+        pool = SearchCredentialPool([
+            SearchPoolConfig("tavily-a", "secret-a", request_limit=100),
+            SearchPoolConfig("tavily-b", "secret-b", request_limit=100),
+        ])
+
+        async def request(selected):
+            return selected.pool_id
+
+        async def run():
+            return [await pool.search(request) for _ in range(4)]
+
+        self.assertEqual(asyncio.run(run()), ["tavily-a", "tavily-b", "tavily-a", "tavily-b"])
+
     def test_moves_to_the_next_pool_after_the_current_pool_hits_its_free_limit(self):
         from search_grounded_judge import SearchCredentialPool, SearchPoolConfig
 
@@ -116,8 +168,35 @@ class SearchErrorDiagnosticsTests(unittest.TestCase):
                 {"error": {"detail": "maximum_number_of_tokens must be at least 1024"}},
             )
 
+    def test_tavily_432_is_treated_as_pool_quota_exhaustion(self):
+        from search_grounded_judge import PoolQuotaExhausted, _raise_for_search_status
+
+        with self.assertRaisesRegex(PoolQuotaExhausted, "usage limit"):
+            _raise_for_search_status(
+                "Tavily", 432,
+                {"detail": {"error": "This request exceeds your plan's set usage limit."}},
+            )
+
 
 class SearchGroundedJudgeTests(unittest.TestCase):
+    def test_marks_all_provider_quota_exhaustion_as_search_unavailable(self):
+        from search_grounded_judge import PoolQuotaExhausted, SearchGroundedJudge
+
+        class Exhausted:
+            async def search(self, _query):
+                raise PoolQuotaExhausted("quota exhausted")
+
+        class NeverCalled:
+            async def classify(self, *_args):
+                raise AssertionError("classifier must not run without evidence")
+
+        result = asyncio.run(
+            SearchGroundedJudge(Exhausted(), Exhausted(), NeverCalled()).classify("white_hair", None)
+        )
+
+        self.assertEqual(result["classification"], "unresolved")
+        self.assertEqual(result["reason"], "search_unavailable")
+
     def test_falls_back_from_brave_to_tavily_and_returns_a_valid_classification(self):
         from search_grounded_judge import (
             SearchGroundedJudge,
@@ -248,6 +327,26 @@ class SearchGroundedJudgeTests(unittest.TestCase):
         self.assertEqual(result["classifier_model"], "deepseek-v4-flash")
         self.assertEqual(result["search_provider"], "brave")
         self.assertEqual(result["source_urls"], ["https://example.test/white-hair"])
+
+    def test_production_adapter_defers_when_all_search_providers_are_unavailable(self):
+        import search_grounded_judge as module
+
+        async def classify(_tag, _translation):
+            return {
+                "tag": "white_hair",
+                "classification": "unresolved",
+                "reason": "search_unavailable",
+                "usage": {"search_queries": 2},
+            }
+
+        adapter = module.ConfiguredSearchGroundedJudge(
+            SimpleNamespace(classify=classify), model="deepseek-v4-flash",
+        )
+
+        with self.assertRaises(module.GroundedJudgeDeferredError) as raised:
+            asyncio.run(adapter.classify("white_hair", None))
+
+        self.assertEqual(raised.exception.usage, {"search_queries": 2})
 
 
 class SearchProviderAdapterTests(unittest.TestCase):
@@ -433,3 +532,15 @@ class MonthlyQuotaUsageLedgerTests(unittest.TestCase):
 
             self.assertEqual(restored.initial_usage(), {"brave-1": 17, "tavily-1": 2})
             self.assertNotIn("api_key", path.read_text(encoding="utf-8"))
+
+    def test_natural_months_keep_independent_usage(self):
+        from search_grounded_judge import MonthlyQuotaUsageLedger
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "quota-state.json"
+            august = MonthlyQuotaUsageLedger(path, month="2026-08")
+            august.save([{"pool_id": "tavily-a", "requests_used": 500}])
+            september = MonthlyQuotaUsageLedger(path, month="2026-09")
+
+            self.assertEqual(august.initial_usage(), {"tavily-a": 500})
+            self.assertEqual(september.initial_usage(), {})

@@ -136,7 +136,7 @@ tag_classifier:
     min_profile_weight: 1.0 # 新标签先积累影响；达到绝对权重阈值后才进入维护
     prefer_unresolved_first: true
   grounded_judge:
-    backend: search_first # Brave → 无证据时 Tavily → 所选 DeepSeek Model
+    backend: search_first # Brave → 无证据时 Tavily → 所选 DeepSeek Model；同类账号按配额利用率均衡
     search_classifier_model: deepseek_flash
     brave_providers: [brave_search_1]
     tavily_providers: [tavily_search_1]

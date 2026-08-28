@@ -79,9 +79,10 @@ python scripts/maintain_high_weight_tags.py --apply --reviewed-tags /tmp/reviewe
 1. Brave 搜索一次并提供证据。
 2. 只有 Brave 没有有效证据时，才使用 Tavily Advanced 搜索。
 3. DeepSeek Flash 只根据搜索证据输出分类，温度固定为 `0`。
-4. 搜索失败或模型不确定时保留为 Unresolved，不调用 Gemini 兜底。
+4. 搜索有证据但模型不确定时保留为 Unresolved，不调用 Gemini 兜底。
+5. Brave/Tavily 全部配额池暂不可用时记为 Deferred，保留现有有效分类并等待下次维护。
 
-自动维护只处理达到 Maintenance Eligibility 的画像标签；新 tag 不会在出现时立即调用搜索。推荐起点是 `maintenance.min_profile_weight: 1.0`、`max_tags_per_run: 40`。每个 Brave/Tavily 账号应作为一个独立 Provider，列表顺序即额度耗尽顺序：
+自动维护只处理达到 Maintenance Eligibility 的画像标签；新 tag 不会在出现时立即调用搜索。推荐起点是 `maintenance.min_profile_weight: 1.0`、`max_tags_per_run: 40`。每个 Brave/Tavily 账号应作为一个独立 Provider；同类 Provider 池会优先选择已用额度比例最低的账号，比例相同时轮询：
 
 ```yaml
 providers:

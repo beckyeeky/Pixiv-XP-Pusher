@@ -578,7 +578,7 @@ async function classifyAllWithGroundedJudge() {
         if (!response.ok) throw new Error(payload.detail || '批量分类失败');
         await loadReviewQueue();
         const usage = payload.usage || {};
-        feedback.textContent = `AI 批量处理完成（安全上限 ${payload.effective_limit} 条，权重阈值 ${payload.min_profile_weight}）：已尝试 ${payload.attempted}，接受 ${payload.accepted}，仍未解决 ${payload.unresolved}，失败 ${payload.failed}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次。`;
+        feedback.textContent = `AI 批量处理完成（安全上限 ${payload.effective_limit} 条，权重阈值 ${payload.min_profile_weight}）：已尝试 ${payload.attempted}，接受 ${payload.accepted}，暂缓 ${payload.deferred || 0}，仍未解决 ${payload.unresolved}，失败 ${payload.failed}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次。`;
     } catch (error) {
         feedback.textContent = `AI 批量处理失败：${error.message}`;
     } finally {

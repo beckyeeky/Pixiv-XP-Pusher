@@ -1024,6 +1024,7 @@ class TelegramNotifier(BaseNotifier):
                         summary = await maintenance.run_reviewed(tags)
                         await query.edit_message_text(
                             f"🤖 高权重候选分类完成：已接受 {summary['accepted']}，"
+                            f"搜索暂缓 {summary.get('deferred', 0)}，"
                             f"未解决 {summary['unresolved']}，失败 {summary['failed']}。",
                             reply_markup=self._build_tag_review_menu(),
                         )
@@ -1128,6 +1129,7 @@ class TelegramNotifier(BaseNotifier):
                         f"本次安全上限：{effective_limit}\n"
                         f"已尝试：{summary['attempted']}\n"
                         f"已接受：{summary['accepted']}\n"
+                        f"搜索暂缓：{summary.get('deferred', 0)}\n"
                         f"仍未解决：{summary['unresolved']}\n"
                         f"失败：{summary['failed']}\n"
                         f"人工决定优先跳过：{summary['human_override']}\n"
