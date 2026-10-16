@@ -65,21 +65,6 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
             "topic_rules": {},
             "topic_tag_mapping": {},
         },
-        "onebot": {
-            "ws_url": "",
-            "private_id": None,
-            "group_id": None,
-            "push_to_private": True,
-            "push_to_group": False,
-            "master_id": None,
-        },
-        "astrbot": {
-            "http_url": "",
-            "unified_msg_origin": "",
-            "api_key": "",
-            "image_quality": 85,
-            "max_image_size": 1500,
-        },
     },
     "profiler": {
         "scan_limit": 1000,
@@ -233,6 +218,20 @@ def build_settings_snapshot(raw_config: Any) -> dict:
         SETTINGS_DEFAULTS,
         raw_config if isinstance(raw_config, dict) else {},
     )
+
+    notifier = merged.get("notifier", {})
+    if isinstance(notifier, dict):
+        for obsolete in ("onebot", "astrbot", "email"):
+            notifier.pop(obsolete, None)
+        raw_notifier = raw_config.get("notifier", {}) if isinstance(raw_config, dict) else {}
+        raw_notifier = raw_notifier if isinstance(raw_notifier, dict) else {}
+        channels = raw_notifier.get("types")
+        if channels is None:
+            channels = [raw_notifier.get("type", "telegram")]
+        if isinstance(channels, str):
+            channels = [channels]
+        notifier["types"] = [name for name in channels if name == "telegram"]
+        notifier.pop("type", None)
 
     scheduler_cfg = merged.setdefault("scheduler", {})
     if isinstance(scheduler_cfg, dict):

@@ -334,11 +334,12 @@
         <button type="button" onclick="loadReviewQueue()">刷新</button>
     </div>
     <div id="maintenanceStatus" class="maintenance-status">正在读取分类维护状态…</div>
-    {% set ai_batch_max = config.tag_classifier.maintenance.max_tags_per_run | default(40) %}
+    {% set maintenance = config.get('tag_classifier', {}).get('maintenance', {}) %}
+    {% set ai_batch_max = maintenance.get('max_tags_per_run', 40) %}
     {% set ai_batch_default = 20 if ai_batch_max >= 20 else ai_batch_max %}
     <div class="tag-ai-batch-panel">
         <h3>🤖 AI 批量处理标签</h3>
-        <p>使用 Brave/Tavily 搜索与 DeepSeek 分类；只选择绝对画像权重 ≥ {{ config.tag_classifier.maintenance.min_profile_weight | default(1.0) }} 的未分类标签。系统配置上限为每次 {{ ai_batch_max }} 条。</p>
+        <p>使用 Brave/Tavily 搜索与 DeepSeek 分类；只选择绝对画像权重 ≥ {{ maintenance.get('min_profile_weight', 1.0) }} 的未分类标签。系统配置上限为每次 {{ ai_batch_max }} 条。</p>
         <div class="tag-ai-batch-controls">
             <label for="tagAiBatchLimit">本次最多处理</label>
             <input id="tagAiBatchLimit" type="number" min="1" max="{{ ai_batch_max }}" value="{{ ai_batch_default }}">

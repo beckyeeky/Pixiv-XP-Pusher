@@ -1,6 +1,7 @@
 """
 SQLite 数据层
 """
+import asyncio
 import json
 import aiosqlite
 import logging
@@ -27,9 +28,85 @@ from utils import normalize_tag
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 TAG_EVIDENCE_FRESHNESS_DAYS = 60
 TAG_MAPPING_EVIDENCE_HASH_STATE = "tag_mapping_evidence_hash_semantic_v2"
+
+
+
+# Compact lifetime retention, independent of the preference ledger.
+_EXPOSURE_BACKFILL = (
+    "INSERT OR IGNORE INTO exposure_ids SELECT illust_id, pushed_at FROM push_history",
+    "INSERT OR IGNORE INTO exposure_ids SELECT illust_id, created_at FROM feedback",
+    """INSERT INTO feedback_metadata (illust_id,tags,user_id,user_name,source)
+       SELECT c.illust_id,c.tags,c.user_id,c.user_name,c.source FROM illust_cache c
+       WHERE EXISTS (SELECT 1 FROM feedback f WHERE f.illust_id=c.illust_id)
+       ON CONFLICT(illust_id) DO UPDATE SET
+       tags=excluded.tags,
+       user_id=CASE WHEN excluded.user_id>0 THEN excluded.user_id ELSE feedback_metadata.user_id END,
+       user_name=CASE WHEN excluded.user_name!='' THEN excluded.user_name ELSE feedback_metadata.user_name END,
+       source=excluded.source""",
+)
+
+
+def _backup_exposure_upgrade(path):
+    if not path.exists() or not path.stat().st_size:
+        return
+    with sqlite3.connect(path) as source:
+        exists = source.execute("SELECT 1 FROM sqlite_master WHERE name='retention_migrations'").fetchone()
+        if exists and source.execute('SELECT 1 FROM retention_migrations WHERE version=1').fetchone():
+            return
+        directory = path.parent / 'backups'
+        directory.mkdir(exist_ok=True)
+        target = directory / (path.name + '.retention-v1.' + datetime.now().strftime('%Y%m%dT%H%M%S%f') + '.sqlite3')
+        with sqlite3.connect(target) as destination:
+            source.backup(destination)
+
+
+def _migrate_exposure(connection):
+    connection.execute('BEGIN IMMEDIATE')
+    try:
+        connection.execute('CREATE TABLE IF NOT EXISTS retention_migrations (version INTEGER PRIMARY KEY)')
+        if connection.execute('SELECT 1 FROM retention_migrations WHERE version=1').fetchone():
+            connection.commit()
+            return
+        connection.execute('CREATE TABLE IF NOT EXISTS exposure_ids (illust_id INTEGER PRIMARY KEY, first_seen_at TIMESTAMP NOT NULL)')
+        connection.execute("CREATE TABLE IF NOT EXISTS feedback_metadata (illust_id INTEGER PRIMARY KEY, tags TEXT, user_id INTEGER DEFAULT 0, user_name TEXT DEFAULT '', source TEXT)")
+        for statement in _EXPOSURE_BACKFILL:
+            connection.execute(statement)
+        # Also cover direct ledger feedback writes without coupling to that module.
+        for table in ('feedback', 'illust_cache'):
+            for event in ('INSERT', 'UPDATE'):
+                if table == 'feedback':
+                    exposure_sql = "INSERT OR IGNORE INTO exposure_ids VALUES (NEW.illust_id, CURRENT_TIMESTAMP);"
+                else:
+                    exposure_sql = ""
+                connection.execute(f"""CREATE TRIGGER IF NOT EXISTS retain_{table}_{event.lower()}
+                    AFTER {event} ON {table} BEGIN
+                    {exposure_sql}
+                    INSERT INTO feedback_metadata (illust_id,tags,user_id,user_name,source)
+                    SELECT f.illust_id,c.tags,COALESCE(c.user_id,0),COALESCE(c.user_name,''),c.source
+                    FROM feedback f JOIN illust_cache c ON c.illust_id=f.illust_id
+                    WHERE f.illust_id=NEW.illust_id
+                    ON CONFLICT(illust_id) DO UPDATE SET
+                    tags=COALESCE(excluded.tags,feedback_metadata.tags),
+                    user_id=CASE WHEN excluded.user_id>0 THEN excluded.user_id ELSE feedback_metadata.user_id END,
+                    user_name=CASE WHEN excluded.user_name!='' THEN excluded.user_name ELSE feedback_metadata.user_name END,
+                    source=COALESCE(excluded.source,feedback_metadata.source);
+                    END""")
+        connection.execute('INSERT OR IGNORE INTO retention_migrations VALUES (1)')
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+
+
+async def _retain_before_cleanup(connection):
+    # Acquire the writer lock before snapshot and delete; independent cleanup
+    # entrypoints cannot remove cache/history ahead of their durable snapshot.
+    await connection.execute('BEGIN IMMEDIATE')
+    for statement in _EXPOSURE_BACKFILL:
+        await connection.execute(statement)
 
 
 async def init_db():
@@ -39,26 +116,20 @@ async def init_db():
 
 def _init_db_sync():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    from persistent_profile import backup_before_upgrade, migrate
+    _backup_exposure_upgrade(DB_PATH)
+    backup_before_upgrade(DB_PATH)
 
     with sqlite3.connect(DB_PATH) as db:
-        # ============ 简易迁移逻辑 ============
-        # 检查 xp_bookmarks 表是否包含 user_id 列 (旧版没有)
-        try:
-             db.execute("SELECT user_id FROM xp_bookmarks LIMIT 0")
-        except Exception:
-             db.execute("DROP TABLE IF EXISTS xp_bookmarks")
-             db.commit()
-             db.execute("DROP TABLE IF EXISTS xp_profile")
-             db.execute("DROP TABLE IF EXISTS xp_tag_pairs")
-             db.commit()
-        
-        # 检查 illust_cache 表是否包含 user_id 列 (v2 新增)
-        try:
-             db.execute("SELECT user_id FROM illust_cache LIMIT 0")
-        except Exception:
-             # 旧表只有 tags，删除重建
-             db.execute("DROP TABLE IF EXISTS illust_cache")
-             db.commit()
+        # Preserve old schemas and data; missing owner IDs remain unknown (0).
+        for table, column, definition in (
+            ('xp_bookmarks', 'user_id', 'INTEGER NOT NULL DEFAULT 0'),
+            ('illust_cache', 'user_id', 'INTEGER NOT NULL DEFAULT 0'),
+        ):
+            columns = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
+            if columns and column not in columns:
+                db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+        db.commit()
         
         db.executescript("""
             -- 推送历史
@@ -510,6 +581,8 @@ def _init_db_sync():
                 (strategy,)
             )
         db.commit()
+        migrate(db)
+        _migrate_exposure(db)
 
 
 async def cleanup_old_records(days: int = 180):
@@ -526,6 +599,7 @@ async def cleanup_old_records(days: int = 180):
     cutoff_str = cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
     
     async with aiosqlite.connect(DB_PATH) as db:
+        await _retain_before_cleanup(db)
         # 清理推送历史
         cursor = await db.execute(
             "DELETE FROM push_history WHERE pushed_at < ?", (cutoff_str,)
@@ -1343,7 +1417,7 @@ async def get_tag_classifications(
             SELECT normalized_tag, classification, source
             FROM tag_classification_cache
             WHERE normalized_tag IN ({placeholders})
-              AND (source = 'manual' OR updated_at >= ?)
+              AND (source = 'manual' OR (source = 'ai' AND classification != 'unresolved') OR updated_at >= ?)
             """,
             [*unique_tags, cutoff],
         )
@@ -1759,7 +1833,7 @@ async def is_pushed(illust_id: int) -> bool:
     """检查作品是否已推送"""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT 1 FROM push_history WHERE illust_id = ?", (illust_id,)
+            "SELECT 1 FROM (SELECT illust_id FROM exposure_ids UNION SELECT illust_id FROM push_history) WHERE illust_id = ?", (illust_id,)
         )
         return await cursor.fetchone() is not None
 
@@ -1784,7 +1858,7 @@ async def get_pushed_ids_batch(illust_ids: list[int]) -> set[int]:
             illust_ids = illust_ids[:10000]
         placeholders = ",".join("?" * len(illust_ids))
         cursor = await db.execute(
-            f"SELECT illust_id FROM push_history WHERE illust_id IN ({placeholders})",
+            f"SELECT illust_id FROM (SELECT illust_id FROM exposure_ids UNION SELECT illust_id FROM push_history) WHERE illust_id IN ({placeholders})",
             illust_ids
         )
         rows = await cursor.fetchall()
@@ -1797,6 +1871,10 @@ async def mark_pushed(illust_id: int, source: str):
         await db.execute(
             "INSERT OR REPLACE INTO push_history (illust_id, source) VALUES (?, ?)",
             (illust_id, source)
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO exposure_ids (illust_id, first_seen_at) VALUES (?, CURRENT_TIMESTAMP)",
+            (illust_id,),
         )
         await db.commit()
 
@@ -1887,25 +1965,14 @@ async def get_xp_profile() -> dict[str, float]:
 
 async def update_xp_profile(profile: dict[str, float]):
     """更新XP画像"""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM xp_profile")
-        await db.executemany(
-            "INSERT INTO xp_profile (tag, weight, updated_at) VALUES (?, ?, ?)",
-            [(tag, weight, datetime.now()) for tag, weight in profile.items()]
-        )
-        await db.commit()
+    from persistent_profile import replace_projection
+    await asyncio.to_thread(replace_projection, DB_PATH, profile)
 
 
 async def adjust_tag_weight(tag: str, delta: float):
-    """调整Tag权重"""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            INSERT INTO xp_profile (tag, weight, updated_at) VALUES (?, ?, ?)
-            ON CONFLICT(tag) DO UPDATE SET 
-                weight = weight + excluded.weight,
-                updated_at = excluded.updated_at
-        """, (tag, delta, datetime.now()))
-        await db.commit()
+    """Compatibility write: fixed-unit correction recorded in the ledger."""
+    from persistent_profile import replace_projection
+    await asyncio.to_thread(replace_projection, DB_PATH, tag=tag, delta=delta)
 
 
 async def update_xp_tag_pairs(pairs: list[tuple[str, str, float]]):
@@ -1949,7 +2016,7 @@ async def get_recent_liked_tags(limit: int = 10) -> list[str]:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
             SELECT c.tags FROM feedback f
-            JOIN illust_cache c ON f.illust_id = c.illust_id
+            JOIN feedback_metadata c ON f.illust_id = c.illust_id
             WHERE f.action = 'like'
             ORDER BY f.created_at DESC
             LIMIT ?
@@ -1974,7 +2041,7 @@ async def get_recent_disliked_tags(limit: int = 10) -> list[str]:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
             SELECT c.tags FROM feedback f
-            JOIN illust_cache c ON f.illust_id = c.illust_id
+            JOIN feedback_metadata c ON f.illust_id = c.illust_id
             WHERE f.action = 'dislike'
             ORDER BY f.created_at DESC
             LIMIT ?
@@ -2016,7 +2083,7 @@ async def get_recent_liked_illusts_for_tag(tag: str, limit: int = 3) -> list[int
             """
             SELECT f.illust_id, c.tags
             FROM feedback AS f
-            INNER JOIN illust_cache AS c ON c.illust_id = f.illust_id
+            INNER JOIN feedback_metadata AS c ON c.illust_id = f.illust_id
             WHERE f.action = 'like'
             ORDER BY f.created_at DESC
             """
@@ -2045,7 +2112,7 @@ async def get_recent_liked_illusts_for_artist(artist_id: int, limit: int = 3) ->
             """
             SELECT f.illust_id
             FROM feedback AS f
-            INNER JOIN illust_cache AS c ON c.illust_id = f.illust_id
+            INNER JOIN feedback_metadata AS c ON c.illust_id = f.illust_id
             WHERE f.action = 'like' AND c.user_id = ?
             ORDER BY f.created_at DESC
             LIMIT ?
@@ -2200,6 +2267,7 @@ async def get_chain_meta(illust_id: int) -> tuple[int, int | None, int | None]:
 async def delete_cached_illust(illust_id: int):
     """从缓存中删除作品信息"""
     async with aiosqlite.connect(DB_PATH) as db:
+        await _retain_before_cleanup(db)
         await db.execute(
             "DELETE FROM illust_cache WHERE illust_id = ?", (illust_id,)
         )
@@ -2210,6 +2278,7 @@ async def cleanup_old_illust_cache(days: int = 30) -> int:
     """清理 N 天前的旧缓存记录"""
     cutoff = datetime.now() - timedelta(days=days)
     async with aiosqlite.connect(DB_PATH) as db:
+        await _retain_before_cleanup(db)
         cursor = await db.execute(
             "DELETE FROM illust_cache WHERE created_at < ?", (cutoff,)
         )
@@ -2470,21 +2539,8 @@ async def reset_xp_data():
     3. 黑名单 (tag_blacklist)
     4. 已审核 Tag Alias、映射候选和隔离的旧映射数据
     """
-    async with aiosqlite.connect(DB_PATH) as db:
-        # 清除画像数据
-        await db.execute("DELETE FROM xp_profile")
-        await db.execute("DELETE FROM xp_tag_pairs")
-        
-        # 清除 AI 错误日志
-        await db.execute("DELETE FROM ai_error_logs")
-        
-        # 清除 MAB 策略统计
-        await db.execute("DELETE FROM strategy_stats")
-        
-        # 注意：不清除 system_state 中的同步进度
-        # 这样 Profiler 会跳过 Pixiv API 抓取，直接从 xp_bookmarks 读取缓存进行重分析
-        
-        await db.commit()
+    from persistent_profile import reset_path
+    await asyncio.to_thread(reset_path, DB_PATH)
 
 
 # ============ MAB 策略统计 ============
@@ -2778,7 +2834,7 @@ async def get_top_engaged_artists(limit: int = 10) -> list[tuple[int, str, int]]
         cursor = await db.execute("""
             SELECT ic.user_id, ic.user_name, COUNT(*) as like_count
             FROM feedback f
-            JOIN illust_cache ic ON f.illust_id = ic.illust_id
+            JOIN feedback_metadata ic ON f.illust_id = ic.illust_id
             WHERE f.action = 'like' AND ic.user_id IS NOT NULL AND ic.user_id > 0
             GROUP BY ic.user_id
             ORDER BY like_count DESC
@@ -2928,7 +2984,7 @@ async def get_vector_exploration_pool(
             FROM illust_embeddings AS ie
             WHERE ie.model = ?
               AND NOT EXISTS (
-                  SELECT 1 FROM push_history AS ph
+                  SELECT 1 FROM (SELECT illust_id FROM exposure_ids UNION SELECT illust_id FROM push_history) AS ph
                   WHERE ph.illust_id = ie.illust_id
               )
             ORDER BY ie.created_at DESC, ie.illust_id DESC
@@ -3095,8 +3151,13 @@ async def get_all_strategy_stats() -> dict[str, dict]:
 
 # ============ 每日维护辅助函数 ============
 async def sync_blocked_tags_to_xp() -> int:
-    """将屏蔽的标签从 XP 画像中移除，返回移除数量"""
+    """只移除兼容投影，保留持久观察，解除屏蔽后可重新投影。"""
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('BEGIN IMMEDIATE')
+        await db.execute("""
+            DELETE FROM preference_projection
+            WHERE tag IN (SELECT tag FROM blocked_tags)
+        """)
         cursor = await db.execute("""
             DELETE FROM xp_profile 
             WHERE tag IN (SELECT tag FROM blocked_tags)
@@ -3108,6 +3169,7 @@ async def sync_blocked_tags_to_xp() -> int:
 async def cleanup_old_sent_history(days: int = 30) -> int:
     """清理 N 天前的推送历史记录，返回删除数量"""
     async with aiosqlite.connect(DB_PATH) as db:
+        await _retain_before_cleanup(db)
         cursor = await db.execute("""
             DELETE FROM push_history 
             WHERE pushed_at < datetime('now', ?)
@@ -3122,7 +3184,14 @@ async def get_negative_profile() -> dict[str, float]:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT tag, weight FROM negative_profile ORDER BY weight DESC")
         rows = await cursor.fetchall()
-        return {tag: weight for tag, weight in rows}
+        from tag_mapping import TagIdentityResolver
+        aliases = await db.execute("SELECT original_tag,normalized_tag FROM tag_aliases WHERE kind='equivalent'")
+        resolver = TagIdentityResolver(dict(await aliases.fetchall()))
+        result = {}
+        for tag, weight in rows:
+            canonical = resolver.resolve(tag)
+            result[canonical] = result.get(canonical, 0) + weight
+        return result
 
 
 async def adjust_negative_weight(tag: str, delta: float):
@@ -3139,13 +3208,8 @@ async def adjust_negative_weight(tag: str, delta: float):
 
 async def get_top_negative_tags(limit: int = 20) -> list[tuple[str, float]]:
     """获取权重最高的负向 Tag"""
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT tag, weight FROM negative_profile ORDER BY weight DESC LIMIT ?",
-            (limit,)
-        )
-        rows = await cursor.fetchall()
-        return [(row[0], row[1]) for row in rows]
+    profile = await get_negative_profile()
+    return sorted(profile.items(), key=lambda item: item[1], reverse=True)[:limit]
 
 
 # ============ 冷启动支持 ============

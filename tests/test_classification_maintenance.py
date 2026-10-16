@@ -127,13 +127,13 @@ class ScheduledClassificationMaintenanceTests(unittest.TestCase):
         summary = {"attempted": 2, "accepted": 1, "unresolved": 1, "failed": 0,
                    "human_override": 0, "usage": {}, "items": []}
         config = {"tag_classifier": {
-            "maintenance": {"max_tags_per_run": 2, "prefer_unresolved_first": True},
+            "maintenance": {"max_tags_per_run": 2, "prefer_unresolved_first": True,
+                            "allow_automatic_external_search": True},
         }}
         database_module = Mock()
         database_module.get_tag_classifications = AsyncMock(return_value={
             "resolved_high": {"classification": "feature"},
-            "unresolved_low": {"classification": "unresolved"},
-            "unresolved_high": {"classification": "unresolved"},
+            # Expired unresolved rows are deliberately absent from the fresh cache.
         })
         database_module.set_state = AsyncMock()
         manager = maintenance.ClassificationMaintenance(

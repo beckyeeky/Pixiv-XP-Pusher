@@ -9,6 +9,7 @@ strategies:
   - subscription # 关注画师的更新推送
 
 profiler:
+  profile_mode: persistent # persistent（默认）或 legacy；其他值拒绝启动
   # 标签画像配置
   scan_limit: 1000 # 扫描收藏数量上限
   discovery_rate: 0.1 # 探索新 Tag 的概率 (0.1 = 10%)
@@ -280,7 +281,7 @@ fetcher:
     max_quota: 0.6
 
 notifier:
-  # 启用的推送通道列表: telegram, onebot, astrbot
+  # 唯一推送通道 Telegram；types: [] 可仅使用 Web，不会自动启用 Telegram
   types: [telegram]
 
   # 多图作品配置

@@ -231,6 +231,13 @@ class ClassificationMaintenance:
         return await self.run_tags(approved)
 
     async def run_profile(self, profile: list[str] | dict[str, float]) -> dict:
+        # Manual classify_tag/run_reviewed remain explicit paid operations.
+        maintenance = self.config.get("tag_classifier", {}).get("maintenance", {})
+        if maintenance.get("allow_automatic_external_search") is not True:
+            return {"attempted": 0, "accepted": 0, "unresolved": 0,
+                    "deferred": 0, "failed": 0, "human_override": 0,
+                    "usage": empty_usage(), "items": [],
+                    "automatic_external_search": False}
         selected = await self._select_profile_tags(profile)
         return await self.run_tags(selected)
 
@@ -255,11 +262,7 @@ class ClassificationMaintenance:
         profile: list[str] | dict[str, float],
     ) -> list[str]:
         if not isinstance(profile, dict):
-            return list(dict.fromkeys(
-                normalized
-                for tag in profile
-                if (normalized := normalize_tag(tag))
-            ))[:self.policy.max_tags_per_run]
+            profile = {tag: 1.0 for tag in profile}
 
         normalized_profile = {
             normalized: float(weight)
@@ -287,6 +290,7 @@ class ClassificationMaintenance:
                 tag,
             )
 
+        candidates = [tag for tag in candidates if tag not in cached]
         return sorted(candidates, key=priority)[:self.policy.max_tags_per_run]
 
     def _effective_limit(self, requested: int | None) -> int:

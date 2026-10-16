@@ -56,8 +56,12 @@ class XPProfiler:
         # 新增参数
         ip_tags: Optional[Union[list, str]] = None,
         ip_weight_discount: float = 1.0,
-        boost_tags: Optional[dict] = None  # {tag: multiplier}
+        boost_tags: Optional[dict] = None,  # {tag: multiplier}
+        profile_mode: str = "persistent",
     ):
+        if profile_mode not in {"persistent", "legacy"}:
+            raise ValueError("profile_mode must be persistent or legacy")
+        self.profile_mode = profile_mode
         self.client = client
         self.stop_words = set(stop_words or [])
         self.discovery_rate = discovery_rate
@@ -68,6 +72,8 @@ class XPProfiler:
         # IP 标签配置
         self.ip_weight_discount = ip_weight_discount
         self.ip_tags = set()
+        self._ip_tags_error = None
+        self._ip_tags_path = Path(ip_tags) if isinstance(ip_tags, str) and ip_tags else None
         
         self.tag_resolver = TagIdentityResolver()
         
@@ -83,13 +89,17 @@ class XPProfiler:
                     try:
                         with open(p, "r", encoding="utf-8") as f:
                             tags = json.load(f)
+                            if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+                                raise ValueError('IP tags JSON must be a list of strings')
                             # 归一化：去掉 Danbooru 的 : 命名空间分隔符，处理连续下划线
                             # 例如: honkai:_star_rail -> honkai_star_rail
                             self.ip_tags = set(t.replace(":", "").replace("__", "_") for t in tags)
                             logger.info(f"已从文件加载 {len(self.ip_tags)} 个 IP 标签")
                     except Exception as e:
+                        self._ip_tags_error = f'{p}: {e}'
                         logger.error(f"加载 IP 标签文件失败: {e}")
                 else:
+                    self._ip_tags_error = f'{p}: file missing'
                     logger.warning(f"IP 标签文件不存在: {ip_tags}")
             else:
                 # 列表 - 去掉 : 命名空间分隔符，处理连续下划线
@@ -148,8 +158,11 @@ class XPProfiler:
         for word in default_stop_words:
             self.stop_words.add(word.lower().replace(" ", "_"))
             
+        self._base_stop_words = set(self.stop_words)
+
     async def load_blacklist(self):
         """从数据库加载黑名单 (仅包括用户手动屏蔽的)"""
+        self.stop_words = set(self._base_stop_words)
         try:
             accepted_aliases = await db.get_accepted_tag_aliases("equivalent")
             self.tag_resolver = TagIdentityResolver(accepted_aliases)
@@ -171,6 +184,23 @@ class XPProfiler:
             logger.error(f"加载黑名单失败: {e}")
             self._blocked_artist_ids = set()
 
+    async def _profile_preflight(self):
+        import asyncio
+        from persistent_profile import preflight
+        if self.profile_mode == 'persistent' and self._ip_tags_path is not None:
+            # Revalidate each operation, including long-lived profiler objects.
+            # A failed read never replaces the last valid configuration by [].
+            try:
+                tags = json.loads(self._ip_tags_path.read_text(encoding='utf-8'))
+                if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+                    raise ValueError('IP tags JSON must be a list of strings')
+                self.ip_tags = {t.replace(':', '').replace('__', '_') for t in tags}
+                self._ip_tags_error = None
+            except (OSError, ValueError) as error:
+                self._ip_tags_error = f'{self._ip_tags_path}: {error}'
+        await asyncio.to_thread(preflight, db.DB_PATH, self.profile_mode,
+                                self._ip_tags_error, self.ip_weight_discount)
+
     async def build_profile(
         self,
         user_id: int,
@@ -188,6 +218,7 @@ class XPProfiler:
         Returns:
             {tag: weight} 权重字典
         """
+        await self._profile_preflight()  # Must precede remote sync and all writes.
         # 获取收藏
         await self.load_blacklist()  # 确保加载最新黑名单
         
@@ -287,6 +318,14 @@ class XPProfiler:
             logger.info("✅ 全量同步完成，标记为 [已完成]")
             # 清理游标？可选。留着也没事，下次 is_completed=True 会忽略它。
         
+        if self.profile_mode == "persistent":
+            import asyncio
+            from persistent_profile import build
+            return await asyncio.to_thread(
+                build, db.DB_PATH, user_id, self._base_stop_words,
+                self.boost_tags, self.ip_tags, self.ip_weight_discount,
+            )
+
         # 6. 重新构建全量列表
         cached_rows = await db.get_xp_bookmarks(user_id)
         
@@ -555,6 +594,16 @@ class XPProfiler:
             action: 'like' | 'dislike'
             config: 反馈配置
         """
+        await self._profile_preflight()
+        if self.profile_mode == "persistent":
+            import asyncio
+            from persistent_profile import feedback
+            return await asyncio.to_thread(
+                feedback, db.DB_PATH, illust, action, config,
+                self._base_stop_words, self.boost_tags, self.ip_tags,
+                self.ip_weight_discount,
+            )
+
         accepted_aliases = await db.get_accepted_tag_aliases("equivalent")
         self.tag_resolver = TagIdentityResolver(accepted_aliases)
 

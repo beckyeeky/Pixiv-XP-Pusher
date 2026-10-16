@@ -10,7 +10,6 @@ from database import init_db, cache_illust, get_cached_illust
 from pixiv_client import PixivClient
 from profiler import XPProfiler
 from notifier.telegram import TelegramNotifier
-from notifier.onebot import OneBotNotifier
 from push_run import (
     MAINTENANCE_CANCELLED,
     MAINTENANCE_FAILED,
@@ -119,7 +118,9 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
         sync_client = client
     notifier_cfg = config.get("notifier", {})
     # 支持单个 type 字符串或 types 列表
-    notifier_types = notifier_cfg.get("types") or [notifier_cfg.get("type", "telegram")]
+    notifier_types = notifier_cfg.get("types")
+    if notifier_types is None:
+        notifier_types = [notifier_cfg.get("type", "telegram")]
     if isinstance(notifier_types, str):
         notifier_types = [notifier_types]
     
@@ -362,54 +363,23 @@ async def setup_notifiers(config: dict, client: PixivClient, profiler: XPProfile
             ))
             logger.info("已启用 Telegram 推送")
     
-    if "onebot" in notifier_types:
-        ob_cfg = notifier_cfg.get("onebot", {})
-        if ob_cfg.get("ws_url"):
-            ob_notifier = OneBotNotifier(
-                ws_url=ob_cfg["ws_url"],
-                private_id=ob_cfg.get("private_id"),
-                group_id=ob_cfg.get("group_id"),
-                push_to_private=ob_cfg.get("push_to_private", True),
-                push_to_group=ob_cfg.get("push_to_group", False),
-                master_id=ob_cfg.get("master_id"),
-                on_feedback=on_feedback,
-                on_action=on_action,
-                client=client,
-                max_pages=max_pages
-            )
-            try:
-                await ob_notifier.connect()
-                notifiers.append(ob_notifier)
-                logger.info("已启用 OneBot 推送")
-            except Exception as e:
-                logger.error(f"OneBot 连接失败: {e}")
-    
-    if "astrbot" in notifier_types:
-        ab_cfg = notifier_cfg.get("astrbot", {})
-        if ab_cfg.get("http_url") and ab_cfg.get("unified_msg_origin"):
-            from notifier.astrbot import AstrBotNotifier
-            ab_notifier = AstrBotNotifier(
-                http_url=ab_cfg["http_url"],
-                unified_msg_origin=ab_cfg["unified_msg_origin"],
-                api_key=ab_cfg.get("api_key"),
-                on_feedback=on_feedback,
-                on_action=on_action,
-                client=client,
-                max_pages=max_pages,
-                image_quality=ab_cfg.get("image_quality", 85),
-                max_image_size=ab_cfg.get("max_image_size", 1500)
-            )
-            notifiers.append(ab_notifier)
-            logger.info("已启用 AstrBot 推送")
-    
+    deprecated = set(notifier_types) - {"telegram", "web"}
+    if deprecated:
+        logger.warning("忽略已停用推送渠道 %s；不会自动改用 Telegram，Web 保持可用", sorted(deprecated))
+
     # 将创建的 notifiers 填充到 notifiers_list (供 push_related_task 等闭包使用)
     notifiers_list.extend(notifiers)
     
-    return notifiers if notifiers else None
+    return notifiers
 
 
 async def setup_services(config: dict):
     """初始化全局服务 (DB, Client, Profiler, Notifiers)"""
+    profiler_cfg = config.get("profiler", {})
+    mode = profiler_cfg.get("profile_mode", "persistent") if isinstance(profiler_cfg, dict) else None
+    if not isinstance(mode, str) or mode.strip().lower() not in {"persistent", "legacy"}:
+        raise ValueError("profiler.profile_mode must be persistent or legacy")
+    mode = mode.strip().lower()
     await init_db()
     
     # 公共网络配置
@@ -447,6 +417,8 @@ async def setup_services(config: dict):
     # Init Profiler (使用 sync_client，只读操作)
     profiler_cfg = config.get("profiler", {})
     profiler = XPProfiler(
+        profile_mode=mode,
+        boost_tags=profiler_cfg.get("boost_tags"),
         client=sync_client,  # 使用同步客户端获取收藏
         stop_words=profiler_cfg.get("stop_words"),
         discovery_rate=profiler_cfg.get("discovery_rate", 0.1),
@@ -710,10 +682,7 @@ async def run_scheduler(config: dict, run_immediately: bool = False):
             if isinstance(n, TelegramNotifier):
                  # TelegramNotifier.start_polling is async but handles its own background tasks (updater.start_polling)
                  await n.start_polling()
-            elif isinstance(n, OneBotNotifier):
-                 # OneBot loop needs to be scheduled
-                 asyncio.create_task(n.start_listening())
-    
+
     if run_immediately:
         last_push_at = await _get_last_successful_push_at()
         if _should_skip_immediate_run(last_push_at, min_interval):

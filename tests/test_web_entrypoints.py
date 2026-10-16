@@ -27,6 +27,21 @@ from tag_relationship_judge import MERGE_PRINCIPLES_VERSION, relationship_eviden
 
 
 class WebEntrypointTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name)
+        config_path = path / "config.yaml"
+        config_path.write_text("{}\n", encoding="utf-8")
+        for target, name, value in (
+            (web_app_module, "CONFIG_PATH", config_path),
+            (db_module, "DB_PATH", path / "web.sqlite3"),
+        ):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        asyncio.run(db_module.init_db())
+
     def test_webui_uses_shared_responsive_application_shell(self):
         base_template = (Path(web_app_module.TEMPLATES_DIR) / "base.html").read_text(encoding="utf-8")
         stylesheet = (Path(web_app_module.STATIC_DIR) / "app.css").read_text(encoding="utf-8")
@@ -157,7 +172,7 @@ class WebEntrypointTests(unittest.TestCase):
         async def authenticated():
             return None
 
-        async def classify(tag, config):
+        async def classify(tag):
             self.assertEqual(tag, "white_hair")
             return {
                 "tag": "white_hair", "classification": "feature",
@@ -170,7 +185,7 @@ class WebEntrypointTests(unittest.TestCase):
         try:
             maintenance = Mock()
             maintenance.classify_tag = AsyncMock(
-                side_effect=lambda tag: classify(tag, {})
+                side_effect=classify
             )
             with patch.object(
                 web_app_module,
@@ -633,8 +648,12 @@ class WebSecurityOptionTests(unittest.TestCase):
         web_app_module.login_attempts.clear()
         self.config_patch = patch.object(web_app_module, "CONFIG_PATH", self.config_path)
         self.config_patch.start()
+        self.db_patch = patch.object(db_module, "DB_PATH", Path(self.tmpdir.name) / "web.sqlite3")
+        self.db_patch.start()
+        asyncio.run(db_module.init_db())
 
     def tearDown(self):
+        self.db_patch.stop()
         self.config_patch.stop()
         self.tmpdir.cleanup()
         web_app_module.sessions.clear()
@@ -778,13 +797,16 @@ class WebSecurityOptionTests(unittest.TestCase):
         self.assertIn('data-section="pixiv"', response.text)
         self.assertIn("gpt-4o-mini", response.text)
         self.assertIn("text-embedding-3-small", response.text)
-        self.assertIn("profiler_ai_model", response.text)
+        self.assertIn('id="tag_mapping_model"', response.text)
+        self.assertIn('id="ai_embedding_model"', response.text)
+        self.assertIn('id="ai_scorer_model"', response.text)
+        self.assertNotIn('id="profiler_ai_model"', response.text)
         self.assertNotIn("profiler_ai_api_key", response.text)
         self.assertIn("tag_classifier_enabled", response.text)
         self.assertIn("tag_classifier_ttl_days", response.text)
         self.assertIn("tag_classifier_max_tags_per_run", response.text)
         self.assertIn("removeProvider(", response.text)
         self.assertIn("removeModel(", response.text)
-        self.assertIn("AI 凭据、模型与用途", response.text)
+        self.assertIn("<h2>AI Provider</h2>", response.text)
         self.assertIn("Provider（服务地址 + 凭据） → Model", response.text)
         self.assertIn("API Key 会被此 Model 自动复用", response.text)

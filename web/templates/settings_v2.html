@@ -567,7 +567,7 @@ textarea.form-control {
                         <label class="form-label">启用通道 (逗号分隔)</label>
                         <input type="text" class="form-control" id="notifier_types"
                                value="{{ config.notifier.types | default(['telegram']) | join(', ') }}"
-                               placeholder="telegram, onebot, astrbot">
+                               placeholder="telegram（Web 始终可用；旧渠道已停用）">
                     </div>
                     <div class="form-group">
                         <label class="form-label">最大页数</label>

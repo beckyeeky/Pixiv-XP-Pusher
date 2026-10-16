@@ -274,3 +274,34 @@ class MainTaskRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProfileAssemblyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_mode_and_boost_are_wired_without_network(self):
+        client = AsyncMock()
+        with patch.object(task_manager, 'init_db', new=AsyncMock()), \
+             patch.object(task_manager, 'PixivClient', return_value=client), \
+             patch.object(task_manager, 'XPProfiler') as profiler, \
+             patch.object(task_manager, 'setup_notifiers', new=AsyncMock(return_value=[])):
+            await task_manager.setup_services({'profiler': {'profile_mode': ' Legacy ', 'boost_tags': {'trait': 2}}})
+            self.assertEqual(profiler.call_args.kwargs['profile_mode'], 'legacy')
+            self.assertEqual(profiler.call_args.kwargs['boost_tags'], {'trait': 2})
+
+    async def test_invalid_mode_rejected_before_db_or_login(self):
+        with patch.object(task_manager, 'init_db', new=AsyncMock()) as init, \
+             patch.object(task_manager, 'PixivClient') as client:
+            with self.assertRaisesRegex(ValueError, 'profile_mode'):
+                await task_manager.setup_services({'profiler': {'profile_mode': 'typo'}})
+            init.assert_not_awaited()
+            client.assert_not_called()
+
+
+class ChannelSafetyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_web_only_and_unconfigured_telegram_return_empty_channels(self):
+        for notifier in ({'types': ['web']}, {'types': ['telegram']},
+                         {'type': 'onebot', 'onebot': {'ws_url': 'unused'}},
+                         {'types': ['astrbot', 'email']}):
+            with self.subTest(notifier=notifier), patch.object(task_manager, 'TelegramNotifier') as telegram:
+                result = await task_manager.setup_notifiers({'notifier': notifier}, AsyncMock(), AsyncMock())
+                self.assertEqual(result, [])
+                telegram.assert_not_called()

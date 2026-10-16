@@ -19,7 +19,6 @@ from profiler import XPProfiler
 from fetcher import ContentFetcher
 from filter import ContentFilter
 from notifier.telegram import TelegramNotifier
-from notifier.onebot import OneBotNotifier
 from utils import setup_logging
 from push_stats import PushStats, create_stats, set_current_stats
 from singleton import check_single_instance

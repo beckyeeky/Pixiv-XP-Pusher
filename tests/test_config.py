@@ -165,3 +165,21 @@ class ConfigNormalizationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProfileModeCompatibilityTests(unittest.TestCase):
+    def test_old_config_defaults_persistent_and_mode_normalizes(self):
+        self.assertEqual(config.normalize_config({})['profiler']['profile_mode'], 'persistent')
+        self.assertEqual(config.normalize_config({'profiler': {'profile_mode': ' Legacy '}})['profiler']['profile_mode'], 'legacy')
+
+    def test_invalid_modes_are_explicit_errors(self):
+        for mode in ('unknown', '', None, False, 1, []):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'profile_mode'):
+                config.normalize_config({'profiler': {'profile_mode': mode}})
+
+    def test_load_invalid_mode_does_not_fall_back_to_defaults(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / 'config.yaml'
+            path.write_text('profiler:\n  profile_mode: typo\n')
+            with self.assertRaisesRegex(ValueError, 'profile_mode'):
+                config.load_config(path)

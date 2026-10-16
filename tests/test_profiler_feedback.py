@@ -2,6 +2,9 @@ from datetime import datetime
 import sys
 import types
 import unittest
+import tempfile
+from pathlib import Path
+import database as db
 from unittest.mock import AsyncMock, patch
 
 sys.modules.setdefault(
@@ -14,9 +17,24 @@ from profiler import XPProfiler
 
 
 class ProfilerFeedbackTests(unittest.IsolatedAsyncioTestCase):
+    """Legacy behavior coverage; persistent mode has real-SQLite integration tests."""
+
+    async def asyncSetUp(self):
+        # Exercise the real read-only safety gate against an isolated schema.
+        # Never open the application's default DB, even in an empty checkout.
+        directory = tempfile.TemporaryDirectory(prefix='xp-feedback-test-')
+        self.addCleanup(directory.cleanup)
+        database_path = patch.object(db, 'DB_PATH', Path(directory.name) / 'test.sqlite3')
+        database_path.start()
+        self.addCleanup(database_path.stop)
+        db._init_db_sync()
+        aliases = patch("profiler.db.get_accepted_tag_aliases", new=AsyncMock(return_value={}))
+        aliases.start()
+        self.addCleanup(aliases.stop)
+
     async def test_apply_feedback_dislike_reduces_tag_weight_without_blocking(self):
         """dislike 只降 tag 权重，不自动屏蔽 tag（原 Issue 4 修正）"""
-        profiler = XPProfiler(client=None)
+        profiler = XPProfiler(client=None, profile_mode="legacy")
         illust = Illust(
             id=123,
             title="test",
@@ -55,7 +73,7 @@ class ProfilerFeedbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_apply_feedback_auto_blocks_artist_after_three_dislikes(self):
         """同画师 dislike 3 次 → 自动屏蔽画师"""
-        profiler = XPProfiler(client=None)
+        profiler = XPProfiler(client=None, profile_mode="legacy")
         illust = Illust(
             id=124,
             title="test-2",
@@ -93,7 +111,7 @@ class ProfilerFeedbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_apply_feedback_does_not_reblock_already_blocked_artist(self):
         """已屏蔽的画师不会重复屏蔽"""
-        profiler = XPProfiler(client=None)
+        profiler = XPProfiler(client=None, profile_mode="legacy")
         illust = Illust(
             id=125,
             title="test-3",
@@ -129,7 +147,7 @@ class ProfilerFeedbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_apply_feedback_like_doesnt_trigger_artist_block(self):
         """like 不会触发画师屏蔽检查"""
-        profiler = XPProfiler(client=None)
+        profiler = XPProfiler(client=None, profile_mode="legacy")
         illust = Illust(
             id=126,
             title="test-4",

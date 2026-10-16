@@ -124,10 +124,9 @@ def setup_ai():
 def setup_notifier():
     print_header("[8/8] 配置推送方式")
     print("   1. Telegram Bot")
-    print("   2. OneBot / QQ")
-    print("   3. 跳过\n")
+    print("   2. 仅使用 Web / 跳过\n")
     
-    choice = input("   请选择 (1/2/3): ").strip()
+    choice = input("   请选择 (1/2): ").strip()
     
     if choice == '1':
         token = input("   Bot Token: ").strip()
@@ -140,24 +139,6 @@ def setup_notifier():
         update_config_value(["notifier", "telegram", "chat_ids"], [to_int_or_raw(chat_id)])
         print("   Telegram 已配置")
         
-    elif choice == '2':
-        url = input("   WebSocket URL: ").strip()
-        tid = input("   目标 QQ/群号: ").strip()
-        type_choice = input("   类型 (1=私聊, 2=群聊): ").strip()
-        notifier_types = load_config_value(["notifier", "types"], default=[])
-        if "onebot" not in notifier_types:
-            notifier_types.append("onebot")
-        update_config_value(["notifier", "types"], notifier_types)
-        update_config_value(["notifier", "onebot", "ws_url"], url)
-        if type_choice == '2':
-            update_config_value(["notifier", "onebot", "group_id"], to_int_or_raw(tid))
-            update_config_value(["notifier", "onebot", "push_to_group"], True)
-            update_config_value(["notifier", "onebot", "push_to_private"], False)
-        else:
-            update_config_value(["notifier", "onebot", "private_id"], to_int_or_raw(tid))
-            update_config_value(["notifier", "onebot", "push_to_private"], True)
-            update_config_value(["notifier", "onebot", "push_to_group"], False)
-        print("   OneBot 已配置")
 
 def load_config_file():
     if not os.path.exists("config.yaml"):

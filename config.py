@@ -153,6 +153,14 @@ def normalize_config(config: dict) -> dict:
     """对常见错误配置做非破坏性规范化，避免运行实例因格式问题崩溃。"""
     normalized = copy.deepcopy(config or {})
 
+    profiler_cfg = normalized.setdefault("profiler", {})
+    if not isinstance(profiler_cfg, dict):
+        raise ValueError("profiler must be an object")
+    mode = profiler_cfg.get("profile_mode", "persistent")
+    if not isinstance(mode, str) or mode.strip().lower() not in {"persistent", "legacy"}:
+        raise ValueError("profiler.profile_mode must be persistent or legacy")
+    profiler_cfg["profile_mode"] = mode.strip().lower()
+
     scheduler_cfg = normalized.get("scheduler")
     if isinstance(scheduler_cfg, dict):
         # Main push times are database-owned so live bot changes do not drift
@@ -433,6 +441,7 @@ def normalize_config(config: dict) -> dict:
         maintenance_cfg["min_profile_weight"] = abs(float(maintenance_cfg.get("min_profile_weight", 1.0)))
     except (TypeError, ValueError):
         maintenance_cfg["min_profile_weight"] = 1.0
+    maintenance_cfg["allow_automatic_external_search"] = maintenance_cfg.get("allow_automatic_external_search") is True
     maintenance_cfg["prefer_unresolved_first"] = bool(maintenance_cfg.get("prefer_unresolved_first", True))
 
     grounded_judge_cfg = tag_classifier_cfg.setdefault("grounded_judge", {})
@@ -602,6 +611,17 @@ def normalize_config(config: dict) -> dict:
     )
     telegram_cfg["proxy_url"] = normalize_proxy_url(telegram_cfg.get("proxy_url"))
 
+    obsolete_notifier_fields = set(notifier_cfg).intersection({"onebot", "astrbot", "email"})
+    channels = notifier_cfg.get("types")
+    if channels is None:
+        channels = [notifier_cfg.get("type", "telegram")]
+    if isinstance(channels, str):
+        channels = [channels]
+    ignored_channels = set(str(name) for name in channels) - {"telegram", "web"}
+    if obsolete_notifier_fields or ignored_channels:
+        logger.warning("旧渠道配置仅兼容读取，运行时忽略：%s；不会自动改用 Telegram，Web 保持可用",
+                       sorted(obsolete_notifier_fields | ignored_channels))
+
     # Keep older scorer/provider fallbacks working from the migrated Model.
     tag_mapping_runtime = resolve_tag_mapping_config(normalized)
     shared_key = str(tag_mapping_runtime.get("api_key") or "").strip()
@@ -691,6 +711,8 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
             logger.error("配置文件根节点必须是对象/映射，当前类型为: %s", type(config).__name__)
             return {}
         return normalize_config(config)
+    except ValueError:
+        raise
     except Exception as e:
         logger.error(f"加载配置文件失败: {e}")
         return {}

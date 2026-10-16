@@ -24,6 +24,28 @@ def _get_display_tags_max_ip_count(filter_cfg: dict) -> int:
     return display_tags_cfg.get("max_ip_count", 2)
 
 
+def _confirmed_deliveries(sent_map) -> dict[int, int | None]:
+    """仅接受作品 ID 与非布尔正整数 Telegram 消息号的映射。"""
+    if not isinstance(sent_map, dict):
+        if sent_map is not None:
+            logger.warning(
+                f"🔗 推送器返回了无法识别的投递结果 {type(sent_map).__name__}，视为未确认投递"
+            )
+        return {}
+
+    confirmed: dict[int, int | None] = {}
+    for illust_id, message_id in sent_map.items():
+        if not isinstance(illust_id, int) or isinstance(illust_id, bool):
+            logger.warning(f"🔗 忽略无法识别的投递记录 ID: {illust_id!r}")
+            continue
+        if isinstance(message_id, int) and not isinstance(message_id, bool) and message_id > 0:
+            confirmed[illust_id] = message_id
+        else:
+            logger.warning(f"🔗 作品 {illust_id} 消息 ID 无效，不确认投递")
+            continue
+    return confirmed
+
+
 class RelatedRecommender:
     """Owns both scheduled and feedback-chain related recommendations."""
 
@@ -266,26 +288,61 @@ class RelatedRecommender:
         current_depth: int,
         seed_illust: Illust,
     ) -> None:
+        """推送连锁候选并按确认结果落库。
+
+        只有 notifier 确认送达的作品才写入推送历史与永久曝光表；未确认的候选
+        仍可缓存为连锁候选（chain_msg_id 记 None），从而保持可再次推荐。
+        """
+        if not top_results:
+            logger.info("🔗 连锁推荐结果为空，跳过推送")
+            return
+
+        requested_ids = [ill.id for ill in top_results]
+        confirmed_msg_ids: dict[int, int | None] = {}
+
         for notifier in notifiers:
             if not hasattr(notifier, "push_illusts"):
                 continue
 
-            sent_map = await notifier.push_illusts(
-                top_results,
-                message_prefix=message_prefix,
-                reply_to_message_id=parent_msg_id,
+            try:
+                sent_map = await notifier.push_illusts(
+                    top_results,
+                    message_prefix=message_prefix,
+                    reply_to_message_id=parent_msg_id,
+                )
+            except Exception as e:
+                logger.error(
+                    f"🔗 推送器 {type(notifier).__name__} 连锁推送异常，该推送器结果视为未确认: {e}"
+                )
+                continue
+
+            confirmed = _confirmed_deliveries(sent_map)
+            for illust_id in requested_ids:
+                if illust_id not in confirmed:
+                    continue
+                # 多推送器场景下保留第一个有效消息 ID，副作用只落库一次。
+                if illust_id in confirmed_msg_ids and confirmed_msg_ids[illust_id] is not None:
+                    continue
+                confirmed_msg_ids[illust_id] = confirmed[illust_id]
+
+        unconfirmed_ids = [illust_id for illust_id in requested_ids if illust_id not in confirmed_msg_ids]
+        if unconfirmed_ids:
+            logger.warning(
+                f"🔗 连锁推送未确认 {len(unconfirmed_ids)}/{len(requested_ids)} 个作品，"
+                f"不计入推送历史/曝光: {unconfirmed_ids}"
             )
 
-            for ill in top_results:
-                msg_id = sent_map.get(ill.id)
-                await db.cache_illust(
-                    illust_id=ill.id,
-                    tags=ill.tags,
-                    user_id=ill.user_id,
-                    user_name=ill.user_name,
-                    source="related_chain",
-                    chain_depth=current_depth,
-                    chain_parent_id=seed_illust.id,
-                    chain_msg_id=msg_id,
-                )
+        for ill in top_results:
+            is_confirmed = ill.id in confirmed_msg_ids
+            await db.cache_illust(
+                illust_id=ill.id,
+                tags=ill.tags,
+                user_id=ill.user_id,
+                user_name=ill.user_name,
+                source="related_chain",
+                chain_depth=current_depth,
+                chain_parent_id=seed_illust.id,
+                chain_msg_id=confirmed_msg_ids.get(ill.id) if is_confirmed else None,
+            )
+            if is_confirmed:
                 await db.mark_pushed(ill.id, "related_chain")
