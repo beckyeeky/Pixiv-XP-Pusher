@@ -8,15 +8,6 @@ sys.modules.setdefault(
     "pixivpy_async",
     types.SimpleNamespace(AppPixivAPI=object),
 )
-sys.modules.setdefault(
-    "aiohttp",
-    types.SimpleNamespace(ClientSession=object, ClientTimeout=object),
-)
-sys.modules.setdefault(
-    "aiosqlite",
-    types.SimpleNamespace(connect=None),
-)
-
 from filter import ContentFilter, calculate_match_score
 from pixiv_client import Illust
 from tag_categories import TagClassification
@@ -36,6 +27,30 @@ class StubTagClassifier:
 
 
 class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_filter_aborts_when_accepted_alias_state_cannot_be_loaded(self):
+        item = Illust(
+            id=98, title="alias-store-failure", user_id=98, user_name="artist",
+            tags=["ブルアカ"], bookmark_count=100, view_count=1000,
+            page_count=1, image_urls=["https://example.com/98.jpg"], is_r18=False,
+            ai_type=0, create_date=datetime.now(),
+        )
+        content_filter = ContentFilter(exclude_ai=False)
+
+        with patch("filter.db.get_blocked_tags", new=AsyncMock(return_value=[])), \
+             patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[])), \
+             patch(
+                 "filter.db.get_accepted_tag_aliases",
+                 new=AsyncMock(side_effect=RuntimeError("alias store unavailable")),
+             ), \
+             patch("filter.db.get_pushed_ids_batch", new=AsyncMock(return_value=set())), \
+             patch("filter.db.get_muted_tags", new=AsyncMock(return_value=[])), \
+             patch("filter.db.get_negative_profile", new=AsyncMock(return_value={})):
+            with self.assertRaisesRegex(RuntimeError, "alias store unavailable"):
+                await content_filter.filter_with_result(
+                    [item],
+                    xp_profile={"blue_archive": 1.0},
+                )
+
     def test_accepted_aliases_collapse_duplicate_semantic_matches(self):
         item = Illust(
             id=99, title="aliases", user_id=99, user_name="artist",
@@ -104,6 +119,7 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
              patch("filter.db.get_negative_profile", new=AsyncMock(return_value={})), \
              patch("filter.db.get_blocked_tags", new=AsyncMock(return_value=[])), \
              patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[])), \
+             patch("filter.db.get_accepted_tag_aliases", new=AsyncMock(return_value={})), \
              patch.object(content_filter, "_classify_tags_for_illusts", new=AsyncMock(return_value=classifications)):
             filter_result = await content_filter.filter_with_result(
                 illusts,
@@ -363,7 +379,8 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
              patch("filter.db.get_muted_tags", new=AsyncMock(return_value=[])), \
              patch("filter.db.get_negative_profile", new=AsyncMock(return_value={})), \
              patch("filter.db.get_blocked_tags", new=AsyncMock(return_value=[])), \
-             patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[])):
+             patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[])), \
+             patch("filter.db.get_accepted_tag_aliases", new=AsyncMock(return_value={})):
             ranked = await content_filter.filter(illusts, xp_profile=xp_profile)
 
         self.assertEqual([illust.id for illust in ranked[:3]], [1, 3, 2])
@@ -484,6 +501,7 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
              patch("filter.db.get_negative_profile", new=AsyncMock(return_value={})), \
              patch("filter.db.get_blocked_tags", new=AsyncMock(return_value=[])), \
              patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[])), \
+             patch("filter.db.get_accepted_tag_aliases", new=AsyncMock(return_value={})), \
              patch.object(content_filter, "_classify_tags_for_illusts", new=AsyncMock(return_value=tag_classifications)), \
              patch("random.sample", side_effect=lambda seq, k: list(seq)[:k]), \
              patch("random.shuffle", side_effect=lambda seq: None):
@@ -541,7 +559,8 @@ class DisplayTagsTests(unittest.IsolatedAsyncioTestCase):
              patch("filter.db.get_muted_tags", new=AsyncMock(return_value=[])), \
              patch("filter.db.get_negative_profile", new=AsyncMock(return_value={})), \
              patch("filter.db.get_blocked_tags", new=AsyncMock(return_value=["blue_archive"])), \
-             patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[(99, "artist-99")])):
+             patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[(99, "artist-99")])), \
+             patch("filter.db.get_accepted_tag_aliases", new=AsyncMock(return_value={})):
             ranked = await content_filter.filter(
                 [blocked_tag_illust, blocked_artist_illust, allowed_illust],
                 xp_profile={"white_hair": 1.0},
@@ -590,6 +609,7 @@ class UserEmbeddingRefreshTests(unittest.IsolatedAsyncioTestCase):
             _patch("filter.db.get_negative_profile", new=AsyncMock(return_value={})),
             _patch("filter.db.get_blocked_tags", new=AsyncMock(return_value=[])),
             _patch("filter.db.get_blocked_artists", new=AsyncMock(return_value=[])),
+            _patch("filter.db.get_accepted_tag_aliases", new=AsyncMock(return_value={})),
             _patch(
                 "filter.db.get_illust_embeddings_batch",
                 new=AsyncMock(return_value={1: [1.0, 0.0]}),

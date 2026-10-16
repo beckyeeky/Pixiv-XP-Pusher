@@ -402,6 +402,7 @@ class TagReviewRequest(BaseModel):
 class TagMappingReviewRequest(BaseModel):
     decision: str
     kind: Optional[str] = None
+    expected_candidate_ids: list[int]
 
 
 class TagAliasDeleteRequest(BaseModel):
@@ -966,6 +967,7 @@ async def review_tag_mapping_candidate(
             candidate_id,
             req.decision,
             kind=req.kind,
+            expected_candidate_ids=req.expected_candidate_ids,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1332,7 +1334,7 @@ def generate_commented_yaml(config: dict) -> str:
         },
         "profiler": {
             "_desc": "XP 画像配置",
-            "ip_weight_discount": "IP 标签权重折扣 (0-1)",
+            "ip_weight_discount": "已弃用：运行时忽略；请使用 Daily Slate 多样性配置",
             "boost_tags": "加权标签字典 {tag: multiplier}",
             "scan_limit": "扫描收藏数量上限",
             "discovery_rate": "探索新 Tag 概率"

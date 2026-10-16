@@ -454,7 +454,8 @@ async def setup_services(config: dict):
         saturation_threshold=profiler_cfg.get("saturation_threshold", 0.5),
         # Pass IP discount config
         ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),
-        ip_weight_discount=profiler_cfg.get("ip_weight_discount", 1.0)
+        ip_weight_discount=profiler_cfg.get("ip_weight_discount", 1.0),
+        boost_tags=profiler_cfg.get("boost_tags"),
     )
     
     # Init Notifiers (使用 main_client 用于下载图片等，sync_client 用于 on_action 回调)

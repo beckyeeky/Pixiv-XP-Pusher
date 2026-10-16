@@ -283,7 +283,7 @@ class ReviewTagMappingAiTests(unittest.TestCase):
             "get_tag_mapping_candidates_sync",
             return_value=[equivalent, related, risky_equivalent],
         ), patch.object(
-            script.db, "get_tag_aliases_sync", return_value={}, create=True,
+            script, "_load_alias_state", return_value=({}, {}),
         ):
             output = io.StringIO()
             with redirect_stdout(output):
@@ -345,10 +345,12 @@ class ReviewTagMappingAiTests(unittest.TestCase):
         with patch.object(script.db, "_init_db_sync"), patch.object(
             script.db, "get_tag_mapping_candidates_sync", return_value=[candidate],
         ), patch.object(
-            script.db,
-            "get_tag_aliases_sync",
-            return_value={"punishing_gray_raven": "戰雙帕彌什"},
-            create=True,
+            script,
+            "_load_alias_state",
+            return_value=(
+                {"punishing_gray_raven": ("戰雙帕彌什", "equivalent")},
+                {"punishing_gray_raven": "戰雙帕彌什"},
+            ),
         ):
             output = io.StringIO()
             with redirect_stdout(output):
@@ -363,6 +365,127 @@ class ReviewTagMappingAiTests(unittest.TestCase):
         self.assertEqual(payload["eligible"], 0)
         self.assertEqual(payload["blocked"], {"alias_conflict": 1})
         self.assertEqual(payload["recommendations"], [])
+
+
+class ReviewTagMappingAiSqliteTests(unittest.TestCase):
+    def seed(self, *, reverse=False):
+        from tag_relationship_judge import MERGE_PRINCIPLES_VERSION, relationship_evidence
+        asyncio.run(script.db.save_tag_classifications([
+            ('source', 'feature', 'manual'), ('target', 'feature', 'manual'),
+        ]))
+        asyncio.run(script.db.save_tag_mapping_candidates([
+            dict(original_tag='source', proposed_normalized_tag='target'),
+        ]))
+        candidate = script.db.get_tag_mapping_candidates_sync()[0]
+        asyncio.run(script.db.save_tag_mapping_ai_recommendation(
+            candidate['id'], dict(
+                relation='equivalent', confidence=1., rationale='same identity',
+                canonical_tag='source' if reverse else 'target', risk_flags=[],
+                principle_checks=dict(same_identity=True, broader_narrower=False,
+                                      entity_franchise=False, modifier_variant=False),
+            ), model='local-test', principles_version=MERGE_PRINCIPLES_VERSION,
+            evidence=relationship_evidence(candidate),
+        ))
+        return candidate['id']
+
+    def insert_alias(self, original, target, kind):
+        import sqlite3
+        with sqlite3.connect(script.db.DB_PATH) as connection:
+            connection.execute(
+                'INSERT INTO tag_aliases(original_tag, normalized_tag, kind, source) '
+                'VALUES (?, ?, ?, \'manual\')', (original, target, kind),
+            )
+
+    def snapshot(self):
+        import sqlite3
+        with sqlite3.connect(script.db.DB_PATH) as connection:
+            return tuple(connection.execute('SELECT * FROM ' + table).fetchall()
+                         for table in ('tag_aliases', 'tag_mapping_candidates',
+                                       'tag_mapping_ai_recommendations'))
+
+    def test_all_kind_conflicts_match_apply_in_default_and_follow_ai_directions(self):
+        for follow_ai, reverse in ((False, False), (True, False), (True, True)):
+            for target, kind in (('other', 'search'), ('target', 'search'),
+                                 ('other', 'equivalent')):
+                with self.subTest(follow_ai=follow_ai, reverse=reverse, target=target, kind=kind):
+                    # Each case uses the real schema and independent rows, not mocked reads.
+                    import sqlite3
+                    with sqlite3.connect(script.db.DB_PATH) as connection:
+                        for table in ('tag_mapping_ai_recommendations',
+                                      'tag_mapping_candidates', 'tag_aliases'):
+                            connection.execute('DELETE FROM ' + table)
+                    self.seed(reverse=reverse)
+                    original = 'target' if reverse else 'source'
+                    actual_target = 'source' if reverse and target == 'target' else target
+                    self.insert_alias(original, actual_target, kind)
+                    before = self.snapshot()
+                    result = asyncio.run(script.apply_recommendations(
+                        .99, confirm=False, follow_ai=follow_ai))
+                    self.assertEqual(result['eligible'], 0)
+                    self.assertEqual(result['blocked'], {'alias_conflict': 1})
+                    applied = asyncio.run(script.apply_recommendations(
+                        .99, confirm=True, follow_ai=follow_ai))
+                    self.assertEqual(applied['accepted_equivalent'], 0)
+                    self.assertEqual(self.snapshot(), before)
+
+    def test_same_target_equivalent_is_idempotent_in_both_directions(self):
+        for follow_ai, reverse in ((False, False), (True, False), (True, True)):
+            with self.subTest(follow_ai=follow_ai, reverse=reverse):
+                import sqlite3
+                with sqlite3.connect(script.db.DB_PATH) as connection:
+                    for table in ('tag_mapping_ai_recommendations',
+                                  'tag_mapping_candidates', 'tag_aliases'):
+                        connection.execute('DELETE FROM ' + table)
+                self.seed(reverse=reverse)
+                self.insert_alias('target' if reverse else 'source',
+                                  'source' if reverse else 'target', 'equivalent')
+                before = self.snapshot()[0]
+                preview = asyncio.run(script.apply_recommendations(
+                    .99, confirm=False, follow_ai=follow_ai))
+                self.assertEqual(preview['eligible'], 1)
+                result = asyncio.run(script.apply_recommendations(
+                    .99, confirm=True, follow_ai=follow_ai))
+                self.assertEqual(result['aliases_created'], 0)
+                self.assertEqual(result['aliases_already_active'], 1)
+                self.assertEqual(self.snapshot()[0], before)
+
+    def test_search_reverse_edge_is_not_an_equivalent_resolver_edge(self):
+        self.seed()
+        self.insert_alias('target', 'source', 'search')
+        preview = asyncio.run(script.apply_recommendations(.99, confirm=False))
+        self.assertEqual(preview['eligible'], 1)
+        result = asyncio.run(script.apply_recommendations(.99, confirm=True))
+        self.assertEqual(result['aliases_created'], 1)
+        self.assertEqual(len(self.snapshot()[0]), 2)
+
+    def test_search_path_is_excluded_from_follow_ai_cycle_detection(self):
+        self.seed()
+        self.insert_alias('target', 'bridge', 'search')
+        self.insert_alias('bridge', 'source', 'equivalent')
+        preview = asyncio.run(script.apply_recommendations(
+            .99, confirm=False, follow_ai=True))
+        self.assertEqual(preview['eligible'], 1)
+        result = asyncio.run(script.apply_recommendations(
+            .99, confirm=True, follow_ai=True))
+        self.assertEqual(result['aliases_created'], 1)
+
+    def test_transaction_rechecks_alias_changed_after_planning_and_rolls_back(self):
+        for follow_ai, reverse in ((False, False), (True, False), (True, True)):
+            with self.subTest(follow_ai=follow_ai, reverse=reverse):
+                import sqlite3
+                with sqlite3.connect(script.db.DB_PATH) as connection:
+                    for table in ('tag_mapping_ai_recommendations',
+                                  'tag_mapping_candidates', 'tag_aliases'):
+                        connection.execute('DELETE FROM ' + table)
+                self.seed(reverse=reverse)
+                plan, result = script._build_recommendation_plan(.99, follow_ai=follow_ai)
+                self.assertEqual(result['eligible'], 1)
+                self.insert_alias('target' if reverse else 'source',
+                                  'source' if reverse else 'target', 'search')
+                before = self.snapshot()
+                with self.assertRaisesRegex(ValueError, 'alias_conflict'):
+                    script.db.apply_tag_mapping_ai_batch_sync(plan.decisions)
+                self.assertEqual(self.snapshot(), before)
 
 
 if __name__ == "__main__":

@@ -154,6 +154,27 @@ class ConfigNormalizationTests(unittest.TestCase):
         self.assertEqual(cfg["filter"]["author_diversity"]["decay_factor"], 0.5)
         self.assertEqual(cfg["filter"]["author_diversity"]["floor"], 0.1)
 
+    def test_normalize_daily_slate_ratios_as_one_complete_motive_mix(self):
+        cfg = config.normalize_config({
+            "filter": {
+                "daily_slate": {
+                    "feature_ratio": 1,
+                    "character_ratio": 1,
+                    "copyright_ratio": 1,
+                    "exploration_ratio": 1,
+                },
+            },
+        })
+
+        daily_slate = cfg["filter"]["daily_slate"]
+        self.assertAlmostEqual(
+            sum(daily_slate[f"{motive}_ratio"] for motive in (
+                "feature", "character", "copyright", "exploration"
+            )),
+            1.0,
+        )
+        self.assertEqual(daily_slate["feature_ratio"], 0.25)
+
     def test_normalize_proxy_url_string_none_to_null(self):
         cfg = config.normalize_config({"notifier": {"telegram": {"proxy_url": "None"}}})
         self.assertIsNone(cfg["notifier"]["telegram"]["proxy_url"])

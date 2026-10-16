@@ -14,7 +14,7 @@ python scripts/refresh_config.py config.yaml --output config.new.yaml
 
 旧版 `tag_classifier` 直接填写的 `provider`、`api_key`、`base_url`、`model` 会自动迁移到新版 `providers` 与第一个 `models` 条目，并在终端显示迁移路径。
 
-`profiler.boost_tags` 当前没有接入主任务的画像构建流程，因此不在模板中保留；脚本会将旧值报告为未匹配字段，避免生成看似有效但实际不生效的配置。
+`profiler.boost_tags` 是显式偏好事实，会在主任务构建画像时生效；键会先经过人工接受的 `Tag Alias` 归一化。旧字段 `profiler.ip_weight_discount` 已弃用并被忽略，IP 多样性只在 Daily Slate 投放阶段处理，不再改写画像事实。
 
 ## providers
 - `type: pixiv`：唯一的 Pixiv Provider，包含 `refresh_token`、可选 `sync_token` 与 `user_id`。

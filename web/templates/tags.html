@@ -334,11 +334,12 @@
         <button type="button" onclick="loadReviewQueue()">刷新</button>
     </div>
     <div id="maintenanceStatus" class="maintenance-status">正在读取分类维护状态…</div>
-    {% set ai_batch_max = config.tag_classifier.maintenance.max_tags_per_run | default(40) %}
+    {% set maintenance = (config.get('tag_classifier') or {}).get('maintenance') or {} %}
+    {% set ai_batch_max = maintenance.get('max_tags_per_run', 40) %}
     {% set ai_batch_default = 20 if ai_batch_max >= 20 else ai_batch_max %}
     <div class="tag-ai-batch-panel">
         <h3>🤖 AI 批量处理标签</h3>
-        <p>使用 Brave/Tavily 搜索与 DeepSeek 分类；只选择绝对画像权重 ≥ {{ config.tag_classifier.maintenance.min_profile_weight | default(1.0) }} 的未分类标签。系统配置上限为每次 {{ ai_batch_max }} 条。</p>
+        <p>使用 Brave/Tavily 搜索与 DeepSeek 分类；只选择绝对画像权重 ≥ {{ maintenance.get('min_profile_weight', 1.0) }} 的未分类标签。系统配置上限为每次 {{ ai_batch_max }} 条。</p>
         <div class="tag-ai-batch-controls">
             <label for="tagAiBatchLimit">本次最多处理</label>
             <input id="tagAiBatchLimit" type="number" min="1" max="{{ ai_batch_max }}" value="{{ ai_batch_default }}">
@@ -666,7 +667,8 @@ function renderMappingCandidates(items) {
             : '<div class="review-meta">尚无 AI Relationship Recommendation；可先运行 CLI 小批量复核。</div>';
         const duplicates = Number(item.duplicate_count || 1);
         const duplicateMeta = duplicates > 1 ? ` · 已合并 ${duplicates} 条重复候选（#${escapeHtml((item.duplicate_candidate_ids || []).join(', #'))}）` : '';
-        return `<article class="review-item" data-mapping-id="${item.id}">
+        const candidateIds = (item.duplicate_candidate_ids || [item.id]).map(Number).join(',');
+        return `<article class="review-item" data-mapping-id="${item.id}" data-candidate-ids="${candidateIds}">
             <div class="review-item-header"><div><div class="review-tag">#${escapeHtml(item.id)} · ${escapeHtml(item.original_tag)} → ${escapeHtml(target)}</div><div class="review-meta">来源：${escapeHtml(item.source)} · 建议类型：${escapeHtml(item.kind)} · 影响权重：${escapeHtml(item.profile_weight)} · Embedding 相似度：${item.embedding_similarity == null ? '无' : escapeHtml(Number(item.embedding_similarity).toFixed(4))} · 历史次数：${escapeHtml(item.occurrence_count)}${duplicateMeta}</div></div></div>
             <p class="review-meta">${escapeHtml(item.explanation || '没有说明')}</p>
             ${aiRecommendation}
@@ -771,12 +773,15 @@ async function deleteTagAlias(originalTag) {
 
 async function reviewMappingCandidate(id, decision, kind = null) {
     const feedback = document.getElementById('mappingFeedback');
+    const reviewItem = document.querySelector(`[data-mapping-id="${id}"]`);
+    const expectedCandidateIds = (reviewItem?.dataset.candidateIds || String(id))
+        .split(',').map(Number).filter(Number.isInteger);
     feedback.textContent = '正在保存映射审核决定…';
     try {
         const response = await fetch(`/api/tag-mapping-candidates/${id}`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({decision, kind}),
+            body: JSON.stringify({decision, kind, expected_candidate_ids: expectedCandidateIds}),
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || '保存失败');

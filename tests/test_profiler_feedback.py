@@ -14,6 +14,16 @@ from profiler import XPProfiler
 
 
 class ProfilerFeedbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_profile_state_load_failure_aborts_instead_of_using_raw_tag_identities(self):
+        profiler = XPProfiler(client=None)
+
+        with patch(
+            "profiler.db.get_accepted_tag_aliases",
+            new=AsyncMock(side_effect=RuntimeError("alias store unavailable")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "alias store unavailable"):
+                await profiler.load_blacklist()
+
     async def test_apply_feedback_dislike_reduces_tag_weight_without_blocking(self):
         """dislike 只降 tag 权重，不自动屏蔽 tag（原 Issue 4 修正）"""
         profiler = XPProfiler(client=None)

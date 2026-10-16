@@ -1,20 +1,12 @@
 import sys
 import types
 import unittest
+from unittest.mock import AsyncMock, patch
 
 sys.modules.setdefault(
     "pixivpy_async",
     types.SimpleNamespace(AppPixivAPI=object),
 )
-sys.modules.setdefault(
-    "aiohttp",
-    types.SimpleNamespace(ClientSession=object, ClientTimeout=object),
-)
-sys.modules.setdefault(
-    "aiosqlite",
-    types.SimpleNamespace(connect=None),
-)
-
 from fetcher import ContentFetcher
 from tag_categories import TagClassification
 
@@ -80,3 +72,29 @@ class FetcherPairSelectionTests(unittest.TestCase):
 
         self.assertEqual(pairs, [("blue_archive", "pantyhose", 0.0)])
 
+
+class FetcherSeedSafetyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_discover_never_searches_with_a_tag_missing_an_accepted_category(self):
+        client = AsyncMock()
+        client.search_illusts = AsyncMock(return_value=[])
+
+        class AcceptedClassificationReader:
+            async def classify_tags(self, tags):
+                return {
+                    "known_feature": TagClassification("feature", "manual"),
+                }
+
+        fetcher = ContentFetcher(
+            client=client,
+            config={},
+            tag_classifier=AcceptedClassificationReader(),
+        )
+
+        with patch(
+            "fetcher.db.get_top_tag_pairs",
+            new=AsyncMock(return_value=[("unknown_tag", "known_feature", 5.0)]),
+        ):
+            result = await fetcher.discover([("unknown_tag", 1.0)], limit=1)
+
+        self.assertEqual(result, [])
+        client.search_illusts.assert_not_awaited()

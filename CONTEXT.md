@@ -88,6 +88,10 @@ _Avoid_: Tag Alias, canonical tag
 An untrusted proposal that a raw tag may be a Tag Alias or Search Alias. It has no effect on profile construction, retrieval, classification, or ranking until a human accepts it.
 _Avoid_: Automatic mapping, pending alias
 
+**Tag Mapping Candidate Revision**:
+A new reviewable proposal that supersedes a rejected Tag Mapping Candidate after its semantic evidence, proposal provenance, or governing principles materially change. Earlier review decisions remain immutable audit history.
+_Avoid_: Reopened candidate, overwritten review
+
 **Tag Relationship Judge**:
 An optional configured LLM Model, such as DeepSeek, which reviews one Tag Mapping Candidate using both tags, classifications, translations, Grounded Judge explanations, profile weights, optional Embedding similarity, proposal provenance, and versioned merge principles. It produces an AI Relationship Recommendation and never accepts a candidate.
 _Avoid_: Grounded Judge, alias activation
@@ -99,6 +103,10 @@ _Avoid_: Tag Alias, human acceptance
 **Tag Category**:
 The single recommendation-relevant meaning assigned to a normalized tag: Feature, Character, Copyright, Artist, or Non-preference. A tag has no category until its meaning is resolved.
 _Avoid_: Multi-label type, review status
+
+**Preference-bearing Tag**:
+A resolved Feature, Character, or Copyright Tag that may contribute to personalized retrieval and ranking. Artist, Non-preference, and Unresolved Tags are never preference-bearing.
+_Avoid_: Any profile tag, matched raw tag
 
 **Feature Tag**:
 A tag whose meaning describes visual traits, clothing, pose, composition, or subject matter that can transfer across characters and copyrights.

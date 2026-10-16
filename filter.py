@@ -203,11 +203,7 @@ class ContentFilter:
         """加载数据库中的屏蔽标签和屏蔽画师。"""
         blocked_tags = await db.get_blocked_tags()
         blocked_artists = await db.get_blocked_artists()
-        try:
-            aliases = await db.get_accepted_tag_aliases("equivalent")
-        except Exception as exc:
-            logger.warning("加载已审核 Tag Alias 失败，使用确定性归一化: %s", exc)
-            aliases = {}
+        aliases = await db.get_accepted_tag_aliases("equivalent")
         self.tag_resolver = TagIdentityResolver(aliases)
         self._config_blacklist_tags = {
             self.tag_resolver.resolve(tag) for tag in self._config_blacklist_raw
@@ -258,10 +254,7 @@ class ContentFilter:
         if not illusts:
             return ContentFilterResult((), ())
 
-        try:
-            await self.load_db_blocklist()
-        except Exception as e:
-            logger.warning(f"加载数据库屏蔽列表失败: {e}")
+        await self.load_db_blocklist()
         
         # 计算时间阈值
         time_threshold = None
@@ -604,6 +597,7 @@ class ContentFilter:
                 tag_classifications,
                 xp_profile or {},
                 contributions_by_id,
+                resolver=self.tag_resolver,
             )
             final_result = list(slate_result.selected)
         # 7. 探索比例：只从常规 Top N 之外挑 feature 候选，避免把原本就会入选的强图改名成探索

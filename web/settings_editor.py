@@ -88,7 +88,7 @@ SETTINGS_DEFAULTS: dict[str, Any] = {
         "saturation_threshold": 0.5,
         "top_n": 20,
         "include_private": True,
-        "ip_weight_discount": 1.0,
+        "boost_tags": {},
         "danbooru_login": "",
         "danbooru_api_key": "",
         "stop_words": [],

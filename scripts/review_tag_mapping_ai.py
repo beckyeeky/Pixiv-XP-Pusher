@@ -8,6 +8,7 @@ import asyncio
 from collections import Counter
 import json
 from pathlib import Path
+import sqlite3
 import sys
 
 
@@ -99,6 +100,23 @@ async def judge_candidates(
     }
 
 
+def _load_alias_state():
+    """Read conflict rows and identity edges from the same local snapshot.
+
+    Search aliases occupy their source key but never participate in identity
+    resolution or cycle detection. Application still rechecks inside its write
+    transaction; this snapshot is advisory only.
+    """
+    with sqlite3.connect(db.DB_PATH, timeout=10) as connection:
+        rows = connection.execute(
+            "SELECT original_tag, normalized_tag, kind FROM tag_aliases"
+        ).fetchall()
+    active = {original: (target, kind) for original, target, kind in rows}
+    equivalent = {original: target for original, target, kind in rows
+                  if kind == "equivalent"}
+    return active, equivalent
+
+
 def _build_recommendation_plan(min_confidence: float, *, follow_ai: bool = False):
     candidates = db.get_tag_mapping_candidates_sync(limit=500)
     planner = plan_high_confidence_ai_actions if follow_ai else plan_ai_recommendation_staging
@@ -106,11 +124,8 @@ def _build_recommendation_plan(min_confidence: float, *, follow_ai: bool = False
         candidates, min_confidence=min_confidence,
     )
     by_id = {int(candidate["id"]): candidate for candidate in candidates}
-    if follow_ai:
-        aliases = {
-            normalize_tag(original): normalize_tag(target)
-            for original, target in db.get_tag_aliases_sync().items()
-        }
+    if any(item.decision == "accept_equivalent" for item in plan.decisions):
+        active, aliases = _load_alias_state()
         decisions = []
         blocked = Counter(plan.blocked)
         for item in plan.decisions:
@@ -118,18 +133,13 @@ def _build_recommendation_plan(min_confidence: float, *, follow_ai: bool = False
                 decisions.append(item)
                 continue
             candidate = by_id[item.candidate_id]
-            canonical = candidate.get("ai_canonical_tag")
-            alias_original = next(
-                tag for tag in (
-                    candidate["original_tag"],
-                    candidate["proposed_normalized_tag"],
-                )
-                if tag != canonical
-            )
-            original = normalize_tag(alias_original)
-            target = normalize_tag(canonical or "")
+            candidate_original = normalize_tag(candidate["original_tag"])
+            candidate_target = normalize_tag(candidate["proposed_normalized_tag"] or "")
+            target = normalize_tag(candidate.get("ai_canonical_tag") or "")
+            original = candidate_target if target == candidate_original else candidate_original
+            active_row = active.get(original)
             existing_target = aliases.get(original)
-            if existing_target and existing_target != target:
+            if active_row and active_row != (target, "equivalent"):
                 blocked["alias_conflict"] += 1
                 continue
             if (
@@ -142,6 +152,7 @@ def _build_recommendation_plan(min_confidence: float, *, follow_ai: bool = False
             decisions.append(item)
             if not existing_target and aliases.get(target) != original:
                 aliases[original] = target
+                active[original] = (target, "equivalent")
         plan = type(plan)(tuple(decisions), dict(blocked))
     recommendations = [
         {
