@@ -39,6 +39,8 @@ from classification_maintenance import ClassificationMaintenance
 from tag_mapping import AITagMappingCandidateGenerator
 from tag_relationship_judge import plan_ai_recommendation_staging
 from utils import normalize_tag
+from pixiv_client import Illust
+from profiler import XPProfiler
 from web.settings_editor import (
     apply_settings_payload,
     build_settings_snapshot,
@@ -158,9 +160,7 @@ async def index(request: Request):
     logger.info("访问 / 路由")
     try:
         config = load_config()
-        logger.info(f"加载的 config: {config}")
         web_cfg = config.get("web", {})
-        logger.info(f"web_cfg: {web_cfg}, password: {web_cfg.get('password')}")
         
         if needs_initial_security_setup(web_cfg):
             logger.info("尚未完成安全设置，重定向到 /setup")
@@ -402,6 +402,7 @@ class TagReviewRequest(BaseModel):
 class TagMappingReviewRequest(BaseModel):
     decision: str
     kind: Optional[str] = None
+    expected_candidate_ids: list[int]
 
 
 class TagAliasDeleteRequest(BaseModel):
@@ -843,13 +844,110 @@ async def get_original_tags_for_normalized(conn, normalized_tag: str) -> list:
         logger.warning(f"获取原始标签失败: {e}")
         return []
 
+def _feedback_profiler(config: dict) -> tuple[XPProfiler, dict]:
+    """Build a network-free profiler with the same config normalization as task_manager."""
+    profiler_cfg = config.get("profiler", {})
+    if profiler_cfg is None:
+        profiler_cfg = {}
+    if not isinstance(profiler_cfg, dict):
+        raise ValueError("profiler must be an object")
+    mode = profiler_cfg.get("profile_mode", "persistent")
+    if not isinstance(mode, str) or mode.strip().lower() not in {"persistent", "legacy"}:
+        raise ValueError("profiler.profile_mode must be persistent or legacy")
+    feedback_cfg = config.get("feedback", {})
+    if not isinstance(feedback_cfg, dict):
+        feedback_cfg = {}
+    profiler = XPProfiler(
+        profile_mode=mode.strip().lower(),
+        client=None,
+        stop_words=profiler_cfg.get("stop_words"),
+        discovery_rate=profiler_cfg.get("discovery_rate", 0.1),
+        time_decay_days=profiler_cfg.get("time_decay_days", 180),
+        saturation_threshold=profiler_cfg.get("saturation_threshold", 0.5),
+        # Deprecated IP settings stay diagnostic-only, exactly like task_manager.
+        ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),
+        ip_weight_discount=profiler_cfg.get("ip_weight_discount", 1.0),
+        boost_tags=profiler_cfg.get("boost_tags"),
+    )
+    return profiler, feedback_cfg
+
+
+def _local_feedback_illust(illust_id: int, tags: list[str], user_id: int, user_name: str) -> Illust:
+    return Illust(
+        id=illust_id,
+        title="",
+        user_id=user_id or 0,
+        user_name=user_name or "",
+        tags=tags,
+        bookmark_count=0,
+        view_count=0,
+        page_count=1,
+        image_urls=[],
+        is_r18=False,
+        ai_type=0,
+        create_date=datetime.now(),
+    )
+
+
 @app.post("/api/feedback")
 async def api_feedback(req: FeedbackRequest, request: Request, _=Depends(require_auth)):
-    """统一反馈接口"""
+    """统一反馈接口：只用本地缓存/留存元数据，写入统一偏好账本。"""
     if req.action not in ("like", "dislike"):
         raise HTTPException(400, "无效的action")
-    
-    await db.record_feedback(req.illust_id, req.action)
+
+    try:
+        config = load_config()
+        profiler, feedback_cfg = _feedback_profiler(config)
+    except ValueError as exc:
+        logger.error("反馈配置无效: %s", exc)
+        raise HTTPException(500, f"反馈配置无效: {exc}")
+    except Exception:
+        logger.exception("加载反馈配置失败")
+        raise HTTPException(500, "加载反馈配置失败")
+
+    cached = None
+    try:
+        cached = await db.get_cached_illust(req.illust_id)
+    except Exception:
+        # Corrupt cache is non-fatal: retained metadata is the accepted fallback.
+        logger.warning("作品缓存不可用，尝试反馈元数据: illust_id=%s", req.illust_id)
+
+    tags = db._parse_feedback_tags(cached.get("tags")) if cached else []
+    user_id = (cached.get("user_id") or 0) if cached else 0
+    user_name = (cached.get("user_name") or "") if cached else ""
+    if not tags or not user_id or not user_name:
+        try:
+            metadata = await db.get_feedback_metadata(req.illust_id)
+        except Exception:
+            if not tags:
+                logger.exception("读取反馈元数据失败: illust_id=%s", req.illust_id)
+                raise HTTPException(500, "读取反馈元数据失败")
+            metadata = None
+            logger.warning("读取反馈元数据失败，沿用缓存信息: illust_id=%s", req.illust_id)
+        if metadata:
+            tags = tags or metadata["tags"]
+            user_id = user_id or metadata["user_id"]
+            user_name = user_name or metadata["user_name"]
+
+    if not tags:
+        # Never record an empty-tag event: it cannot update the profile.
+        raise HTTPException(422, "缺少可用的作品标签，未更新画像")
+
+    illust = _local_feedback_illust(req.illust_id, tags, user_id, user_name)
+    try:
+        await profiler.apply_feedback(illust=illust, action=req.action, config=feedback_cfg)
+    except RuntimeError as exc:
+        if "legacy build/feedback is unsafe" in str(exc) or "Persistent profile has been used" in str(exc):
+            raise HTTPException(
+                409,
+                "该数据库已启用持久画像，legacy 反馈不安全；请恢复升级前备份后重试（非无损往返）",
+            )
+        logger.exception("反馈写入失败: illust_id=%s", req.illust_id)
+        raise HTTPException(500, "反馈写入失败")
+    except Exception:
+        logger.exception("反馈写入失败: illust_id=%s", req.illust_id)
+        raise HTTPException(500, "反馈写入失败")
+
     return {"success": True, "message": f"已记录对作品 {req.illust_id} 的 {req.action}"}
 
 
@@ -966,6 +1064,7 @@ async def review_tag_mapping_candidate(
             candidate_id,
             req.decision,
             kind=req.kind,
+            expected_candidate_ids=req.expected_candidate_ids,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1332,7 +1431,7 @@ def generate_commented_yaml(config: dict) -> str:
         },
         "profiler": {
             "_desc": "XP 画像配置",
-            "ip_weight_discount": "IP 标签权重折扣 (0-1)",
+            "ip_weight_discount": "已弃用：运行时忽略；请使用 Daily Slate 多样性配置",
             "boost_tags": "加权标签字典 {tag: multiplier}",
             "scan_limit": "扫描收藏数量上限",
             "discovery_rate": "探索新 Tag 概率"

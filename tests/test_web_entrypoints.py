@@ -329,6 +329,29 @@ class WebEntrypointTests(unittest.TestCase):
         self.assertIn("AI Relationship Recommendation", response.text)
         self.assertIn("item.ai_relation", response.text)
 
+    def test_tags_page_renders_with_sparse_maintenance_config(self):
+        for config in ({}, {"tag_classifier": {}}, {"tag_classifier": None},
+                       {"tag_classifier": {"maintenance": None}}):
+            with self.subTest(config=config), \
+                 patch.object(web_app_module, "load_config", return_value=config), \
+                 patch.object(web_app_module, "verify_session", return_value=True):
+                response = TestClient(canonical_app).get("/tags")
+                self.assertEqual(response.status_code, 200)
+                self.assertIn('max="40" value="20"', response.text)
+                self.assertIn("≥ 1.0", response.text)
+                self.assertIn('id="tagAiBatchButton"', response.text)
+
+    def test_tags_page_preserves_configured_maintenance_bounds(self):
+        config = {"tag_classifier": {"maintenance": {
+            "max_tags_per_run": 7, "min_profile_weight": 2.5,
+        }}}
+        with patch.object(web_app_module, "load_config", return_value=config), \
+             patch.object(web_app_module, "verify_session", return_value=True):
+            response = TestClient(canonical_app).get("/tags")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('max="7" value="7"', response.text)
+        self.assertIn("≥ 2.5", response.text)
+
     def test_tags_page_contains_paginated_alias_manager(self):
         template = (Path(web_app_module.TEMPLATES_DIR) / "tags.html").read_text(encoding="utf-8")
         self.assertIn('id="activeAliasSearch"', template)
@@ -398,7 +421,11 @@ class WebEntrypointTests(unittest.TestCase):
                 queue_response = client.get("/api/tag-mapping-candidates")
                 decision_response = client.post(
                     "/api/tag-mapping-candidates/7",
-                    json={"decision": "accept", "kind": "equivalent"},
+                    json={
+                        "decision": "accept",
+                        "kind": "equivalent",
+                        "expected_candidate_ids": [7, 9],
+                    },
                 )
         finally:
             canonical_app.dependency_overrides.pop(web_app_module.require_auth, None)
@@ -406,7 +433,12 @@ class WebEntrypointTests(unittest.TestCase):
         self.assertEqual(queue_response.status_code, 200)
         self.assertEqual(decision_response.status_code, 200)
         get_candidates.assert_awaited_once_with(limit=100)
-        review_candidate.assert_awaited_once_with(7, "accept", kind="equivalent")
+        review_candidate.assert_awaited_once_with(
+            7,
+            "accept",
+            kind="equivalent",
+            expected_candidate_ids=[7, 9],
+        )
 
     def test_authenticated_legacy_filter_batch_rejects_only_the_quarantined_rows(self):
         async def authenticated():

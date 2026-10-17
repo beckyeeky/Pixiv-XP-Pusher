@@ -3,6 +3,7 @@ SQLite 数据层
 """
 import asyncio
 import json
+import hashlib
 import aiosqlite
 import logging
 import sqlite3
@@ -31,6 +32,7 @@ DB_PATH = Path(__file__).parent / "data" / "pixiv_xp.db"
 SCHEMA_VERSION = 9
 TAG_EVIDENCE_FRESHNESS_DAYS = 60
 TAG_MAPPING_EVIDENCE_HASH_STATE = "tag_mapping_evidence_hash_semantic_v2"
+TAG_MAPPING_PROPOSAL_VERSION = "tag-mapping-proposal-v1"
 
 
 
@@ -242,11 +244,16 @@ def _init_db_sync():
                 source TEXT NOT NULL,
                 explanation TEXT NOT NULL DEFAULT '',
                 embedding_similarity REAL,
+                input_evidence_hash TEXT NOT NULL DEFAULT '',
+                proposal_fingerprint TEXT NOT NULL DEFAULT '',
+                proposal_version TEXT NOT NULL DEFAULT 'tag-mapping-proposal-v1',
+                supersedes_candidate_id INTEGER,
                 occurrence_count INTEGER NOT NULL DEFAULT 1,
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK(status IN ('pending', 'accepted', 'rejected')),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(supersedes_candidate_id) REFERENCES tag_mapping_candidates(id)
             );
 
             CREATE INDEX IF NOT EXISTS idx_tag_mapping_candidates_review
@@ -303,6 +310,7 @@ def _init_db_sync():
                 explanation TEXT NOT NULL,
                 languages TEXT NOT NULL,
                 grounding_provenance TEXT NOT NULL DEFAULT '{}',
+                invalidated_at TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             
@@ -439,6 +447,12 @@ def _init_db_sync():
             )
             db.commit()
             logger.info("迁移：AI Classification Record 添加 Grounding provenance")
+        if "invalidated_at" not in ai_record_columns:
+            db.execute(
+                "ALTER TABLE ai_tag_classification_records ADD COLUMN invalidated_at TIMESTAMP"
+            )
+            db.commit()
+            logger.info("迁移：AI Classification Record 添加失效标记")
 
         candidate_columns = {
             row[1] for row in db.execute("PRAGMA table_info(tag_mapping_candidates)")
@@ -448,6 +462,17 @@ def _init_db_sync():
                 "ALTER TABLE tag_mapping_candidates ADD COLUMN embedding_similarity REAL"
             )
             db.commit()
+        for column_name, column_sql in (
+            ("input_evidence_hash", "TEXT NOT NULL DEFAULT ''"),
+            ("proposal_fingerprint", "TEXT NOT NULL DEFAULT ''"),
+            ("proposal_version", "TEXT NOT NULL DEFAULT 'tag-mapping-proposal-v1'"),
+            ("supersedes_candidate_id", "INTEGER"),
+        ):
+            if column_name not in candidate_columns:
+                db.execute(
+                    f"ALTER TABLE tag_mapping_candidates ADD COLUMN {column_name} {column_sql}"
+                )
+        db.commit()
 
         # v2 hashes only stable semantic context.  Re-hash stored payloads once
         # so a profile-weight refresh does not force otherwise valid Judge
@@ -713,6 +738,57 @@ async def delete_tag_alias(original_tag: str) -> bool:
         return cursor.rowcount > 0
 
 
+def _stable_json_hash(payload: dict) -> str:
+    raw = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+async def _tag_mapping_input_evidence_hash(db, tag: str) -> str:
+    """Hash semantic evidence that can legitimately reopen a rejected proposal."""
+    cache_cursor = await db.execute(
+        "SELECT classification, source FROM tag_classification_cache "
+        "WHERE normalized_tag = ?",
+        (tag,),
+    )
+    cache_row = await cache_cursor.fetchone()
+    record_cursor = await db.execute(
+        """SELECT classification, explanation, languages, grounding_provenance
+           FROM ai_tag_classification_records
+           WHERE tag = ? AND invalidated_at IS NULL""",
+        (tag,),
+    )
+    record_row = await record_cursor.fetchone()
+    translation_cursor = await db.execute(
+        "SELECT translated_name FROM tag_translations WHERE name = ?",
+        (tag,),
+    )
+    translation_row = await translation_cursor.fetchone()
+    return _stable_json_hash({
+        "tag": tag,
+        "classification": list(cache_row) if cache_row else None,
+        "ai_record": list(record_row) if record_row else None,
+        "translation": translation_row[0] if translation_row else None,
+        "proposal_version": TAG_MAPPING_PROPOSAL_VERSION,
+    })
+
+
+async def _tag_mapping_proposal_fingerprint(db, row, input_evidence_hash: str) -> str:
+    """Use identical source/target evidence for queue selection and persistence."""
+    return _stable_json_hash({
+        "original_tag": row[0],
+        "proposed_normalized_tag": row[1],
+        "kind": row[2],
+        "source": row[3],
+        "explanation": row[4],
+        "embedding_similarity": row[5],
+        "proposal_version": row[6],
+        "input_evidence_hash": input_evidence_hash,
+        "target_evidence_hash": await _tag_mapping_input_evidence_hash(db, row[1]),
+    })
+
+
 async def save_tag_mapping_candidates(candidates) -> int:
     """Persist untrusted proposals without activating any alias."""
     rows = []
@@ -733,45 +809,55 @@ async def save_tag_mapping_candidates(candidates) -> int:
                 raise ValueError("embedding_similarity 必须是 -1 到 1 的数字")
         if not original or not target or original == target or kind not in {"equivalent", "search"}:
             continue
-        rows.append((original, target, kind, source, explanation, similarity))
+        proposal_version = str(
+            read("proposal_version", TAG_MAPPING_PROPOSAL_VERSION)
+            or TAG_MAPPING_PROPOSAL_VERSION
+        )
+        rows.append((
+            original, target, kind, source, explanation, similarity, proposal_version,
+        ))
     if not rows:
         return 0
 
     inserted = 0
     async with aiosqlite.connect(DB_PATH) as db:
         for row in rows:
+            input_evidence_hash = await _tag_mapping_input_evidence_hash(db, row[0])
+            proposal_fingerprint = await _tag_mapping_proposal_fingerprint(
+                db, row, input_evidence_hash,
+            )
             cursor = await db.execute(
                 """
-                SELECT id FROM tag_mapping_candidates
+                SELECT id, status, input_evidence_hash, proposal_fingerprint
+                FROM tag_mapping_candidates
                 WHERE (
                     original_tag = ? AND proposed_normalized_tag = ?
                 ) OR (
                     original_tag = ? AND proposed_normalized_tag = ?
                 )
+                ORDER BY id DESC
                 LIMIT 1
                 """,
                 (row[0], row[1], row[1], row[0]),
             )
             existing = await cursor.fetchone()
             if existing:
-                if row[5] is not None:
-                    await db.execute(
-                        """
-                        UPDATE tag_mapping_candidates
-                        SET embedding_similarity = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                        """,
-                        (row[5], existing[0]),
-                    )
-                continue
+                if existing[1] in {"pending", "accepted"}:
+                    continue
+                if (
+                    str(existing[2] or "") == input_evidence_hash
+                    and str(existing[3] or "") == proposal_fingerprint
+                ):
+                    continue
             await db.execute(
                 """
                 INSERT INTO tag_mapping_candidates (
                     original_tag, proposed_normalized_tag, kind, source, explanation,
-                    embedding_similarity
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    embedding_similarity, proposal_version, input_evidence_hash,
+                    proposal_fingerprint, supersedes_candidate_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                row,
+                (*row, input_evidence_hash, proposal_fingerprint, existing[0] if existing else None),
             )
             inserted += 1
         await db.commit()
@@ -808,8 +894,10 @@ _TAG_MAPPING_CANDIDATES_SELECT_SQL = """
     LEFT JOIN xp_profile pt ON pt.tag = c.proposed_normalized_tag
     LEFT JOIN tag_classification_cache co ON co.normalized_tag = c.original_tag
     LEFT JOIN tag_classification_cache ct ON ct.normalized_tag = c.proposed_normalized_tag
-    LEFT JOIN ai_tag_classification_records ro ON ro.tag = c.original_tag
-    LEFT JOIN ai_tag_classification_records rt ON rt.tag = c.proposed_normalized_tag
+    LEFT JOIN ai_tag_classification_records ro
+        ON ro.tag = c.original_tag AND ro.invalidated_at IS NULL
+    LEFT JOIN ai_tag_classification_records rt
+        ON rt.tag = c.proposed_normalized_tag AND rt.invalidated_at IS NULL
     LEFT JOIN tag_translations tro ON tro.name = c.original_tag
     LEFT JOIN tag_translations trt ON trt.name = c.proposed_normalized_tag
     LEFT JOIN tag_mapping_ai_recommendations recommendation
@@ -1148,6 +1236,16 @@ def apply_tag_mapping_ai_batch_sync(decisions) -> dict:
                     result["aliases_reversed_to_ai_canonical"] += 1
                 else:
                     original, target = candidate_original, candidate_target
+                active_row = db.execute(
+                    "SELECT normalized_tag, kind FROM tag_aliases WHERE original_tag = ?",
+                    (original,),
+                ).fetchone()
+                if active_row and (
+                    str(active_row[0]) != target or str(active_row[1]) != 'equivalent'
+                ):
+                    raise ValueError(
+                        "alias_conflict: 已存在不同的 Tag Alias；请先显式撤销现有别名"
+                    )
                 existing_target = aliases.get(original)
                 reverse_target = aliases.get(target)
                 if existing_target and existing_target != target:
@@ -1162,10 +1260,7 @@ def apply_tag_mapping_ai_batch_sync(decisions) -> dict:
                         INSERT INTO tag_aliases (
                             original_tag, normalized_tag, kind, source, priority, updated_at
                         ) VALUES (?, ?, 'equivalent', 'manual', ?, CURRENT_TIMESTAMP)
-                        ON CONFLICT(original_tag) DO UPDATE SET
-                            normalized_tag = excluded.normalized_tag,
-                            kind = 'equivalent', source = 'manual',
-                            priority = excluded.priority, updated_at = CURRENT_TIMESTAMP
+                        ON CONFLICT(original_tag) DO NOTHING
                         """,
                         (original, target, int(candidate["occurrence_count"] or 1)),
                     )
@@ -1318,18 +1413,25 @@ async def review_tag_mapping_candidate(
                 elif would_create_alias_cycle(aliases, original, target):
                     await db.rollback()
                     raise ValueError("Tag Alias 不能形成循环")
+            active_cursor = await db.execute(
+                "SELECT normalized_tag, kind FROM tag_aliases WHERE original_tag = ?",
+                (original,),
+            )
+            active_row = await active_cursor.fetchone()
+            if active_row and (
+                str(active_row[0]) != target or str(active_row[1]) != applied_kind
+            ):
+                await db.rollback()
+                raise ValueError(
+                    "alias_conflict: 已存在不同的 Tag Alias；请先显式撤销现有别名"
+                )
             if not alias_already_active:
                 await db.execute(
                     """
                     INSERT INTO tag_aliases (
                         original_tag, normalized_tag, kind, source, priority, updated_at
                     ) VALUES (?, ?, ?, 'manual', ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(original_tag) DO UPDATE SET
-                        normalized_tag = excluded.normalized_tag,
-                        kind = excluded.kind,
-                        source = 'manual',
-                        priority = excluded.priority,
-                        updated_at = CURRENT_TIMESTAMP
+                    ON CONFLICT(original_tag) DO NOTHING
                     """,
                     (original, target, applied_kind, int(row["occurrence_count"] or 1)),
                 )
@@ -1379,7 +1481,7 @@ async def reject_legacy_filtered_tag_mapping_candidates() -> int:
 
 
 async def get_tag_mapping_candidate_inputs(limit: int = 100) -> list[str]:
-    """Select impactful tags which have neither an alias nor a pending proposal."""
+    """Select tags without an alias, pending proposal, or unchanged rejection."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """
@@ -1392,11 +1494,33 @@ async def get_tag_mapping_candidate_inputs(limit: int = 100) -> list[str]:
                   WHERE c.original_tag = p.tag AND c.status = 'pending'
               )
             ORDER BY p.weight DESC
-            LIMIT ?
             """,
-            (limit,),
         )
-        return [row[0] for row in await cursor.fetchall()]
+        selected = []
+        for (tag,) in await cursor.fetchall():
+            evidence_hash = await _tag_mapping_input_evidence_hash(db, tag)
+            rejected_cursor = await db.execute(
+                """SELECT original_tag, proposed_normalized_tag, kind, source,
+                          explanation, embedding_similarity, proposal_version,
+                          input_evidence_hash, proposal_fingerprint
+                   FROM tag_mapping_candidates
+                   WHERE original_tag = ? AND status = 'rejected'
+                   ORDER BY id DESC LIMIT 1""",
+                (tag,),
+            )
+            rejected = await rejected_cursor.fetchone()
+            if rejected and (
+                str(rejected[7] or "") == evidence_hash
+                and str(rejected[6] or "") == TAG_MAPPING_PROPOSAL_VERSION
+                and str(rejected[8] or "") == await _tag_mapping_proposal_fingerprint(
+                    db, rejected[:7], evidence_hash,
+                )
+            ):
+                continue
+            selected.append(tag)
+            if len(selected) >= limit:
+                break
+        return selected
 
 
 async def get_tag_classifications(
@@ -1686,11 +1810,13 @@ async def activate_ai_tag_classification(
             )
         await db.execute(
             """INSERT INTO ai_tag_classification_records
-               (tag, classification, explanation, languages, grounding_provenance, updated_at)
-               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+               (tag, classification, explanation, languages, grounding_provenance,
+                invalidated_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
                ON CONFLICT(tag) DO UPDATE SET classification=excluded.classification,
                explanation=excluded.explanation, languages=excluded.languages,
-               grounding_provenance=excluded.grounding_provenance, updated_at=CURRENT_TIMESTAMP""",
+               grounding_provenance=excluded.grounding_provenance,
+               invalidated_at=NULL, updated_at=CURRENT_TIMESTAMP""",
             (tag, category, explanation, languages, provenance_json),
         )
         await db.execute(
@@ -1720,6 +1846,12 @@ async def mark_ai_tag_unresolved(tag: str) -> bool:
                source=excluded.source, updated_at=CURRENT_TIMESTAMP""",
             (tag, TAG_CATEGORY_UNRESOLVED),
         )
+        await db.execute(
+            "UPDATE ai_tag_classification_records "
+            "SET invalidated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP "
+            "WHERE tag = ? AND invalidated_at IS NULL",
+            (tag,),
+        )
         await db.commit()
     return True
 
@@ -1729,7 +1861,8 @@ async def get_ai_tag_classification_record(tag: str) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT tag, classification, explanation, languages, grounding_provenance "
-            "FROM ai_tag_classification_records WHERE tag = ?", (tag,)
+            "FROM ai_tag_classification_records "
+            "WHERE tag = ? AND invalidated_at IS NULL", (tag,)
         )
         row = await cursor.fetchone()
     if not row:
@@ -2005,6 +2138,54 @@ async def record_feedback(illust_id: int, action: str):
             (illust_id, action, datetime.now())
         )
         await db.commit()
+
+
+def _parse_feedback_tags(raw) -> list[str]:
+    """Parse retained tag JSON into a de-duplicated list of non-empty strings."""
+    if isinstance(raw, str):
+        if not raw.strip():
+            return []
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    tags: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        if not isinstance(value, str):
+            continue
+        tag = value.strip()
+        if tag and tag not in seen:
+            seen.add(tag)
+            tags.append(tag)
+    return tags
+
+
+async def get_feedback_metadata(illust_id: int) -> dict | None:
+    """Read retained feedback metadata without touching cache or the ledger.
+
+    Returns None when the work has no retained row or no usable tag, so callers
+    cannot mistake an empty tag list for a valid feedback target.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT illust_id, tags, user_id, user_name FROM feedback_metadata WHERE illust_id = ?",
+            (illust_id,),
+        )
+        row = await cursor.fetchone()
+    if not row:
+        return None
+    tags = _parse_feedback_tags(row[1])
+    if not tags:
+        return None
+    return {
+        "illust_id": row[0],
+        "tags": tags,
+        "user_id": row[2] or 0,
+        "user_name": row[3] or "",
+    }
 
 
 async def get_recent_liked_tags(limit: int = 10) -> list[str]:

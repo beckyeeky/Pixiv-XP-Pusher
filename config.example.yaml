@@ -21,10 +21,14 @@ profiler:
   # 是否包含私密收藏用于分析
   include_private: true
 
-  # 可选：本地 IP 标签表。未设置时不会对 IP 标签做额外处理
+  # 可选：本地 IP 标签表，仅用于标签分类辅助
   ip_tags_file: ""
-  # IP 标签在画像中的权重折扣 (0-1，1 表示不降权)
-  ip_weight_discount: 1.0
+
+  # 显式偏好加权；键会先经过已接受的 Tag Alias 归一化
+  boost_tags: {}
+  # 示例：
+  # boost_tags:
+  #   white_hair: 1.25
 
   # 停用词 (手动指定)
   stop_words:

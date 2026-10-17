@@ -142,11 +142,11 @@ class TagClassifier:
         if remaining:
             # Delivery consumes accepted maintenance classifications. It never
             # establishes a second, ungrounded machine classification path.
-            if self.legacy_judge_enabled and self.client:
-                fallback_results = self._classify_unaccepted_ai_tags(remaining)
-            elif len(self.judges) > 1:
-                # A multi-Judge setup must not silently turn an unavailable
-                # consensus pass into a Feature classification during delivery.
+            if self.enabled:
+                # Delivery consumes only accepted maintenance classifications.
+                # Every enabled classifier backend, including Search-first,
+                # must keep unseen tags unresolved until maintenance settles
+                # their Tag Category.
                 fallback_results = self._classify_unaccepted_ai_tags(remaining)
             else:
                 fallback_results = self._classify_with_manual_list(remaining)
@@ -318,8 +318,12 @@ class TagClassifier:
     def _classify_with_manual_list(self, tags: list[str]) -> dict[str, TagClassification]:
         return {
             tag: TagClassification(
-                classification=TAG_CATEGORY_COPYRIGHT if tag in self.manual_ip_tags else TAG_CATEGORY_FEATURE,
-                source="manual" if tag in self.manual_ip_tags else "fallback",
+                classification=(
+                    TAG_CATEGORY_COPYRIGHT
+                    if tag in self.manual_ip_tags
+                    else TAG_CATEGORY_UNRESOLVED
+                ),
+                source="manual" if tag in self.manual_ip_tags else "unresolved",
             )
             for tag in tags
         }

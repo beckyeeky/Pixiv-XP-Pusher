@@ -134,7 +134,7 @@ class ContentFetcher:
         tag_classifications: Optional[dict] = None,
     ) -> bool:
         classification = (tag_classifications or {}).get(tag)
-        return classification is not None and not is_seed_category(classification)
+        return not is_seed_category(classification)
 
     def _is_allowed_search_pair(
         self,
@@ -812,5 +812,4 @@ class ContentFetcher:
             except Exception as e:
                 logger.error(f"获取 {mode} 排行榜失败: {e}")
         return all_illusts
-
 

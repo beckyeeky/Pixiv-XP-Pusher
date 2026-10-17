@@ -1,5 +1,7 @@
 # Web 第一步验收记录
 
+公开报告中的服务器身份、内部路径与作品/画师标识使用占位符；原私有验收材料另行保存且未修改。
+
 ## 范围与环境
 
 工作树：`/var/minis/workspace/xp-pusher-review-20261016`；独立基线：`/tmp/xp-profile-baseline`（8a062ee）；解释器：`/tmp/xp-profile-venv/bin/python`。
@@ -39,7 +41,7 @@
 - 无 cookie `GET /api/config`：401，detail 未登录。
 - JSON 检查确认 API 未返回临时密码哈希原值。
 
-curl 使用 `-sS -D /tmp/xp-web-<name>.headers -o /tmp/xp-web-<name>.body` 保留头和正文，首页正文为 `/tmp/xp-web-home.html`；登录 cookie 位于 `/tmp/xp-web-cookies`，仅隔离验收会话，不应当作业务凭证外发。服务 PID 1045 已用 kill 停止。未发送 Telegram/Pixiv/分类供应商请求。
+curl 使用 `-sS -D /tmp/xp-web-<name>.headers -o /tmp/xp-web-<name>.body` 保留头和正文，首页正文为 `/tmp/xp-web-home.html`；登录 cookie 位于 `/tmp/xp-web-cookies`，仅隔离验收会话，不应当作业务凭证外发。服务已用 kill 停止（PID 已隐去）。未发送 Telegram/Pixiv/分类供应商请求。
 
 ## 边界与待裁决
 

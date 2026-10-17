@@ -580,11 +580,30 @@ def normalize_config(config: dict) -> dict:
         daily_slate_cfg = {}
         filter_cfg["daily_slate"] = daily_slate_cfg
     daily_slate_cfg.setdefault("enabled", True)
-    for key, default in (("feature_ratio", 0.55), ("character_ratio", 0.15), ("copyright_ratio", 0.10), ("exploration_ratio", 0.20)):
+    motive_ratio_defaults = {
+        "feature_ratio": 0.55,
+        "character_ratio": 0.15,
+        "copyright_ratio": 0.10,
+        "exploration_ratio": 0.20,
+    }
+    for key, default in motive_ratio_defaults.items():
         try:
             daily_slate_cfg[key] = max(0.0, min(1.0, float(daily_slate_cfg.get(key, default))))
         except (TypeError, ValueError):
             daily_slate_cfg[key] = default
+    motive_ratio_total = sum(
+        daily_slate_cfg[key] for key in motive_ratio_defaults
+    )
+    if motive_ratio_total <= 0:
+        logger.warning("Daily Slate Motive Mix 不能全为 0，已回退为默认比例")
+        daily_slate_cfg.update(motive_ratio_defaults)
+    elif abs(motive_ratio_total - 1.0) > 1e-9:
+        logger.warning(
+            "Daily Slate Motive Mix 总和为 %.3f，已归一化为 1.0",
+            motive_ratio_total,
+        )
+        for key in motive_ratio_defaults:
+            daily_slate_cfg[key] /= motive_ratio_total
     daily_slate_cfg["max_per_character"] = max(1, _coerce_int(daily_slate_cfg.get("max_per_character", 2), default=2, field_name="filter.daily_slate.max_per_character"))
     daily_slate_cfg["max_per_copyright"] = max(1, _coerce_int(daily_slate_cfg.get("max_per_copyright", 4), default=4, field_name="filter.daily_slate.max_per_copyright"))
 

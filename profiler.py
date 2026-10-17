@@ -111,8 +111,11 @@ class XPProfiler:
                  self.ip_tags = DEFAULT_IP_TAGS
                  logger.info(f"使用内置 IP 标签列表 ({len(self.ip_tags)} 个)")
 
-        if self.ip_tags and self.ip_weight_discount < 1.0:
-            logger.info(f"🎮 IP 降权已启用: {len(self.ip_tags)} 个标签 ×{self.ip_weight_discount}")
+        if self.ip_weight_discount != 1.0:
+            logger.warning(
+                "profiler.ip_weight_discount 已弃用并被忽略；"
+                "Identity 多样性由 Daily Slate Delivery Policy 控制"
+            )
         
         # 添加默认停用词（归一化为小写）
         # Pixiv 常见无意义标签
@@ -179,33 +182,22 @@ class XPProfiler:
             logger.info(f"已加载黑名单: {len(blocked_tags)} 个手动屏蔽Tag + {len(blocked_artists)} 个屏蔽画师")
         except Exception as e:
             logger.error(f"加载黑名单失败: {e}")
-            self._blocked_artist_ids = set()
-
-            logger.error(f"加载黑名单失败: {e}")
-            self._blocked_artist_ids = set()
+            raise
 
     async def _profile_preflight(self):
         import asyncio
         from persistent_profile import preflight
-        if self.profile_mode == 'persistent' and self._ip_tags_path is not None:
-            # Revalidate each operation, including long-lived profiler objects.
-            # A failed read never replaces the last valid configuration by [].
-            try:
-                tags = json.loads(self._ip_tags_path.read_text(encoding='utf-8'))
-                if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
-                    raise ValueError('IP tags JSON must be a list of strings')
-                self.ip_tags = {t.replace(':', '').replace('__', '_') for t in tags}
-                self._ip_tags_error = None
-            except (OSError, ValueError) as error:
-                self._ip_tags_error = f'{self._ip_tags_path}: {error}'
-        await asyncio.to_thread(preflight, db.DB_PATH, self.profile_mode,
-                                self._ip_tags_error, self.ip_weight_discount)
+        # Deprecated IP configuration is diagnostic only at the application seam.
+        # The lower-level ledger still accepts its historical compatibility args.
+        await asyncio.to_thread(preflight, db.DB_PATH, self.profile_mode, None, 1.0, True)
 
     async def build_profile(
         self,
         user_id: int,
         scan_limit: int = 500,
-        include_private: bool = False
+        include_private: bool = False,
+        *,
+        cache_only: bool = False,
     ) -> dict[str, float]:
         """
         扫描收藏，构建XP权重字典
@@ -214,6 +206,7 @@ class XPProfiler:
             user_id: 目标用户ID
             scan_limit: 扫描收藏数量
             include_private: 包含私密收藏
+            cache_only: 只使用本地收藏缓存，不访问 Pixiv 或修改同步进度
         
         Returns:
             {tag: weight} 权重字典
@@ -306,24 +299,25 @@ class XPProfiler:
             return fetched
 
         # 4. 执行获取
-        bookmarks = await fetch_segment(False)
-        
-        if include_private and self.client._logged_in:
-            private_bookmarks = await fetch_segment(True)
-            bookmarks = bookmarks + private_bookmarks
-        
-        # 5. 标记同步完成
-        if not is_completed:
-            await db.set_state(sync_key, "true")
-            logger.info("✅ 全量同步完成，标记为 [已完成]")
-            # 清理游标？可选。留着也没事，下次 is_completed=True 会忽略它。
+        if not cache_only:
+            bookmarks = await fetch_segment(False)
+
+            if include_private and self.client._logged_in:
+                private_bookmarks = await fetch_segment(True)
+                bookmarks = bookmarks + private_bookmarks
+
+            # 5. 标记同步完成
+            if not is_completed:
+                await db.set_state(sync_key, "true")
+                logger.info("✅ 全量同步完成，标记为 [已完成]")
+                # 清理游标？可选。留着也没事，下次 is_completed=True 会忽略它。
         
         if self.profile_mode == "persistent":
             import asyncio
             from persistent_profile import build
             return await asyncio.to_thread(
                 build, db.DB_PATH, user_id, self._base_stop_words,
-                self.boost_tags, self.ip_tags, self.ip_weight_discount,
+                self.boost_tags, self.ip_tags, 1.0, True,
             )
 
         # 6. 重新构建全量列表
@@ -480,23 +474,6 @@ class XPProfiler:
             except Exception as e:
                 logger.warning(f"冷启动注入失败: {e}")
         
-        # IP 标签降权处理
-        discounted_count = 0
-        
-        # IP 降权（Tag Alias 已经在统一 resolver seam 中应用）
-        for tag in list(profile.keys()):
-            if tag in self.ip_tags:
-                # 检查是否已有 Boost (包含在 boost_tags 中)
-                if tag in (self.boost_tags or {}):
-                    continue # 交给后面的 boost 逻辑处理
-                
-                old_weight = profile[tag]
-                profile[tag] = old_weight * self.ip_weight_discount
-                discounted_count += 1
-        
-        if discounted_count > 0:
-            logger.info(f"🎮 IP 标签降权完成: {discounted_count} 个标签 ×{self.ip_weight_discount}")
-        
         # 手动加权处理
         if self.boost_tags:
             boosted_count = 0
@@ -506,9 +483,10 @@ class XPProfiler:
             else:
                 avg_weight = 1.0
                 
-            for tag, multiplier in self.boost_tags.items():
+            for configured_tag, multiplier in self.boost_tags.items():
+                tag = self._normalize_tag(configured_tag)
                 # 确保只处理有效的、非停用词的 Tag
-                if tag in self.stop_words:
+                if not tag or tag in self.stop_words:
                     continue
                     
                 if tag in profile:
@@ -601,7 +579,7 @@ class XPProfiler:
             return await asyncio.to_thread(
                 feedback, db.DB_PATH, illust, action, config,
                 self._base_stop_words, self.boost_tags, self.ip_tags,
-                self.ip_weight_discount,
+                1.0, True,
             )
 
         accepted_aliases = await db.get_accepted_tag_aliases("equivalent")

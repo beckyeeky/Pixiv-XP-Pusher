@@ -196,10 +196,30 @@ def persistent_used(connection):
     return False
 
 
-def preflight(path, mode, ip_error=None, ip_discount=1.0):
+def _check_application_policy(connection):
+    """Reject unknown historical factors; never infer their provenance."""
+    tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'preference_application_policy' in tables and connection.execute(
+        "SELECT 1 FROM preference_application_policy WHERE policy='fixed-ip-v1'"
+    ).fetchone():
+        return
+    if persistent_used(connection) and 'preference_anchor' in tables and connection.execute(
+        'SELECT 1 FROM preference_anchor WHERE factor != 1 LIMIT 1'
+    ).fetchone():
+        raise RuntimeError('旧已使用账本含来源未知的非1倍率锚点；请先备份并进行专门兼容处理。拒绝同步与写入，不会自动恢复或反算旧权重。')
+
+
+def _mark_application_policy(connection):
+    connection.execute('CREATE TABLE IF NOT EXISTS preference_application_policy (policy TEXT PRIMARY KEY)')
+    connection.execute("INSERT OR IGNORE INTO preference_application_policy VALUES ('fixed-ip-v1')")
+
+
+def preflight(path, mode, ip_error=None, ip_discount=1.0, application_policy=False):
     # Open read-only: validation must not initialize or modify a database.
     with sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True) as connection:
         used = persistent_used(connection)
+        if mode == 'persistent' and application_policy:
+            _check_application_policy(connection)
         if mode == 'legacy' and used:
             raise RuntimeError('Persistent profile has been used; legacy build/feedback is unsafe. Restore the pre-upgrade backup before running legacy (恢复升级前备份). This is not a lossless round trip.')
         if mode == 'persistent' and ip_error and ip_discount != 1.0:
@@ -212,21 +232,29 @@ def _mark_used(connection):
     connection.execute('INSERT OR IGNORE INTO preference_usage VALUES (?)', (VERSION,))
 
 
-def build(path, user_id, stop_words=(), boosts=None, ip_tags=(), ip_discount=1.0):
+def build(path, user_id, stop_words=(), boosts=None, ip_tags=(), ip_discount=1.0, application_policy=False):
     with sqlite3.connect(path) as connection:
         connection.execute('BEGIN IMMEDIATE')
+        if application_policy:
+            _check_application_policy(connection)
         _check_projection(connection)
+        if application_policy:
+            _mark_application_policy(connection)
         _mark_used(connection)
         connection.execute('INSERT OR IGNORE INTO preference_bookmarks SELECT user_id,illust_id,tags,0 FROM xp_bookmarks WHERE user_id=?', (user_id,))
         return _project(connection, stop_words, boosts, ip_tags, ip_discount)
 
 
-def feedback(path, illust, action, config, stop_words=(), boosts=None, ip_tags=(), ip_discount=1.0):
+def feedback(path, illust, action, config, stop_words=(), boosts=None, ip_tags=(), ip_discount=1.0, application_policy=False):
     if action not in {'like', 'dislike'}:
         raise ValueError('feedback action must be like or dislike')
     with sqlite3.connect(path) as connection:
         connection.execute('BEGIN IMMEDIATE')
+        if application_policy:
+            _check_application_policy(connection)
         _check_projection(connection)
+        if application_policy:
+            _mark_application_policy(connection)
         _mark_used(connection)
         old = connection.execute('SELECT action,contributions,artist_id,artist_delta,reversible FROM preference_feedback WHERE illust_id=?', (illust.id,)).fetchone()
         result = {'action': action, 'illust_id': illust.id, 'disliked_tags': [], 'auto_blocked_artists': []}

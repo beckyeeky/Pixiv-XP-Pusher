@@ -230,6 +230,36 @@ class ModelSelectionTests(unittest.TestCase):
         profiler = result[2]
         self.assertFalse(hasattr(profiler, "ai_processor"))
 
+    def test_task_manager_connects_explicit_boost_tags_to_the_preference_profile(self):
+        from task_manager import setup_services
+
+        config_data = config.normalize_config({
+            "providers": {
+                "pixiv": {"type": "pixiv", "refresh_token": "token", "user_id": 1},
+                "danbooru": {"type": "danbooru"},
+            },
+            "profiler": {"boost_tags": {"白髪": 1.8}},
+            "web": {"require_login_password": False, "password": ""},
+        })
+
+        class DummyClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            async def login(self):
+                return None
+
+        async def fake_setup_notifiers(*_args, **_kwargs):
+            return []
+
+        with patch("task_manager.init_db", return_value=None), \
+             patch("task_manager.PixivClient", DummyClient), \
+             patch("task_manager.setup_notifiers", side_effect=fake_setup_notifiers):
+            result = __import__("asyncio").run(setup_services(config_data))
+
+        profiler = result[2]
+        self.assertEqual(profiler.boost_tags, {"白髪": 1.8})
+
 
 if __name__ == "__main__":
     unittest.main()

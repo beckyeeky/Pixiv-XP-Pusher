@@ -1,11 +1,13 @@
 # 持久画像版本升级与试运行
 
-本说明适用于 `refactor/persistent-profile-low-quota` 试运行分支，不代表真实旧库迁移已验收。仅支持 Telegram 与 Web。
+公开报告中的服务器身份、内部路径与作品/画师标识使用占位符；原私有验收材料另行保存且未修改。
+
+本说明适用于 `integration/persistent-profile-current-main` 未提交整合候选（重构 db666308 与 main 43ec3ad）。不代表真实旧库迁移已验收。仅支持 Telegram 与 Web。
 
 ## 当前验证
 
-- 完整 pytest：403 passed、16 subtests passed、2 failed，无测试文件排除。失败为原始基线同样存在的标签映射审核测试：`test_ai_recommendation_is_audited_and_staged_without_creating_alias`、`test_review_rejects_a_group_that_changed_after_confirmation`。这两个流程不作为已通过功能，暂勿依赖 AI 候选自动生成或确认后变更检测完成生产审核。
-- 隔离 Web 已真实启动，登录、设置、标签页及读取 API 可用；未登录配置接口返回401。Web测试35 passed。
+- 整合完整 pytest 使用 `TZ=UTC`，无文件排除；当前结果见 `docs/integration-current-main.md`。原重构的两个数据库审核失败已由 main 修复，不再作为豁免。
+- 先前重构基线的隔离 Web 已真实启动（不是本次整合的宿主重测），登录、设置、标签页及读取 API 可用；未登录配置接口返回401。Web测试35 passed。
 - 测试 Bot 单条文本发送成功且用户确认收到。未验证项目真实图片投递、菜单、回调、真实 Pixiv 抓取或生产数据库迁移。
 - 自动分类外搜默认关闭。手动分类仍可能消耗 Brave/Tavily 额度，尚无全局每日硬预算。
 
@@ -20,7 +22,7 @@
 
 - 缺少 `profiler.profile_mode` 时默认为 `persistent`。无效枚举拒绝启动。
 - OneBot/AstrBot/email旧字段可保留，运行时忽略，不自动转成Telegram发送。仅Web运行不要求测试Bot发送。
-- 明确指定 `profiler.ip_tags_file` 且 `ip_weight_discount != 1` 时，文件必须是可读的JSON字符串列表。读取失败会在画像构建/反馈写入前拒绝。修复文件；确实不使用IP列表时提供有效 `[]` 或显式把折扣设为1。
+- `profiler.ip_weight_discount` 已弃用：保留配置和警告，但应用 build/feedback 传给持久账本的倍率固定为1。旧 `ip_tags`/`ip_tags_file` 文件缺失或损坏只作诊断，不阻断画像写入。IP 多样性仅在 Daily Slate 控制。底层账本独立兼容参数不代表应用重新启用折扣。
 - 新模式不按作品发表日期衰减核心画像，不因高频饱和度自动删除长期偏好。
 - 不自动修改用户密码、凭据或删除provider。对外暴露Web前应设置密码，并限制监听/反向代理访问。
 
@@ -35,13 +37,19 @@
 
 ## 数据语义
 
-旧画像作为不透明权重基线导入。首次持久构建以当时有效boost/IP配置建立倍率基准，不推断历史原始贡献；首次运行应使用与旧服务一致的配置和IP文件。
+旧画像作为不透明权重基线导入。首次持久构建以当时有效 boost 配置一次建立倍率基准，不推断历史原始贡献；首次运行应保留旧 boost 配置。已弃用 IP 折扣（包括0.3）不参与锚定，也不反算或补偿旧画像中的历史折扣。
 
 新收藏和反馈有幂等账项。旧反馈若缺少精确历史贡献，切换反馈保留不可逆历史，仅记入新贡献，不能声称撤回了原始贡献。原始标签与已记贡献分开保存，以支持别名投影和精确撤销。
 
 详细历史/图片缓存可以清理，轻量曝光ID与必要反馈元数据长期保留。普通缓存不算曝光；成功发送或明确反馈才产生曝光记录。
 
 完整手工替换使用校正与冻结种子保留目标权重，真实新增观察及明确倍率变化仍可影响画像。删除配置再按相同倍率恢复，不视为新的提权指令。`--reset-xp` 是显式重置操作，不应作为升级步骤。
+
+## 同号 schema 与离线分类迁移
+
+main 与重构均曾使用 `SCHEMA_VERSION=9`，不能以数字相等跳过升级。初始化仍按实际列检查执行，独立 `preference_migrations` 与 `retention_migrations` 决定账本及永久留存迁移；真实 main 43ec3ad 初始化库的逐表重复升级已测试。
+
+`scripts/migrate_fallback_tag_classifications.py --apply` 先备份再迁移分类；其 `cache_only=True` 构建复用持久账本投影，不调用 Pixiv、不推进同步游标，也不使用旧 TF-IDF 重建覆盖账本。它不能恢复此前已删除的收藏、反馈或曝光历史。该脚本默认使用 persistent，即使旧配置残留 legacy 也不拿旧重建覆盖已用账本。
 
 ## 回滚与限制
 
@@ -50,3 +58,11 @@
 - 备份与迁移不是同一时点，整个旧schema升级链也不是单个事务，因此正式迁移必须停写。
 - 禁止两种模式或两个版本同时写同一个库。跨进程模式竞争、磁盘耗尽、进程强杀场景未完整验证。
 - 本分支不调整召回比例、不加入视觉模型。正式切换应在真实旧库副本演练和小批图片投递通过后另行安排。
+
+## 已使用旧账本的非1锚点保护
+
+应用 build/feedback 在远端同步和写入前以只读预检检查旧账本：已使用、存在非1 `preference_anchor.factor` 且没有 `preference_application_policy` 的 `fixed-ip-v1` 标记时，明确拒绝并要求先备份及专门兼容处理。因来源未知，显式 boost 的旧锚点也拒绝；不猜测来源、不自动反算、不宣称完整兼容或自动恢复。拒绝预检不改写数据库、不调用客户端。
+
+新 main 无账本库仍按原流程迁移；新版应用首次 build/feedback 在账本同一事务写入政策标记，失败随事务回滚。新版正常 boost=2 锚定后重启、改为4可继续按比例投影，不误判为未知旧锚点。低级账本接口默认不启用应用政策，以保留原兼容接口语义；不应绕过应用预检处理未知旧库。
+
+主代理已通过 SSH **只读识别**真实备份 `<rehearsal-root>/<backup-id>/baseline.sqlite3`：无 preference migration/usage/anchor 及 retention 账本，因此该用户备份不属于上述已使用旧锚点边界。本次子任务未访问 SSH；真实备份副本升级演练仍待执行，不能用该只读识别替代演练。

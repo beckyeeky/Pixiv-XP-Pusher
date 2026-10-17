@@ -361,17 +361,16 @@ def test_review_b2_observations_rollback_with_feedback(path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('contents', [None, '{broken'])
-async def test_r1_bad_file_blocks_before_sync(path, tmp_path, contents):
+async def test_r1_deprecated_bad_file_does_not_block_offline_build(path, tmp_path, contents):
     p = tmp_path / 'ip.json'
     if contents is not None:
         p.write_text(contents)
     client = AsyncMock()
     profiler = XPProfiler(client, ip_tags=str(p), ip_weight_discount=.5)
-    with pytest.raises(RuntimeError, match='ip_weight_discount=1'):
-        await profiler.build_profile(1)
+    assert await profiler.build_profile(1, cache_only=True) == {}
     assert client.mock_calls == []
     with sqlite3.connect(path) as c:
-        assert c.execute("SELECT name FROM sqlite_master WHERE name='preference_anchor'").fetchall() == []
+        assert ledger.persistent_used(c)
 
 
 @pytest.mark.asyncio
@@ -410,14 +409,10 @@ async def test_r1_compatible_paths(path, tmp_path, source):
     profiler = XPProfiler(client, ip_tags=str(p),
                           ip_weight_discount=1 if source == 'disabled' else .5,
                           profile_mode='legacy' if source == 'legacy' else 'persistent')
-    if source == 'already_used':
-        before = snapshot(path)
-        with pytest.raises(RuntimeError, match='ip_weight_discount=1'):
-            await profiler.build_profile(1)
-        assert snapshot(path) == before
-        assert client.mock_calls == []
-    else:
-        await profiler.build_profile(1)
+    before = snapshot(path)
+    await profiler.build_profile(1, cache_only=True)
+    assert snapshot(path) == before
+    assert client.mock_calls == []
 
 
 @pytest.mark.asyncio
@@ -457,12 +452,10 @@ def test_r2_usage_marker_rolls_back_on_failure(path):
 
 
 @pytest.mark.asyncio
-async def test_r1_missing_default_path_has_actionable_escape(path, tmp_path, monkeypatch):
+async def test_r1_missing_deprecated_default_path_is_ignored(path, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     profiler = XPProfiler(AsyncMock(), ip_tags='data/ip_tags.json', ip_weight_discount=.5)
-    with pytest.raises(RuntimeError, match='ip_weight_discount=1'):
-        await profiler.build_profile(1)
-    profiler.ip_weight_discount = 1
+    assert await profiler.build_profile(1, cache_only=True) == {}
     await profiler._profile_preflight()
 
 
@@ -487,7 +480,7 @@ async def test_r2_imported_old_database_not_locked_by_init(tmp_path, monkeypatch
 @pytest.mark.asyncio
 @pytest.mark.parametrize('operation', ['build', 'feedback'])
 @pytest.mark.parametrize('reset', [False, True])
-async def test_final_ip_failure_preserves_migrated_anchor(tmp_path, monkeypatch, operation, reset):
+async def test_final_ignored_ip_failure_preserves_migrated_anchor(tmp_path, monkeypatch, operation, reset):
     p = tmp_path / 'legacy.sqlite3'
     monkeypatch.setattr(db, 'DB_PATH', p)
     with sqlite3.connect(p) as c:
@@ -503,22 +496,18 @@ async def test_final_ip_failure_preserves_migrated_anchor(tmp_path, monkeypatch,
     if reset:
         await db.reset_xp_data()
     before = snapshot(p)
-    with sqlite3.connect(p) as c:
-        dump = '\n'.join(c.iterdump())
     client.reset_mock()
     ip.unlink()
     profiler = XPProfiler(client, ip_tags=str(ip), ip_weight_discount=.5)
-    with pytest.raises(RuntimeError, match='ip_weight_discount=1'):
-        if operation == 'build':
-            await profiler.build_profile(1)
-        else:
-            await profiler.apply_feedback(work(), 'like', {})
+    if operation == 'build':
+        assert await profiler.build_profile(1, cache_only=True) == before
+    else:
+        await profiler.apply_feedback(work(), 'like', {})
+        before = {**before, 'trait_raw': .5}
     assert snapshot(p) == before
-    with sqlite3.connect(p) as c:
-        assert '\n'.join(c.iterdump()) == dump
     assert client.mock_calls == []
     ip.write_text('["series"]')
-    assert await XPProfiler(client, ip_tags=str(ip), ip_weight_discount=.5).build_profile(1) == before
+    assert await profiler.build_profile(1, cache_only=True) == before
 
 
 @pytest.mark.asyncio
@@ -558,26 +547,22 @@ async def test_final_deleted_seed_survives_boost_removal_and_real_contribution(p
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('operation', ['build', 'feedback'])
-async def test_final_same_profiler_rechecks_ip_file(path, tmp_path, operation):
+async def test_final_same_profiler_ignores_deprecated_ip_file_changes(path, tmp_path, operation):
     ip = tmp_path / 'ip.json'
     ip.write_text('["series"]')
     client = AsyncMock()
-    client._logged_in = False
-    client.get_bookmarks.return_value = []
     profiler = XPProfiler(client, ip_tags=str(ip), ip_weight_discount=.5)
-    await profiler.build_profile(1)
-    client.reset_mock()
+    assert await profiler.build_profile(1, cache_only=True) == {}
     ip.unlink()
-    with pytest.raises(RuntimeError, match='ip_weight_discount=1'):
-        if operation == 'build':
-            await profiler.build_profile(1)
-        else:
-            await profiler.apply_feedback(work(), 'like', {})
-    assert profiler.ip_tags == {'series'}
+    if operation == 'build':
+        assert await profiler.build_profile(1, cache_only=True) == {}
+    else:
+        await profiler.apply_feedback(work(), 'like', {})
+        assert snapshot(path) == {'trait_raw': .5}
     assert client.mock_calls == []
     ip.write_text('[]')
     await profiler._profile_preflight()
-    assert profiler.ip_tags == set()
+    assert snapshot(path) == ({} if operation == 'build' else {'trait_raw': .5})
 
 
 @pytest.mark.asyncio

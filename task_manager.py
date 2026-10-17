@@ -418,7 +418,6 @@ async def setup_services(config: dict):
     profiler_cfg = config.get("profiler", {})
     profiler = XPProfiler(
         profile_mode=mode,
-        boost_tags=profiler_cfg.get("boost_tags"),
         client=sync_client,  # 使用同步客户端获取收藏
         stop_words=profiler_cfg.get("stop_words"),
         discovery_rate=profiler_cfg.get("discovery_rate", 0.1),
@@ -426,7 +425,8 @@ async def setup_services(config: dict):
         saturation_threshold=profiler_cfg.get("saturation_threshold", 0.5),
         # Pass IP discount config
         ip_tags=profiler_cfg.get("ip_tags") or profiler_cfg.get("ip_tags_file"),
-        ip_weight_discount=profiler_cfg.get("ip_weight_discount", 1.0)
+        ip_weight_discount=profiler_cfg.get("ip_weight_discount", 1.0),
+        boost_tags=profiler_cfg.get("boost_tags"),
     )
     
     # Init Notifiers (使用 main_client 用于下载图片等，sync_client 用于 on_action 回调)

@@ -8,6 +8,7 @@ from tag_categories import (
     get_classification_category,
     is_feature_category,
     is_identity_category,
+    is_seed_category,
 )
 from tag_mapping import TagIdentityResolver
 from utils import normalize_tag
@@ -99,8 +100,7 @@ def calculate_preference_contributions(
         else max_weight * 0.8
     )
     feature_weights: list[tuple[float, float]] = []
-    non_feature_weights: list[tuple[float, float]] = []
-    identity_weights: list[float] = []
+    identity_weights: list[tuple[float, float]] = []
     typed_identity_weights = {"character": [], "copyright": []}
     negative_penalty = 0.0
     seen_positive_tags: set[str] = set()
@@ -115,18 +115,22 @@ def calculate_preference_contributions(
             if normalized in profile
             else profile.get(tag.lower())
         )
-        if weight is not None and tag_key not in seen_positive_tags:
+        classification = (classifications or {}).get(normalized)
+        preference_bearing = is_seed_category(classification)
+        if (
+            preference_bearing
+            and weight is not None
+            and tag_key not in seen_positive_tags
+        ):
             seen_positive_tags.add(tag_key)
-            classification = (classifications or {}).get(normalized)
             effective_weight = float(weight) * (
                 1.3 if is_feature_category(classification) else 1.0
             )
             if is_feature_category(classification):
                 feature_weights.append((effective_weight, float(weight)))
             else:
-                non_feature_weights.append((effective_weight, float(weight)))
                 if is_identity_category(classification):
-                    identity_weights.append(effective_weight)
+                    identity_weights.append((effective_weight, float(weight)))
                     category = getattr(
                         classification,
                         "classification",
@@ -136,7 +140,11 @@ def calculate_preference_contributions(
                     if category in typed_identity_weights:
                         typed_identity_weights[category].append(effective_weight)
 
-        if negative_profile and tag_key not in seen_negative_tags:
+        if (
+            preference_bearing
+            and negative_profile
+            and tag_key not in seen_negative_tags
+        ):
             seen_negative_tags.add(tag_key)
             negative = negative_profile.get(
                 normalized,
@@ -157,24 +165,27 @@ def calculate_preference_contributions(
         if raw_weight >= top_threshold:
             feature_high_weight_matches += 1
 
-    non_feature_total = sum(weight for weight, _ in non_feature_weights)
-    non_feature_high_weight_matches = sum(
-        1 for _, raw_weight in non_feature_weights
-        if raw_weight >= top_threshold
+    identity_contribution, identity_raw_weight = max(
+        identity_weights,
+        key=lambda item: item[0],
+        default=(0.0, 0.0),
+    )
+    identity_high_weight_match = int(
+        bool(identity_weights) and identity_raw_weight >= top_threshold
     )
     return PreferenceContributions(
         max_weight=max_weight,
         matched_count=min(
             len(feature_weights),
             len(FEATURE_CONTRIBUTION_SCHEDULE),
-        ) + len(non_feature_weights),
+        ) + int(bool(identity_weights)),
         high_weight_matches=(
-            feature_high_weight_matches + non_feature_high_weight_matches
+            feature_high_weight_matches + identity_high_weight_match
         ),
         negative_penalty=negative_penalty,
-        total_score=feature_contribution + non_feature_total,
+        total_score=feature_contribution + identity_contribution,
         feature=feature_contribution,
-        identity=max(identity_weights, default=0.0),
+        identity=identity_contribution,
         character=max(typed_identity_weights["character"], default=0.0),
         copyright=max(typed_identity_weights["copyright"], default=0.0),
         feature_match_count=len(feature_weights),
@@ -198,6 +209,7 @@ class DailySlateComposer:
         classifications,
         profile,
         contributions: dict[int, PreferenceContributions],
+        resolver: TagIdentityResolver | None = None,
     ) -> DailySlateResult:
         if not self.enabled:
             selected = tuple(ranked[:limit])
@@ -213,15 +225,26 @@ class DailySlateComposer:
 
         def add(candidates, motive, target):
             for illust in candidates:
-                if sum(value == motive for value in motives.values()) >= target:
+                if (
+                    len(selected) >= limit
+                    or sum(value == motive for value in motives.values()) >= target
+                ):
                     break
-                if illust.id in used_ids or not self._within_caps(illust, classifications, profile, identity_counts):
+                if illust.id in used_ids or not self._within_caps(
+                    illust,
+                    classifications,
+                    profile,
+                    identity_counts,
+                    resolver,
+                ):
                     continue
                 illust.recommendation_motive = motive
                 motives[illust.id] = motive
                 selected.append(illust)
                 used_ids.add(illust.id)
-                identity_counts.update(self._identity_keys(illust, classifications, profile))
+                identity_counts.update(
+                    self._identity_keys(illust, classifications, profile, resolver)
+                )
 
         inherent = {
             illust.id: contributions.get(
@@ -263,7 +286,13 @@ class DailySlateComposer:
         for illust in ranked:
             if len(selected) >= limit:
                 break
-            if illust.id in used_ids or not self._within_caps(illust, classifications, profile, identity_counts):
+            if illust.id in used_ids or not self._within_caps(
+                illust,
+                classifications,
+                profile,
+                identity_counts,
+                resolver,
+            ):
                 continue
             final_motive = (
                 "exploration"
@@ -278,7 +307,9 @@ class DailySlateComposer:
             motives[illust.id] = final_motive
             selected.append(illust)
             used_ids.add(illust.id)
-            identity_counts.update(self._identity_keys(illust, classifications, profile))
+            identity_counts.update(
+                self._identity_keys(illust, classifications, profile, resolver)
+            )
         return DailySlateResult(
             tuple(selected),
             tuple(ranked),
@@ -295,10 +326,11 @@ class DailySlateComposer:
             quotas[motive] += 1
         return quotas
 
-    def _identity_keys(self, illust, classifications, profile):
+    def _identity_keys(self, illust, classifications, profile, resolver=None):
+        resolver = resolver or TagIdentityResolver()
         strongest = {"character": (0.0, None), "copyright": (0.0, None)}
         for tag in illust.tags or []:
-            normalized = normalize_tag(tag)
+            normalized = resolver.resolve(tag)
             category = get_classification_category(classifications.get(normalized))
             if category in strongest:
                 weight = float(profile.get(normalized, profile.get(tag.lower(), 0.0)))
@@ -308,8 +340,8 @@ class DailySlateComposer:
                     strongest[category] = (weight, normalized)
         return [f"{category}:{tag}" for category, (_, tag) in strongest.items() if tag]
 
-    def _within_caps(self, illust, classifications, profile, counts):
-        for key in self._identity_keys(illust, classifications, profile):
+    def _within_caps(self, illust, classifications, profile, counts, resolver=None):
+        for key in self._identity_keys(illust, classifications, profile, resolver):
             cap = self.max_per_character if key.startswith("character:") else self.max_per_copyright
             if counts[key] >= cap:
                 return False

@@ -32,6 +32,24 @@ class DatabaseInitTests(unittest.TestCase):
 
         self.assertEqual(record["grounding_provenance"]["search_provider"], "brave")
 
+    def test_marking_ai_classification_unresolved_invalidates_runtime_evidence(self):
+        async def run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                await database.activate_ai_tag_classification(
+                    "white_hair", "feature", "A visual trait.", "en",
+                )
+                before = await database.get_ai_tag_classification_record("white_hair")
+                await database.mark_ai_tag_unresolved("white_hair")
+                after = await database.get_ai_tag_classification_record("white_hair")
+                return before, after
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            before, after = asyncio.run(run(Path(tmpdir) / "pixiv_xp.db"))
+
+        self.assertEqual(before["classification"], "feature")
+        self.assertIsNone(after)
+
     def test_init_db_migrates_ai_records_to_grounding_provenance(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "pixiv_xp.db"
@@ -280,13 +298,13 @@ class DatabaseInitTests(unittest.TestCase):
         async def _run(db_path):
             with patch.object(database, "DB_PATH", db_path):
                 await database.init_db()
-                await database.update_xp_profile({"白髪": 2.0, "white_hair": 3.0})
+                await database.update_xp_profile({"shirokami": 2.0, "white_hair": 3.0})
                 await database.save_tag_classifications([
-                    ("白髪", "feature", "ai"),
+                    ("shirokami", "feature", "ai"),
                     ("white_hair", "feature", "ai"),
                 ])
                 await database.save_tag_mapping_candidates([{
-                    "original_tag": "白髪",
+                    "original_tag": "shirokami",
                     "proposed_normalized_tag": "white_hair",
                     "source": "test",
                     "explanation": "same identity",
@@ -419,6 +437,143 @@ class DatabaseInitTests(unittest.TestCase):
         self.assertEqual(rejected["status"], "rejected")
         self.assertEqual(after, {"ブルアカ": "blue_archive"})
         self.assertEqual(search_term, "ブルアカ")
+
+    def test_rejected_candidate_reopens_only_after_semantic_evidence_changes(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                conn = sqlite3.connect(db_path)
+                conn.execute(
+                    "INSERT INTO xp_profile (tag, weight) VALUES ('shirokami', 8.0)"
+                )
+                conn.commit()
+                conn.close()
+                proposal = {
+                    "original_tag": "shirokami",
+                    "proposed_normalized_tag": "white_hair",
+                    "kind": "equivalent",
+                    "source": "generator-v1",
+                    "explanation": "Known translation.",
+                }
+                await database.save_tag_mapping_candidates([proposal])
+                first = (await database.get_tag_mapping_candidates(limit=1))[0]
+                await database.review_tag_mapping_candidate(
+                    first["id"], "reject",
+                    expected_candidate_ids=first["duplicate_candidate_ids"],
+                )
+                unchanged_inputs = await database.get_tag_mapping_candidate_inputs()
+                unchanged_inserted = await database.save_tag_mapping_candidates([proposal])
+
+                await database.activate_ai_tag_classification(
+                    "shirokami", "feature", "Grounded visual trait evidence.", "ja",
+                    grounding_provenance={"schema_version": 1, "source_urls": ["https://example.test"]},
+                )
+                changed_inputs = await database.get_tag_mapping_candidate_inputs()
+                changed_inserted = await database.save_tag_mapping_candidates([proposal])
+                revisions = await database.get_tag_mapping_candidates(limit=10)
+                return (
+                    unchanged_inputs, unchanged_inserted,
+                    changed_inputs, changed_inserted, first, revisions,
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
+
+        unchanged_inputs, unchanged_inserted, changed_inputs, changed_inserted, first, revisions = result
+        self.assertEqual(unchanged_inputs, [])
+        self.assertEqual(unchanged_inserted, 0)
+        self.assertEqual(changed_inputs, ["shirokami"])
+        self.assertEqual(changed_inserted, 1)
+        self.assertEqual(len(revisions), 1)
+        self.assertEqual(revisions[0]["supersedes_candidate_id"], first["id"])
+
+    def test_rejected_target_evidence_reopens_immutable_revision(self):
+        async def run():
+            await database.update_xp_profile({'revision_source': 8.0})
+            proposal = dict(original_tag='revision_source', proposed_normalized_tag='revision_target', source='test')
+            await database.save_tag_mapping_candidates([proposal])
+            first = (await database.get_tag_mapping_candidates())[0]
+            await database.review_tag_mapping_candidate(first['id'], 'reject')
+            with sqlite3.connect(database.DB_PATH) as db:
+                before = db.execute('SELECT * FROM tag_mapping_candidates WHERE id=?', (first['id'],)).fetchone()
+            self.assertEqual(await database.get_tag_mapping_candidate_inputs(), [])
+            self.assertEqual(await database.save_tag_mapping_candidates([proposal]), 0)
+            await database.activate_ai_tag_classification('revision_target', 'feature', 'Changed target evidence', 'en')
+            self.assertEqual(await database.get_tag_mapping_candidate_inputs(), ['revision_source'])
+            self.assertEqual(await database.save_tag_mapping_candidates([proposal]), 1)
+            revision = (await database.get_tag_mapping_candidates())[0]
+            self.assertEqual(revision['supersedes_candidate_id'], first['id'])
+            with sqlite3.connect(database.DB_PATH) as db:
+                self.assertEqual(db.execute('SELECT * FROM tag_mapping_candidates WHERE id=?', (first['id'],)).fetchone(), before)
+        asyncio.run(run())
+
+    def test_batch_preserves_existing_alias_and_rolls_back_review(self):
+        for target, kind in [('other', 'search'), ('batch_target', 'search'), ('other', 'equivalent')]:
+            with self.subTest(target=target, kind=kind):
+                async def run():
+                    with tempfile.TemporaryDirectory() as tmpdir, patch.object(database, 'DB_PATH', Path(tmpdir) / 'test.db'):
+                        await database.init_db()
+                        await database.save_tag_mapping_candidates([dict(original_tag='batch_source', proposed_normalized_tag='batch_target')])
+                        candidate = (await database.get_tag_mapping_candidates())[0]
+                        await database.save_tag_mapping_ai_recommendation(candidate['id'], dict(relation='equivalent', confidence=1, rationale='same', canonical_tag='batch_target', risk_flags=[], principle_checks={}), model='test', principles_version='test', evidence={})
+                        with sqlite3.connect(database.DB_PATH) as db:
+                            rid = db.execute('SELECT id FROM tag_mapping_ai_recommendations').fetchone()[0]
+                            db.execute('INSERT INTO tag_aliases(original_tag, normalized_tag, kind, source) VALUES (?, ?, ?, ?)', ('batch_source', target, kind, 'manual'))
+                            alias_before = db.execute('SELECT * FROM tag_aliases').fetchall()
+                            review_before = db.execute('SELECT * FROM tag_mapping_ai_recommendations').fetchall()
+                        with self.assertRaisesRegex(ValueError, 'alias_conflict'):
+                            database.apply_tag_mapping_ai_batch_sync([dict(candidate_id=candidate['id'], recommendation_id=rid, decision='accept_equivalent')])
+                        with sqlite3.connect(database.DB_PATH) as db:
+                            self.assertEqual(db.execute('SELECT * FROM tag_aliases').fetchall(), alias_before)
+                            self.assertEqual(db.execute('SELECT * FROM tag_mapping_ai_recommendations').fetchall(), review_before)
+                            self.assertEqual(db.execute('SELECT status FROM tag_mapping_candidates').fetchone()[0], 'pending')
+                asyncio.run(run())
+
+    def test_batch_identical_alias_is_idempotent_under_concurrent_review(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        async def prepare():
+            await database.save_tag_mapping_candidates([
+                dict(original_tag='idem_source', proposed_normalized_tag='idem_target'),
+            ])
+            candidate = (await database.get_tag_mapping_candidates())[0]
+            await database.save_tag_mapping_ai_recommendation(
+                candidate['id'],
+                dict(relation='equivalent', confidence=1, rationale='same',
+                     canonical_tag='idem_target', risk_flags=[], principle_checks={}),
+                model='test', principles_version='test', evidence={},
+            )
+            return candidate['id']
+
+        cid = asyncio.run(prepare())
+        with sqlite3.connect(database.DB_PATH) as db:
+            rid = db.execute('SELECT id FROM tag_mapping_ai_recommendations').fetchone()[0]
+            db.execute("INSERT INTO tag_aliases(original_tag, normalized_tag, kind, source) VALUES ('idem_source', 'idem_target', 'equivalent', 'manual')")
+            before = db.execute('SELECT * FROM tag_aliases').fetchall()
+        barrier = Barrier(2)
+
+        def apply():
+            barrier.wait(timeout=10)
+            try:
+                return database.apply_tag_mapping_ai_batch_sync([
+                    dict(candidate_id=cid, recommendation_id=rid, decision='accept_equivalent'),
+                ])
+            except ValueError as exc:
+                return str(exc)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(lambda _: apply(), range(2)))
+        successes = [item for item in outcomes if isinstance(item, dict)]
+        failures = [item for item in outcomes if isinstance(item, str)]
+        self.assertEqual(len(successes), 1)
+        self.assertEqual(successes[0]['aliases_created'], 0)
+        self.assertEqual(successes[0]['aliases_already_active'], 1)
+        self.assertEqual(len(failures), 1)
+        self.assertIn('已过期或候选已经审核', failures[0])
+        with sqlite3.connect(database.DB_PATH) as db:
+            self.assertEqual(db.execute('SELECT * FROM tag_aliases').fetchall(), before)
+            self.assertEqual(db.execute('SELECT status FROM tag_mapping_candidates').fetchone()[0], 'accepted')
 
     def test_count_tag_mapping_candidate_groups_collapses_pairs_and_skips_reviewed(self):
         async def _run(db_path):
@@ -577,12 +732,48 @@ class DatabaseInitTests(unittest.TestCase):
         self.assertTrue(result["alias_already_active"])
         self.assertEqual(aliases, {"明日方舟": "アークナイツ"})
 
+    def test_accepting_candidate_cannot_overwrite_an_active_alias(self):
+        async def _run(db_path):
+            with patch.object(database, "DB_PATH", db_path):
+                await database.init_db()
+                conn = sqlite3.connect(db_path)
+                conn.execute(
+                    """INSERT INTO tag_aliases
+                       (original_tag, normalized_tag, kind, source)
+                       VALUES ('shirokami', 'white_hair', 'equivalent', 'manual')"""
+                )
+                conn.commit()
+                conn.close()
+                await database.save_tag_mapping_candidates([{
+                    "original_tag": "shirokami",
+                    "proposed_normalized_tag": "silver_hair",
+                    "kind": "equivalent",
+                    "source": "new_evidence",
+                }])
+                candidate = (await database.get_tag_mapping_candidates(limit=1))[0]
+
+                with self.assertRaisesRegex(ValueError, "alias_conflict"):
+                    await database.review_tag_mapping_candidate(
+                        candidate["id"], "accept", kind="equivalent",
+                        expected_candidate_ids=candidate["duplicate_candidate_ids"],
+                    )
+
+                aliases = await database.get_accepted_tag_aliases()
+                pending = await database.get_tag_mapping_candidates(limit=10)
+                return aliases, pending
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            aliases, pending = asyncio.run(_run(Path(tmpdir) / "pixiv_xp.db"))
+
+        self.assertEqual(aliases, {"shirokami": "white_hair"})
+        self.assertEqual([item["status"] for item in pending], ["pending"])
+
     def test_review_rejects_a_group_that_changed_after_confirmation(self):
         async def _run(db_path):
             with patch.object(database, "DB_PATH", db_path):
                 await database.init_db()
                 await database.save_tag_mapping_candidates([{
-                    "original_tag": "白髪",
+                    "original_tag": "shirokami",
                     "proposed_normalized_tag": "white_hair",
                     "kind": "equivalent",
                     "source": "first",
@@ -593,7 +784,7 @@ class DatabaseInitTests(unittest.TestCase):
                     """
                     INSERT INTO tag_mapping_candidates (
                         original_tag, proposed_normalized_tag, kind, source, status
-                    ) VALUES ('WHITE_HAIR', '白髪', 'equivalent', 'late', 'pending')
+                    ) VALUES ('WHITE_HAIR', 'shirokami', 'equivalent', 'late', 'pending')
                     """
                 )
                 conn.commit()

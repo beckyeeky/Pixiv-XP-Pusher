@@ -9,15 +9,6 @@ sys.modules.setdefault(
     "pixivpy_async",
     types.SimpleNamespace(AppPixivAPI=object),
 )
-sys.modules.setdefault(
-    "aiosqlite",
-    types.SimpleNamespace(connect=None),
-)
-sys.modules.setdefault(
-    "aiohttp",
-    types.SimpleNamespace(ClientSession=object, ClientTimeout=object),
-)
-
 import database
 from tag_classifier import TagClassification, TagClassifier
 from tag_categories import is_seed_category
@@ -69,13 +60,35 @@ class TagClassifierTests(unittest.TestCase):
         self.assertFalse(classifier.legacy_judge_enabled)
         self.assertIsNone(classifier.client)
 
-    def test_disabled_classifier_falls_back_to_manual_ip_list(self):
+    def test_search_first_delivery_leaves_new_tags_unresolved_for_maintenance(self):
+        async def _run():
+            classifier = TagClassifier({
+                "enabled": True,
+                "judges": [],
+                "grounded_judge": {"backend": "search_first"},
+            })
+            return await classifier.classify_tags(["new_tag"])
+
+        with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={})), \
+             patch.object(database, "save_tag_classifications", new=AsyncMock()) as save, \
+             patch("tag_classifier.HAS_OPENAI", True):
+            result = asyncio.run(_run())
+
+        self.assertEqual(result["new_tag"].classification, "unresolved")
+        self.assertEqual(result["new_tag"].source, "ai_unresolved")
+        self.assertEqual(
+            save.await_args.args[0],
+            [("new_tag", "unresolved", "ai_unresolved")],
+        )
+
+    def test_disabled_classifier_trusts_manual_ip_tags_and_leaves_others_unresolved(self):
         async def _run():
             classifier = TagClassifier({"enabled": False}, ip_tags=["blue_archive"])
             result = await classifier.classify_tags(["blue_archive", "pantyhose"])
             self.assertEqual(result["blue_archive"].classification, "copyright")
             self.assertEqual(result["blue_archive"].source, "manual")
-            self.assertEqual(result["pantyhose"].classification, "feature")
+            self.assertEqual(result["pantyhose"].classification, "unresolved")
+            self.assertEqual(result["pantyhose"].source, "unresolved")
 
         with patch.object(database, "get_tag_classifications", new=AsyncMock(return_value={})), \
              patch.object(database, "save_tag_classifications", new=AsyncMock()):
