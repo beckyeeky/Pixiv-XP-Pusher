@@ -4,6 +4,8 @@ SQLite 数据层
 import asyncio
 import json
 import hashlib
+import time
+import uuid
 import aiosqlite
 import logging
 import sqlite3
@@ -427,6 +429,22 @@ def _init_db_sync():
 
             CREATE INDEX IF NOT EXISTS idx_exploration_vector_candidates_illust
                 ON exploration_vector_candidates(illust_id);
+
+            -- 历史种子轮换的独立状态表（纯增量，不重建或改写已有业务表）。
+            -- 时间均为 UTC epoch 秒；claim_token 是唯一租约标识。
+            CREATE TABLE IF NOT EXISTS related_seed_state (
+                illust_id INTEGER PRIMARY KEY,
+                state TEXT NOT NULL DEFAULT 'claimed',
+                cooldown_until REAL NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at REAL NOT NULL DEFAULT 0,
+                claim_token TEXT,
+                claim_until REAL,
+                updated_at REAL NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_related_seed_state_claim
+                ON related_seed_state(claim_until);
         """)
         db.execute(
             """
@@ -2757,6 +2775,197 @@ async def get_strategy_stats(strategy: str) -> tuple[int, int]:
         if row:
             return row[0], row[1]
         return 0, 0
+
+
+# ============ 历史种子轮换 ============
+# Epoch seconds, UTC. The seed pool is long-lived bookmark/feedback evidence;
+# this state table only records rotation leases and cooldowns.
+RELATED_SEED_MAX_PER_ROUND = 2
+RELATED_SEED_CLAIM_LEASE_SECONDS = 600
+RELATED_SEED_SUCCESS_COOLDOWN_SECONDS = 7 * 24 * 3600
+RELATED_SEED_FAILURE_BASE_SECONDS = 6 * 3600
+RELATED_SEED_FAILURE_CAP_SECONDS = 7 * 24 * 3600
+RELATED_SEED_THROTTLE_COOLDOWN_SECONDS = 3600
+RELATED_SEED_OUTCOMES = frozenset({"success", "empty", "error", "throttled", "unused"})
+
+_RELATED_SEED_SELECT_SQL = """
+WITH pool AS (
+    SELECT illust_id FROM preference_bookmarks WHERE illust_id > 0
+    UNION SELECT illust_id FROM xp_bookmarks WHERE illust_id > 0
+    UNION SELECT illust_id FROM feedback WHERE action = 'like' AND illust_id > 0
+    UNION SELECT illust_id FROM preference_feedback WHERE action = 'like' AND illust_id > 0
+),
+disliked AS (
+    SELECT illust_id FROM feedback WHERE action = 'dislike' AND illust_id > 0
+    UNION SELECT illust_id FROM preference_feedback WHERE action = 'dislike' AND illust_id > 0
+),
+known_authors AS (
+    SELECT illust_id, user_id FROM feedback_metadata WHERE user_id > 0
+    UNION SELECT illust_id, user_id FROM illust_cache WHERE user_id > 0
+    UNION SELECT illust_id, artist_id FROM preference_feedback
+          WHERE artist_id IS NOT NULL AND artist_id > 0
+)
+SELECT p.illust_id
+FROM pool AS p
+LEFT JOIN related_seed_state AS s ON s.illust_id = p.illust_id
+WHERE p.illust_id NOT IN (SELECT illust_id FROM disliked)
+  AND NOT EXISTS (
+      SELECT 1 FROM known_authors AS a
+      JOIN blocked_artists AS b ON b.artist_id = a.user_id
+      WHERE a.illust_id = p.illust_id
+  )
+  AND (
+      s.illust_id IS NULL
+      OR (
+          COALESCE(s.cooldown_until, 0) <= :now
+          AND (s.claim_token IS NULL OR COALESCE(s.claim_until, 0) <= :now)
+      )
+  )
+ORDER BY COALESCE(s.last_attempt_at, 0) ASC, p.illust_id ASC
+LIMIT :max_seeds
+"""
+
+
+async def claim_related_seeds(
+    max_seeds: int = RELATED_SEED_MAX_PER_ROUND,
+    now: float | None = None,
+    lease_seconds: int = RELATED_SEED_CLAIM_LEASE_SECONDS,
+) -> list[dict]:
+    """Claim up to ``max_seeds`` eligible seeds in one BEGIN IMMEDIATE transaction.
+
+    Returns ``[{"illust_id": int, "claim_token": str}, ...]``. Every claim gets a
+    unique lease token so a late ``finish_related_seed`` call cannot overwrite a
+    newer lease. Invalid budgets (<=0 or above 2) are clamped, never expanded.
+    """
+    try:
+        budget = min(int(max_seeds), RELATED_SEED_MAX_PER_ROUND)
+    except (TypeError, ValueError):
+        budget = 0
+    if budget <= 0:
+        return []
+
+    current = time.time() if now is None else float(now)
+    lease = max(1, int(lease_seconds))
+    claims: list[dict] = []
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                _RELATED_SEED_SELECT_SQL,
+                {"now": current, "max_seeds": budget},
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                illust_id = int(row[0])
+                token = uuid.uuid4().hex
+                await db.execute(
+                    """
+                    INSERT INTO related_seed_state (
+                        illust_id, state, cooldown_until, failure_count,
+                        last_attempt_at, claim_token, claim_until, updated_at
+                    ) VALUES (?, 'claimed', 0, 0, 0, ?, ?, ?)
+                    ON CONFLICT(illust_id) DO UPDATE SET
+                        state = 'claimed',
+                        claim_token = excluded.claim_token,
+                        claim_until = excluded.claim_until,
+                        updated_at = excluded.updated_at
+                    """,
+                    (illust_id, token, current + lease, current),
+                )
+                claims.append({"illust_id": illust_id, "claim_token": token})
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+
+    return claims
+
+
+async def finish_related_seed(
+    illust_id: int,
+    claim_token: str,
+    outcome: str,
+    now: float | None = None,
+) -> bool:
+    """Release a seed lease and record its cooldown.
+
+    The UPDATE is guarded by ``claim_token``; a stale worker whose lease was
+    already replaced gets ``False`` and changes nothing. ``unused`` releases the
+    lease without treating the seed as attempted.
+    """
+    if outcome not in RELATED_SEED_OUTCOMES:
+        raise ValueError(f"unknown related seed outcome: {outcome!r}")
+    if not isinstance(illust_id, int) or isinstance(illust_id, bool) or illust_id <= 0:
+        return False
+    if not isinstance(claim_token, str) or not claim_token:
+        return False
+
+    current = time.time() if now is None else float(now)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            if outcome == "unused":
+                cursor = await db.execute(
+                    """
+                    UPDATE related_seed_state
+                    SET claim_token = NULL, claim_until = NULL, updated_at = ?
+                    WHERE illust_id = ? AND claim_token = ?
+                    """,
+                    (current, illust_id, claim_token),
+                )
+                await db.commit()
+                return cursor.rowcount > 0
+
+            cursor = await db.execute(
+                "SELECT failure_count FROM related_seed_state WHERE illust_id = ? AND claim_token = ?",
+                (illust_id, claim_token),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                await db.rollback()
+                return False
+
+            failure_count = int(row[0] or 0)
+            if outcome == "success":
+                failure_count = 0
+                cooldown_until = current + RELATED_SEED_SUCCESS_COOLDOWN_SECONDS
+            elif outcome == "throttled":
+                cooldown_until = current + RELATED_SEED_THROTTLE_COOLDOWN_SECONDS
+            else:
+                failure_count += 1
+                exponent = min(failure_count - 1, 16)
+                delay = min(
+                    RELATED_SEED_FAILURE_BASE_SECONDS * (2 ** exponent),
+                    RELATED_SEED_FAILURE_CAP_SECONDS,
+                )
+                cooldown_until = current + delay
+
+            cursor = await db.execute(
+                """
+                UPDATE related_seed_state
+                SET state = ?, cooldown_until = ?, failure_count = ?,
+                    last_attempt_at = ?, claim_token = NULL, claim_until = NULL,
+                    updated_at = ?
+                WHERE illust_id = ? AND claim_token = ?
+                """,
+                (
+                    outcome,
+                    cooldown_until,
+                    failure_count,
+                    current,
+                    current,
+                    illust_id,
+                    claim_token,
+                ),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+        except BaseException:
+            await db.rollback()
+            raise
 
 
 # ============ 快速屏蔽 (Bot /block) ============

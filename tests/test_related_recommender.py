@@ -62,11 +62,15 @@ class RelatedRecommenderTests(unittest.IsolatedAsyncioTestCase):
         async def fake_artist_score(user_id):
             return {10: 0.5, 20: 5.0, 30: 100.0}.get(user_id, 0.0)
 
-        with patch("related_recommender.db.get_liked_illusts", new=AsyncMock(return_value={42})), \
-             patch("related_recommender.db.get_artist_score", new=AsyncMock(side_effect=fake_artist_score)):
+        with sqlite3.connect(database.DB_PATH) as connection:
+            connection.execute("INSERT INTO feedback (illust_id, action) VALUES (42, 'like')")
+
+        with patch("related_recommender.db.get_artist_score", new=AsyncMock(side_effect=fake_artist_score)):
             result = await recommender.discover_for_strategy([("good", 2.0)], limit=2)
 
-        client.get_related_illusts.assert_awaited_once_with(42, limit=4)
+        client.get_related_illusts.assert_awaited_once_with(
+            42, limit=4, single_page=True, no_retry=True
+        )
         self.assertEqual([ill.id for ill in result], [2, 1])
 
     async def test_chain_related_skips_invalid_candidates_and_records_chain_metadata(self):

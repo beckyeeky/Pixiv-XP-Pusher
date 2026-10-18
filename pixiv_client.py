@@ -3,6 +3,7 @@ Pixiv API 异步客户端
 基于 pixivpy-async
 """
 import asyncio
+import copy
 import inspect
 import logging
 import random
@@ -18,6 +19,41 @@ from proxy_utils import normalize_proxy_url
 from utils import AsyncRateLimiter, retry_async, download_image_with_referer
 
 logger = logging.getLogger(__name__)
+
+
+class PixivAPIError(Exception):
+    """Pixiv returned a JSON ``error`` payload instead of a result.
+
+    ``pixivpy_async`` flattens responses and does not preserve the HTTP status,
+    so ``status`` is best-effort (body status fields/message).
+    """
+
+    def __init__(self, error):
+        self.error = error
+        self.status = _extract_api_error_status(error)
+        super().__init__(f"Pixiv API error (status={self.status}): {error}")
+
+
+def _extract_api_error_status(error, _depth: int = 0):
+    """Best-effort status extraction from a Pixiv JSON error body."""
+    if _depth > 2 or not isinstance(error, dict):
+        return None
+    for key in ("status", "status_code", "http_status", "code"):
+        if key not in error:
+            continue
+        try:
+            status = int(error[key])
+        except (TypeError, ValueError):
+            continue
+        if 100 <= status <= 599:
+            return status
+    for value in error.values():
+        if isinstance(value, dict):
+            nested = _extract_api_error_status(value, _depth + 1)
+            if nested is not None:
+                return nested
+    return None
+
 
 def sanitize_proxy_url(url: str | None) -> str | None:
     """脱敏代理URL，隐藏密码信息"""
@@ -430,19 +466,63 @@ class PixivClient:
         
         return illusts
     
-    @retry_async(max_retries=3)
     async def get_related_illusts(
         self,
         illust_id: int,
-        limit: int = 30
+        limit: int = 30,
+        *,
+        single_page: bool = False,
+        no_retry: bool = False,
     ) -> list[Illust]:
         """
         获取相关作品 (Related Works)
-        
+
         Args:
             illust_id: 种子作品ID
             limit: 返回数量
+            single_page: 只请求第一页（即使 API 返回 next_url）
+            no_retry: 单次传输预算：绕过项目层 retry_async，并绕过
+                pixivpy_async ``Net.fetch`` 自带的 10 次重试，只发 1 次 HTTP
+                请求；错误体以 ``PixivAPIError`` 抛出，供调用方记录 throttle。
+
+        默认参数严格保持原行为：retry_async(max_retries=3)、原分页深度，
+        错误体只截断读取并返回已获取的部分/空列表，不抛异常。
         """
+        if no_retry:
+            return await self._fetch_related_illusts(
+                illust_id,
+                limit=limit,
+                single_page=single_page,
+                raise_on_error=True,
+                single_attempt=True,
+            )
+        return await self._get_related_illusts_with_retry(
+            illust_id, limit=limit, single_page=single_page
+        )
+
+    @retry_async(max_retries=3)
+    async def _get_related_illusts_with_retry(
+        self,
+        illust_id: int,
+        limit: int = 30,
+        *,
+        single_page: bool = False,
+    ) -> list[Illust]:
+        """Default retrying path; kept separate so ``no_retry`` can bypass it."""
+        return await self._fetch_related_illusts(
+            illust_id, limit=limit, single_page=single_page
+        )
+
+    async def _fetch_related_illusts(
+        self,
+        illust_id: int,
+        limit: int = 30,
+        *,
+        single_page: bool = False,
+        raise_on_error: bool = False,
+        single_attempt: bool = False,
+    ) -> list[Illust]:
+        """Perform the actual related reads (one or more pages)."""
         # Token 30分钟刷新检查
         if not self._token_last_refresh or (datetime.now() - self._token_last_refresh).total_seconds() > 1800:
             await self.login()
@@ -450,8 +530,8 @@ class PixivClient:
         illusts = []
         next_qs = None
         
-        # 限制只抓取前几页，防止过深
-        max_pages = max(1, limit // 30 + 1)
+        # 限制只抓取前几页，防止过深；定时种子策略必须显式 single_page。
+        max_pages = 1 if single_page else max(1, limit // 30 + 1)
         page = 0
         
         while len(illusts) < limit and page < max_pages:
@@ -460,9 +540,23 @@ class PixivClient:
                     # 过滤掉不支持的参数 (如 viewed)
                     supported_keys = {'illust_id', 'filter', 'offset'}
                     filtered_qs = {k: v for k, v in next_qs.items() if k in supported_keys}
-                    result = await self.api.illust_related(**filtered_qs)
+                    if single_attempt:
+                        result = await self._related_request_once(**filtered_qs)
+                    else:
+                        result = await self.api.illust_related(**filtered_qs)
                 else:
-                    result = await self.api.illust_related(illust_id=illust_id)
+                    if single_attempt:
+                        result = await self._related_request_once(illust_id=illust_id)
+                    else:
+                        result = await self.api.illust_related(illust_id=illust_id)
+
+            # 定时种子路径必须让 429 冒泡，不能结算成 empty；默认连锁路径
+            # 保持基线行为：停止读取并返回已获得的部分/空结果。
+            if isinstance(result, dict) and result.get("error"):
+                if raise_on_error:
+                    raise PixivAPIError(result["error"])
+                logger.warning(f"关联作品 API 返回错误，保留已获取结果: {result['error']}")
+                break
             
             if not result.get("illusts"):
                 break
@@ -478,7 +572,37 @@ class PixivClient:
             page += 1
             
         return illusts
-    
+
+    async def _related_request_once(self, **params) -> dict:
+        """一次 ``illust_related`` GET，且底层只发 1 次 HTTP 请求。
+
+        ``pixivpy_async`` 1.2.14 在 ``Net.fetch`` 上叠加了
+        ``retry(..., retries=10)``，读超时会被 SDK 静默重发，项目层
+        ``no_retry`` 看不到。这里改为对一个 SDK API 的浅拷贝发起调用，并把该
+        拷贝的 ``fetch`` 绑定到 ``functools.wraps`` 暴露的未装饰协程
+        （``Net.fetch.__wrapped__``）：URL/参数、App 头与 Bearer 认证头、
+        ``additional_headers``、SDK session、``conn_opt``（proxy/env/bypass）
+        和 ``requests_kwargs``（timeout）全部仍由 SDK 自己构造，只跳过重试。
+        共享的 API 实例不被修改，因此并发的默认连锁调用仍保留重试语义。
+
+        不具备 SDK 传输面的测试替身退回公共方法 ``illust_related``。
+        若真实 SDK 的 ``fetch`` 不再是 retry 装饰器，则拒绝降级并报错，
+        避免在无法保证单次请求时静默重试。
+        """
+        api = self.api
+        fetch = getattr(type(api), "fetch", None)
+        if not hasattr(api, "api") or fetch is None:
+            return await api.illust_related(**params)
+        raw_fetch = getattr(fetch, "__wrapped__", None)
+        if raw_fetch is None:
+            raise RuntimeError(
+                "pixivpy_async Net.fetch has no unwrapped coroutine; "
+                "single-attempt related reads cannot be guaranteed"
+            )
+        shim = copy.copy(api)
+        shim.fetch = lambda url, headers, query: raw_fetch(shim, url, headers, query)
+        return await shim.illust_related(**params)
+
     @retry_async(max_retries=3)
     async def get_ranking(
         self,

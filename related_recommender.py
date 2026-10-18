@@ -6,7 +6,6 @@ recommendations behind one interface while preserving the existing behavior.
 
 import asyncio
 import logging
-import random
 from typing import Optional
 
 import database as db
@@ -15,6 +14,22 @@ from pixiv_client import Illust, PixivClient
 from tag_classifier import TagClassifier
 
 logger = logging.getLogger(__name__)
+
+# One round may try at most two historical seeds and one related read per seed.
+MAX_SEEDS_PER_ROUND = 2
+
+
+def _is_rate_limit_error(error: Exception) -> bool:
+    """Treat HTTP 429/Too Many Requests as a throttle, never an immediate retry."""
+    for attribute in ("status", "status_code", "http_status"):
+        if getattr(error, attribute, None) == 429:
+            return True
+    response = getattr(error, "response", None)
+    for attribute in ("status", "status_code"):
+        if getattr(response, attribute, None) == 429:
+            return True
+    message = str(error).lower()
+    return "429" in message or "too many requests" in message or "rate limit" in message
 
 
 def _get_display_tags_max_ip_count(filter_cfg: dict) -> int:
@@ -68,62 +83,122 @@ class RelatedRecommender:
         self.processing_set = processing_set if processing_set is not None else set()
         self.processing_lock = processing_lock or asyncio.Lock()
 
+    async def _finish_seed_claim(self, illust_id: int, claim_token: str, outcome: str) -> bool:
+        """Release one seed lease; a storage error must not crash the strategy."""
+        try:
+            return await db.finish_related_seed(illust_id, claim_token, outcome)
+        except Exception as e:
+            logger.warning(f"关联策略: 种子租约结算失败 ({outcome})，交由租约过期回收: {e}")
+            return False
+
     async def discover_for_strategy(self, xp_tags: list[tuple[str, float]], limit: int = 50) -> list[Illust]:
-        """Discover related works for the scheduled MAB related strategy."""
-        if not xp_tags:
+        """Discover related works from a rotating pool of historical positive seeds.
+
+        Seed acquisition is guarded by durable leases and cooldowns. A success is
+        only a successful *candidate* fetch, never a delivery confirmation.
+        """
+        if limit <= 0 or not xp_tags:
             return []
 
         top_tags = xp_tags[:20]
         if not top_tags:
             return []
 
-        tags, weights = zip(*top_tags)
-        seed_tag = random.choices(tags, weights=weights, k=1)[0]
-
         try:
-            liked_ids = await db.get_liked_illusts()
-            if not liked_ids:
-                return []
-
-            seed_illust_id = random.choice(list(liked_ids))
-            logger.info(f"关联策略: 选中种子作品 {seed_illust_id} (Tag: {seed_tag})")
+            claims = await db.claim_related_seeds(max_seeds=MAX_SEEDS_PER_ROUND)
         except Exception as e:
-            logger.warning(f"关联策略选种失败: {e}")
+            # No fallback to the old random path: it would bypass cooldowns.
+            logger.warning(f"关联策略: 历史种子租约获取失败，本轮不请求关联作品: {e}")
             return []
 
-        try:
-            raw_related = await self.client.get_related_illusts(seed_illust_id, limit=limit * 2)
-        except Exception as e:
-            logger.error(f"获取关联作品失败: {e}")
+        if not claims:
+            logger.info("关联策略: 历史种子池当前无可轮换种子")
             return []
 
-        scored_candidates = []
+        round_seed_ids = {int(claim["illust_id"]) for claim in claims}
+        unfinished = {int(claim["illust_id"]): claim for claim in claims}
+        scored_candidates: list[tuple[Illust, float]] = []
+        seen_ids: set[int] = set()
         xp_dict = dict(xp_tags)
         bookmark_threshold_related = self.bookmark_threshold.get("related", 0)
 
-        for illust in raw_related:
-            if bookmark_threshold_related > 0 and illust.bookmark_count < bookmark_threshold_related:
-                logger.debug(
-                    f"关联策略: 作品 {illust.id} 收藏数 {illust.bookmark_count} < 阈值 {bookmark_threshold_related}，跳过"
+        try:
+            for claim in claims:
+                seed_illust_id = int(claim["illust_id"])
+                claim_token = claim["claim_token"]
+
+                try:
+                    # Hard budget: one page and at most one underlying related
+                    # request per seed. A 429 must bubble up, never look empty.
+                    # Token refresh is separate from this artwork read budget.
+                    raw_related = await self.client.get_related_illusts(
+                        seed_illust_id,
+                        limit=limit * 2,
+                        single_page=True,
+                        no_retry=True,
+                    )
+                except Exception as e:
+                    unfinished.pop(seed_illust_id, None)
+                    if _is_rate_limit_error(e):
+                        await self._finish_seed_claim(seed_illust_id, claim_token, "throttled")
+                        logger.warning("关联策略: 关联接口限流，本轮停止并进入短冷却")
+                        break
+                    await self._finish_seed_claim(seed_illust_id, claim_token, "error")
+                    logger.warning(f"关联策略: 获取关联作品失败，跳过该历史种子: {e}")
+                    continue
+
+                unfinished.pop(seed_illust_id, None)
+                if not raw_related:
+                    await self._finish_seed_claim(seed_illust_id, claim_token, "empty")
+                    logger.info("关联策略: 历史种子暂无关联作品，进入退避冷却")
+                    continue
+
+                if not await self._finish_seed_claim(seed_illust_id, claim_token, "success"):
+                    logger.warning("关联策略: 种子租约已被新请求接管，丢弃本轮候选")
+                    continue
+
+                try:
+                    for illust in raw_related:
+                        if illust.id in round_seed_ids or illust.id in seen_ids:
+                            continue
+                        seen_ids.add(illust.id)
+
+                        if (
+                            bookmark_threshold_related > 0
+                            and illust.bookmark_count < bookmark_threshold_related
+                        ):
+                            logger.debug(
+                                f"关联策略: 候选收藏数 {illust.bookmark_count} < 阈值 "
+                                f"{bookmark_threshold_related}，跳过"
+                            )
+                            continue
+
+                        score = 0.0
+                        for tag in illust.tags:
+                            norm = tag.lower().replace(" ", "_")
+                            if norm in xp_dict:
+                                score += xp_dict[norm]
+
+                        score += await db.get_artist_score(illust.user_id)
+                        scored_candidates.append((illust, score))
+                except Exception as e:
+                    logger.error(f"关联策略: 候选打分失败，本轮提前结束: {e}")
+                    break
+
+                if len(scored_candidates) >= limit:
+                    break
+        finally:
+            for remaining in unfinished.values():
+                await self._finish_seed_claim(
+                    int(remaining["illust_id"]), remaining["claim_token"], "unused"
                 )
-                continue
-
-            score = 0.0
-            for tag in illust.tags:
-                norm = tag.lower().replace(" ", "_")
-                if norm in xp_dict:
-                    score += xp_dict[norm]
-
-            artist_score = await db.get_artist_score(illust.user_id)
-            score += artist_score
-            scored_candidates.append((illust, score))
 
         scored_candidates.sort(key=lambda x: x[1], reverse=True)
-
-        details = [f"{ill.id}({sc:.1f})" for ill, sc in scored_candidates[:5]]
-        logger.info(f"关联推荐结果: {details}...")
-
-        return [x[0] for x in scored_candidates[:limit]]
+        logger.info(
+            f"关联策略: 使用 {len(claims) - len(unfinished)} 个历史种子，"
+            f"候选 {len(scored_candidates)} 个"
+        )
+        return [illust for illust, _ in scored_candidates[:limit]]
 
     async def push_chain(
         self,
