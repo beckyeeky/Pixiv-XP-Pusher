@@ -1764,6 +1764,9 @@ class TelegramNotifier(BaseNotifier):
             if ":" in data:
                 action, illust_id = data.split(":")
                 if action in ("like", "dislike", "follow"):
+                    if action == "follow" and not illust_id.isdigit():
+                        await query.answer("关注目标无效")
+                        return
                     try:
                         # 1. 乐观更新：先改界面，让用户觉得"秒回"
                         try:
@@ -5093,8 +5096,8 @@ class TelegramNotifier(BaseNotifier):
         if action == "follow" and chat_id:
             typing_task = asyncio.create_task(self._keep_typing(chat_id))
         try:
-            # 1. 调用原有的XP更新逻辑
-            if self.on_feedback:
+            # 关注画师只同步 Pixiv 关注状态，不写入作品画像账本。
+            if self.on_feedback and action in ("like", "dislike"):
                 callback_result = await self.on_feedback(illust_id, action)
                 if isinstance(callback_result, dict):
                     feedback_result.update(callback_result)
