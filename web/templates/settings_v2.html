@@ -596,6 +596,12 @@ textarea.form-control {
         <!-- 画像分析 -->
         <div id="section-profiler" class="settings-section">
             <h3 class="section-title">👤 画像分析</h3>
+            {% set profiler_mode = (config.profiler.profile_mode | default('persistent')) | lower %}
+            {% if profiler_mode == 'legacy' %}
+            <p class="help-text" id="profilerModeHint">当前为 legacy 画像模式：时间衰减与饱和阈值参与旧算法权重计算。</p>
+            {% else %}
+            <p class="help-text" id="profilerModeHint">当前为持久画像：权重来自有效标签基础与 like 反馈的 like_boost 加成，不随作品发表年龄衰减；对同一作品重复 like 不会重复叠加画像权重。</p>
+            {% endif %}
             <div class="form-grid">
                 <div>
                     <div class="form-group">
@@ -611,6 +617,7 @@ textarea.form-control {
                                    oninput="this.nextElementSibling.innerText = this.value">
                             <span class="range-value">{{ config.profiler.discovery_rate | default(0.1) }}</span>
                         </div>
+                        <div class="help-text">参与 XP 搜索组合的探索配额，与画像模式无关，始终生效。</div>
                     </div>
                     <div id="danbooruProviderSettings"></div>
                     <div class="form-group"><span id="ipStatus" class="status-badge">检查中...</span></div>
@@ -618,15 +625,17 @@ textarea.form-control {
                         <button type="button" class="btn-secondary" onclick="syncIPTags(this)">🔄 同步 IP 标签列表</button>
                         <div class="sync-log" id="syncLog"></div>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">时间衰减半衰期(天)</label>
-                        <input type="number" class="form-control" id="profiler_time_decay_days"
-                               value="{{ config.profiler.time_decay_days | default(180) }}">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">标签饱和阈值</label>
-                        <input type="number" step="0.01" class="form-control" id="profiler_saturation_threshold"
-                               value="{{ config.profiler.saturation_threshold | default(0.5) }}">
+                    <div id="profiler_legacy_params"{% if profiler_mode != 'legacy' %} hidden{% endif %}>
+                        <div class="form-group">
+                            <label class="form-label">时间衰减半衰期(天)</label>
+                            <input type="number" class="form-control" id="profiler_time_decay_days"
+                                   value="{{ config.profiler.time_decay_days | default(180) }}">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">标签饱和阈值</label>
+                            <input type="number" step="0.01" class="form-control" id="profiler_saturation_threshold"
+                                   value="{{ config.profiler.saturation_threshold | default(0.5) }}">
+                        </div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">Top N 标签</label>
@@ -1497,6 +1506,7 @@ function collectConfig() {
     const tg = ensureObject(notifier, 'telegram');
     const richMessage = ensureObject(tg, 'rich_message');
     const profiler = ensureObject(cfg, 'profiler');
+    const profilerMode = String(profiler.profile_mode || 'persistent').toLowerCase();
     const ai = ensureObject(cfg, 'ai');
     const embedding = ensureObject(ai, 'embedding');
     const scorer = ensureObject(ai, 'scorer');
@@ -1596,10 +1606,16 @@ function collectConfig() {
 
     profiler.scan_limit = asInt(document.getElementById('profiler_scan_limit').value, profiler.scan_limit || 1000);
     profiler.discovery_rate = asFloat(document.getElementById('profiler_discovery_rate').value, profiler.discovery_rate || 0.1);
-    profiler.time_decay_days = asInt(document.getElementById('profiler_time_decay_days').value, profiler.time_decay_days || 180);
-    profiler.saturation_threshold = asFloat(document.getElementById('profiler_saturation_threshold').value, profiler.saturation_threshold || 0.5);
     profiler.top_n = asInt(document.getElementById('profiler_top_n').value, profiler.top_n || 20);
     profiler.include_private = document.getElementById('profiler_include_private').checked;
+    // Legacy-only weights are hidden in persistent mode; keep their stored
+    // values untouched and never read controls that are not rendered.
+    if (profilerMode === 'legacy') {
+        const decayField = document.getElementById('profiler_time_decay_days');
+        const saturationField = document.getElementById('profiler_saturation_threshold');
+        if (decayField) profiler.time_decay_days = asInt(decayField.value, profiler.time_decay_days || 180);
+        if (saturationField) profiler.saturation_threshold = asFloat(saturationField.value, profiler.saturation_threshold || 0.5);
+    }
 
     embedding.enabled = document.getElementById('ai_embedding_enabled').checked;
     embedding.model = document.getElementById('ai_embedding_model').value || embedding.model || '';

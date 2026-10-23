@@ -294,5 +294,25 @@ class SettingsEditorTests(unittest.TestCase):
             }, str)
 
 
+    def test_persistent_profile_save_keeps_hidden_legacy_weights(self):
+        current = {
+            "profiler": {
+                "profile_mode": "persistent",
+                "time_decay_days": 90,
+                "saturation_threshold": 0.42,
+            },
+            "web": {"require_login_password": False, "password": ""},
+        }
+        merged = apply_settings_payload(
+            current,
+            {"profiler": {"profile_mode": "persistent"}, "web": {"require_login_password": False}},
+            str,
+        )
+
+        self.assertEqual(merged["profiler"]["time_decay_days"], 90)
+        self.assertEqual(merged["profiler"]["saturation_threshold"], 0.42)
+        self.assertEqual(merged["profiler"]["profile_mode"], "persistent")
+
+
 if __name__ == "__main__":
     unittest.main()

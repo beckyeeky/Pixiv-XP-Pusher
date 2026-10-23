@@ -666,6 +666,66 @@ class WebEntrypointTests(unittest.TestCase):
         self.assertEqual(signature(api_gallery).parameters["limit"].default, 25)
         self.assertEqual(signature(db_module.get_push_history_paginated).parameters["limit"].default, 25)
 
+    def _render_settings_page(self, config):
+        with patch.object(web_app_module, "load_config", return_value=config), \
+             patch.object(web_app_module, "verify_session", return_value=True):
+            response = TestClient(canonical_app).get("/settings")
+        self.assertEqual(response.status_code, 200)
+        return response.text
+
+    def test_persistent_profile_hides_legacy_weight_parameters(self):
+        persistent_html = self._render_settings_page({"profiler": {"profile_mode": "persistent"}})
+
+        self.assertIn('id="profiler_legacy_params" hidden', persistent_html)
+        # Persisted legacy values stay in the page so saving cannot reset them.
+        self.assertIn('id="profiler_time_decay_days"', persistent_html)
+        self.assertIn('id="profiler_saturation_threshold"', persistent_html)
+        # Exploration quota is consumed by the fetcher, independent of profile mode.
+        self.assertIn('id="profiler_discovery_rate"', persistent_html)
+        self.assertIn("不随作品发表年龄衰减", persistent_html)
+        self.assertIn("不会重复叠加画像权重", persistent_html)
+
+    def test_legacy_profile_keeps_legacy_weight_parameters_visible(self):
+        legacy_html = self._render_settings_page({"profiler": {"profile_mode": "legacy"}})
+
+        self.assertNotIn('id="profiler_legacy_params" hidden', legacy_html)
+        self.assertIn("id=\"profiler_legacy_params\"", legacy_html)
+        self.assertIn('id="profiler_time_decay_days"', legacy_html)
+        self.assertIn('id="profiler_saturation_threshold"', legacy_html)
+
+    def test_settings_save_only_reads_legacy_parameters_in_legacy_mode(self):
+        template = (Path(web_app_module.TEMPLATES_DIR) / "settings_v2.html").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "const profilerMode = String(profiler.profile_mode || 'persistent').toLowerCase();",
+            template,
+        )
+        marker = "if (profilerMode === 'legacy') {"
+        self.assertEqual(template.count(marker), 1)
+        guarded = template.split(marker, 1)[1].split("\n    }", 1)[0]
+        self.assertIn("getElementById('profiler_time_decay_days')", guarded)
+        self.assertIn("getElementById('profiler_saturation_threshold')", guarded)
+        self.assertEqual(template.count("getElementById('profiler_time_decay_days')"), 1)
+        self.assertEqual(template.count("getElementById('profiler_saturation_threshold')"), 1)
+        self.assertNotIn("document.getElementById('profiler_time_decay_days').value", template)
+        self.assertNotIn("document.getElementById('profiler_saturation_threshold').value", template)
+
+    def test_gallery_page_keeps_waterfall_and_pagination(self):
+        with patch.object(web_app_module, "verify_session", return_value=True), patch.object(
+            web_app_module.db,
+            "get_push_history_paginated",
+            new=AsyncMock(return_value=([{"illust_id": 123456}], 51)),
+        ):
+            response = TestClient(canonical_app).get("/gallery", params={"page": 1})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('id="galleryGrid"', response.text)
+        self.assertIn('data-illust-id="123456"', response.text)
+        self.assertIn('id="galleryLayoutToggleButton"', response.text)
+        self.assertIn('id="galleryPagination"', response.text)
+        self.assertIn('id="galleryAutoLoadSentinel"', response.text)
+        self.assertIn("gallery-layout-mode", response.text)
+
 
 if __name__ == "__main__":
     unittest.main()
