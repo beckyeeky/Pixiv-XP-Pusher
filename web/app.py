@@ -38,6 +38,8 @@ from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
 from classification_maintenance import (
     ClassificationMaintenance,
     OUTCOME_LABELS,
+    PAUSE_REASON_LABELS,
+    annotate_review_queue,
     backend_views_for_settings,
     classification_backend_view,
     outcome_line,
@@ -399,6 +401,8 @@ async def tags_page(request: Request):
         # the Web API and the Telegram notifier use, so no surface drifts.
         "classification_backend": classification_backend_view(config),
         "outcome_labels": OUTCOME_LABELS,
+        # Same source as the API annotation, so the badge text cannot drift.
+        "pause_reason_labels": PAUSE_REASON_LABELS,
     })
 
 
@@ -976,8 +980,15 @@ async def api_xp_profile(request: Request, _=Depends(require_auth)):
 
 @app.get("/api/tag-reviews")
 async def api_tag_reviews(limit: int = Query(100, ge=1, le=500), _=Depends(require_auth)):
-    """Return unresolved tags in the order a human should review them."""
-    return {"items": await db.get_tag_review_queue(limit)}
+    """Return unresolved tags in the order a human should review them.
+
+    A tag that already had one complete classification attempt without a
+    verdict carries ``automatic_pause`` so the operator can see *why* automatic
+    batches skip it.  The row stays in this queue: the pause never hides a tag
+    from human review, it only removes it from automatic selection.
+    """
+    items = await db.get_tag_review_queue(limit)
+    return {"items": annotate_review_queue(items, load_config())}
 
 
 @app.post("/api/tag-reviews")

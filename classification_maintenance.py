@@ -20,7 +20,10 @@ from native_jev_judge import (
     _join_endpoint,
     describe_credential_source,
     error_code,
+    native_state_store,
     native_task_lock_for_config,
+    pause_retry_token,
+    read_native_state_store,
     refresh_native_runtime_snapshot,
 )
 from tag_categories import TAG_CATEGORY_UNRESOLVED
@@ -30,6 +33,12 @@ from utils import normalize_tag
 USAGE_KEYS = ("input", "output", "thoughts", "tool_use_prompt", "total", "search_queries")
 SUMMARY_STATE_KEY = "runtime.last_classification_maintenance_summary"
 GROUNDING_TEXT_FIELDS = ("classifier_model", "search_provider", "search_pool_id")
+
+#: One database page of the review queue.  A page is deliberately bounded so a
+#: single call never materialises the whole profile, but it is *not* a scan cap:
+#: selection keeps advancing page by page until the batch is full or the
+#: database ends, so a large pause set can never permanently starve a batch.
+_QUEUE_PAGE_SIZE = 200
 
 
 def _bounded_text(value, limit: int) -> str:
@@ -291,8 +300,20 @@ class ClassificationMaintenance:
         self._classify = classify
         self._db = database_module
 
-    async def classify_tag(self, tag: str) -> dict:
-        """Run one manual review under the same single-task lock as a batch."""
+    async def classify_tag(self, tag: str, *, retry_paused: bool = True) -> dict:
+        """Run one manual review under the same single-task lock as a batch.
+
+        A single explicitly clicked tag is the one place that may retry an
+        automatically paused tag: that click *is* the operator's retry.  The
+        retry is granted as a **one-shot bypass token**, not as an early
+        ``resume()``: the durable pause (``since``/``attempts``) stays exactly
+        as authored until a classification actually succeeds.  An
+        infrastructure deferral, a backend exception and a cancellation
+        therefore leave the pause untouched, and a repeated ``hold`` keeps
+        ``since`` while incrementing ``attempts``.  Only the successfully
+        accepted attempt clears the pause (and the tag's own backoff), and only
+        for this one tag -- a batch entry never resumes anything.
+        """
         normalized = normalize_tag(tag)
         if not normalized:
             raise ValueError("必须提供有效标签")
@@ -305,20 +326,199 @@ class ClassificationMaintenance:
                     "reason": "task_lock_timeout", "usage": {}}
         try:
             refresh_native_runtime_snapshot(self.config)
-            return await self._classify(normalized, self.config)
+            paused = self.pause_state(normalized) if retry_paused else None
+            token = pause_retry_token([normalized]) if paused else None
+            if token is not None:
+                with token:
+                    result = await self._classify(normalized, self.config)
+            else:
+                result = await self._classify(normalized, self.config)
+            if paused and str(result.get("status") or "") == "accepted":
+                cleared = self._clear_pause_after_success(normalized)
+                if cleared:
+                    result = {**result, "resumed_pause": cleared}
+            return result
         finally:
             if lock is not None:
                 lock.release()
 
-    async def preview(self, limit: int | None = None) -> list[dict]:
-        effective_limit = self._effective_limit(limit)
-        return await self._db.get_high_weight_unclassified_profile_tags(
-            limit=effective_limit,
-            min_profile_weight=self.policy.min_profile_weight,
+    def _clear_pause_after_success(self, tag: str) -> dict | None:
+        """Clear this one tag's pause and backoff after a successful verdict.
+
+        Called only once the classification was accepted, while the single
+        task lock is still held, so the write cannot race a batch that authored
+        a newer pause in the meantime.
+        """
+        store = native_state_store(self.config)
+        if store is None:
+            return None
+        try:
+            store.reload()  # adopt the newest authored snapshot under the lock
+            cleared = store.resume(tag)
+            store.clear_cooldown(f"tag:{tag}")
+        except OSError:
+            return None
+        return cleared or None
+
+    def pause_state(self, tag: str) -> dict | None:
+        """Read-only pause view for one tag (review list, Web hints)."""
+        store = read_native_state_store(self.config)
+        return None if store is None else store.pause_entry(tag)
+
+    def _queue_exclusions(self) -> tuple[frozenset[str], frozenset[str]]:
+        """(paused, cooling) for the current on-disk snapshot.
+
+        Reading never writes: a preview must not create a state file, and it
+        must never resume a pause.
+        """
+        try:
+            store = read_native_state_store(self.config)
+        except OSError:
+            return frozenset(), frozenset()
+        if store is None:
+            return frozenset(), frozenset()
+        return store.paused_tags(), store.cooling_tags()
+
+    async def preview(
+        self,
+        limit: int | None = None,
+        *,
+        min_profile_weight: float | None = None,
+    ) -> list[dict]:
+        # A preview is queue inspection: it must never create or migrate the
+        # database, so it reads through the read-only connection.
+        selection = await self._select_available(limit, min_profile_weight, read_only=True)
+        return selection["items"]
+
+    async def select_eligible(
+        self,
+        limit: int | None = None,
+        *,
+        min_profile_weight: float | None = None,
+    ) -> dict:
+        """Preview plus the paused/cooling skip counters, for one operator hint."""
+        return await self._select_available(limit, min_profile_weight)
+
+    async def available_candidates(
+        self, limit: int, min_profile_weight: float = 0.0, *, include_paused: bool = False,
+    ) -> list[dict]:
+        """Queue inspection for the maintenance/CLI previews (no per-run cap).
+
+        The single shared implementation is what ``preview_native_jev`` and
+        ``maintain_high_weight_tags`` both call, so the two read-only surfaces
+        can never scan, exclude or paginate differently.  It reads the database
+        through ``mode=ro``: a missing file or an incompatible schema aborts
+        without creating anything.
+
+        ``include_paused`` is the diagnostics-only switch of the preview CLI: it
+        keeps paused/cooling tags in the returned batch (which then costs a real
+        request per tag) and still writes nothing.
+        """
+        selection = await self._select_available(
+            limit, min_profile_weight, capped=False, read_only=True,
+            exclude_unavailable=not include_paused,
         )
+        return selection["items"]
+
+    def _queue_page_fetcher(self, read_only: bool):
+        """Return ``async (limit, minimum, offset) -> rows`` for one queue page.
+
+        ``read_only`` uses the ``mode=ro`` accessor of the real ``database``
+        module.  An injected database double (unit tests) has no such accessor,
+        so it keeps the documented async contract it substitutes for.
+        """
+        if read_only and self._db is db:
+            getter = db.get_high_weight_unclassified_profile_tags_readonly
+
+            async def fetch(limit: int, minimum: float, offset: int = 0):
+                # The first page keeps exactly the same call shape as the
+                # writable accessor (only limit/min_profile_weight); offset is
+                # added only when a scan actually advances.
+                if offset:
+                    return await asyncio.to_thread(
+                        getter, limit=limit, min_profile_weight=minimum, offset=offset,
+                    )
+                return await asyncio.to_thread(
+                    getter, limit=limit, min_profile_weight=minimum,
+                )
+
+            return fetch
+
+        async def fetch(limit: int, minimum: float, offset: int = 0):
+            if offset:
+                return await self._db.get_high_weight_unclassified_profile_tags(
+                    limit=limit, min_profile_weight=minimum, offset=offset,
+                )
+            return await self._db.get_high_weight_unclassified_profile_tags(
+                limit=limit, min_profile_weight=minimum,
+            )
+
+        return fetch
+
+    async def _select_available(
+        self,
+        limit: int | None = None,
+        min_profile_weight: float | None = None,
+        *,
+        capped: bool = True,
+        read_only: bool = False,
+        exclude_unavailable: bool = True,
+    ) -> dict:
+        """Weight-ordered candidates that may still be processed.
+
+        Paused and cooling tags are filtered out of the *page* before the batch
+        is filled, and the shortfall is backfilled from lower-weight candidates
+        in the database's own ``ABS(weight) DESC, tag`` order (this never
+        re-ranks candidates).  Pages are bounded (``_QUEUE_PAGE_SIZE``) but the
+        loop keeps advancing until the batch is full or the profile ends, so
+        there is no permanent scan cap: 1000 paused high-weight tags no longer
+        hide the five usable rows below them.
+
+        ``skipped_paused``/``skipped_cooling`` keep their original meaning: how
+        many of the rows inspected inside this call were excluded.
+        """
+        effective_limit = (
+            self._effective_limit(limit) if capped
+            else max(1, int(limit if isinstance(limit, int) else self.policy.max_tags_per_run))
+        )
+        minimum = (
+            self.policy.min_profile_weight
+            if min_profile_weight is None else float(min_profile_weight)
+        )
+        fetch = self._queue_page_fetcher(read_only)
+        paused, cooling = self._queue_exclusions() if exclude_unavailable else (frozenset(), frozenset())
+        if not paused and not cooling:
+            rows = await fetch(effective_limit, minimum)
+            return {"items": rows, "skipped_paused": 0, "skipped_cooling": 0}
+        page_size = max(effective_limit, _QUEUE_PAGE_SIZE)
+        offset = 0
+        available: list[dict] = []
+        skipped_paused = skipped_cooling = 0
+        while len(available) < effective_limit:
+            rows = await fetch(page_size, minimum, offset)
+            for row in rows:
+                tag = row.get("tag")
+                if tag in paused:
+                    skipped_paused += 1
+                    continue
+                if tag in cooling:
+                    skipped_cooling += 1
+                    continue
+                available.append(row)
+                if len(available) >= effective_limit:
+                    break
+            offset += len(rows)
+            if len(rows) < page_size:
+                break  # end of the profile: nothing left to backfill from
+        return {
+            "items": available[:effective_limit],
+            "skipped_paused": skipped_paused,
+            "skipped_cooling": skipped_cooling,
+        }
 
     async def run_eligible(self, limit: int | None = None) -> dict:
-        candidates = await self.preview(limit)
+        selection = await self._select_available(limit)
+        candidates = selection["items"]
         summary = await self.run_tags(item["tag"] for item in candidates)
         effective_limit = self._effective_limit(limit)
         return {
@@ -327,6 +527,8 @@ class ClassificationMaintenance:
             "effective_limit": effective_limit,
             "configured_limit": self.policy.max_tags_per_run,
             "min_profile_weight": self.policy.min_profile_weight,
+            "skipped_paused": selection["skipped_paused"],
+            "skipped_cooling": selection["skipped_cooling"],
         }
 
     async def run_reviewed(
@@ -355,8 +557,15 @@ class ClassificationMaintenance:
                     "deferred": 0, "failed": 0, "human_override": 0, "preserved": 0,
                     "usage": empty_usage(), "items": [],
                     "automatic_external_search": False}
-        selected = await self._select_profile_tags(profile)
-        return await self.run_tags(selected)
+        selected = await self._select_profile_tags_detailed(profile)
+        summary = await self.run_tags(selected["tags"])
+        if selected["skipped_paused"] or selected["skipped_cooling"]:
+            summary = {
+                **summary,
+                "skipped_paused": selected["skipped_paused"],
+                "skipped_cooling": selected["skipped_cooling"],
+            }
+        return summary
 
     async def run_tags(self, tags) -> dict:
         selected = list(dict.fromkeys(
@@ -399,6 +608,27 @@ class ClassificationMaintenance:
         self,
         profile: list[str] | dict[str, float],
     ) -> list[str]:
+        """Backwards-compatible view: just the selected tags."""
+        return (await self._select_profile_tags_detailed(profile))["tags"]
+
+    async def _select_profile_tags_detailed(
+        self,
+        profile: list[str] | dict[str, float],
+    ) -> dict:
+        """Weight-ordered profile tags that may still be classified.
+
+        Paused/cooling tags are removed before ``max_tags_per_run`` is applied,
+        and the batch is backfilled from the next-weight candidates, so an
+        automatic profile run cannot starve behind a growing pause set.  The
+        ordering rule itself (unresolved first, then |weight|) is unchanged.
+
+        Only a tag with an *explicit* classification is excluded.  An
+        ``unresolved`` row is not evidence that the tag was ever attempted: the
+        automatic path must stay consistent with the SQL queue (which compares
+        the classification value, not its age) and with the review queue -- a
+        one-day-old ``unresolved`` row without pause/attempt evidence remains
+        selectable, exactly like a tag that was never seen.
+        """
         if not isinstance(profile, dict):
             profile = {tag: 1.0 for tag in profile}
 
@@ -417,10 +647,23 @@ class ClassificationMaintenance:
             ttl_days=self._tag_ttl_days(),
         )
 
+        def recorded(tag: str) -> dict:
+            entry = cached.get(tag)
+            return entry if isinstance(entry, dict) else {}
+
+        def settled(tag: str) -> bool:
+            """True only for an explicit (non-``unresolved``) classification.
+
+            The cache query already returns every manual and every resolved AI
+            row regardless of age, so this test matches the SQL queue exactly:
+            an ``unresolved`` row is never treated as a decision.
+            """
+            value = recorded(tag).get("classification")
+            return bool(value) and value != TAG_CATEGORY_UNRESOLVED
+
         def priority(tag: str):
             unresolved = (
-                cached.get(tag, {}).get("classification")
-                == TAG_CATEGORY_UNRESOLVED
+                recorded(tag).get("classification") == TAG_CATEGORY_UNRESOLVED
             )
             return (
                 0 if self.policy.prefer_unresolved_first and unresolved else 1,
@@ -428,8 +671,22 @@ class ClassificationMaintenance:
                 tag,
             )
 
-        candidates = [tag for tag in candidates if tag not in cached]
-        return sorted(candidates, key=priority)[:self.policy.max_tags_per_run]
+        candidates = [tag for tag in candidates if not settled(tag)]
+        paused, cooling = self._queue_exclusions()
+        excluded = paused | cooling
+        if excluded:
+            skipped_paused = sum(1 for tag in candidates if tag in paused)
+            skipped_cooling = sum(
+                1 for tag in candidates if tag in cooling and tag not in paused
+            )
+            candidates = [tag for tag in candidates if tag not in excluded]
+        else:
+            skipped_paused = skipped_cooling = 0
+        return {
+            "tags": sorted(candidates, key=priority)[:self.policy.max_tags_per_run],
+            "skipped_paused": skipped_paused,
+            "skipped_cooling": skipped_cooling,
+        }
 
     def _effective_limit(self, requested: int | None) -> int:
         if requested is None:
@@ -521,6 +778,56 @@ def outcome_lines_behind(summary: dict | None) -> list[dict[str, int | str]]:
         {"status": status, "label": OUTCOME_LABELS[status], "count": counts[status]}
         for status in OUTCOME_STATUSES
     ]
+
+
+# ---------------------------------------------------------------------------
+# Automatic pause presentation
+#
+# A pause is reported in operator terms: "this tag already had a complete
+# attempt and no verdict, so automatic batches skip it".  It is deliberately
+# NOT described as a cooldown (which expires) and NOT as an unresolved verdict
+# (the human review queue is where the tag lives).
+# ---------------------------------------------------------------------------
+
+PAUSE_REASON_LABELS = {
+    "no_evidence": "未找到可用证据",
+    "low_relevance": "证据与标签不相关",
+    "model_unresolved": "模型判定无法确定",
+    "insufficient_agreement": "两个来源未达成一致",
+    "conflicting_classification": "来源分类互相冲突",
+}
+
+
+def pause_line(entry: dict | None) -> str:
+    """One bounded, operator-facing sentence describing a pause, or ''."""
+    if not isinstance(entry, dict) or not entry:
+        return ""
+    reason = str(entry.get("reason") or "")
+    label = PAUSE_REASON_LABELS.get(reason, reason or "原因未记录")
+    attempts = entry.get("attempts")
+    try:
+        attempted = f"，已尝试 {max(0, int(attempts))} 次"
+    except (TypeError, ValueError):
+        attempted = ""
+    return f"自动暂停：{label}（{reason or 'unknown'}）{attempted}；自动批量跳过，单项手动重试可再次尝试"
+
+
+def annotate_review_queue(items: list[dict], config: dict) -> list[dict]:
+    """Attach ``automatic_pause`` to paused rows only; never writes state."""
+    try:
+        store = read_native_state_store(config)
+    except OSError:
+        return items
+    if store is None or not items:
+        return items
+    paused = store.paused_tags()
+    if not paused:
+        return items
+    annotated = []
+    for item in items:
+        entry = store.pause_entry(item.get("tag")) if item.get("tag") in paused else None
+        annotated.append({**item, "automatic_pause": entry} if entry else item)
+    return annotated
 
 
 def _reference_names(value) -> list[str]:

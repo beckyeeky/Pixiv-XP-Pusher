@@ -1729,10 +1729,19 @@ async def get_tag_review_queue(limit: int = 100) -> list[dict]:
 async def get_high_weight_unclassified_profile_tags(
     limit: int = 40,
     min_profile_weight: float = 0.0,
+    *,
+    offset: int = 0,
 ) -> list[dict]:
-    """List high-impact profile tags that still need Grounded Judge classification."""
+    """List high-impact profile tags that still need Grounded Judge classification.
+
+    ``offset`` advances one page of the same deterministic
+    ``ABS(weight) DESC, tag ASC`` order, so a caller that must skip paused or
+    cooling rows can keep reading further pages until it has a full batch or
+    reaches the end of the profile.  Nothing else about the ordering changes.
+    """
     limit = max(1, int(limit))
     minimum = abs(float(min_profile_weight))
+    offset = max(0, int(offset))
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """
@@ -1743,9 +1752,9 @@ async def get_high_weight_unclassified_profile_tags(
             WHERE ABS(xp.weight) >= ?
               AND (classification.normalized_tag IS NULL OR classification.classification = ?)
             ORDER BY ABS(xp.weight) DESC, xp.tag ASC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (minimum, TAG_CATEGORY_UNRESOLVED, limit),
+            (minimum, TAG_CATEGORY_UNRESOLVED, limit, offset),
         )
         return [
             {"tag": tag, "profile_weight": float(weight), "classification": classification}
@@ -1753,8 +1762,14 @@ async def get_high_weight_unclassified_profile_tags(
         ]
 
 
-class DatabaseNotInitializedError(RuntimeError):
-    """The database file is absent, so a read-only preview cannot run."""
+class DatabaseNotInitializedError(sqlite3.OperationalError):
+    """The database file is absent, so a read-only preview cannot run.
+
+    Subclassing :class:`sqlite3.OperationalError` lets a read-only caller
+    report the missing file with the same exception family SQLite itself uses
+    for an unreadable/uninitialized database ("no such table"), while callers
+    that want a precise, non-creating message keep catching this type.
+    """
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
@@ -1802,7 +1817,9 @@ def _open_preview_readonly(path: Path) -> sqlite3.Connection:
     """Open the preview database read-only; never creates and never migrates it."""
     path = Path(path)
     if not path.exists():
-        raise DatabaseNotInitializedError(f"数据库不存在，只读预览中止：{path}")
+        raise DatabaseNotInitializedError(
+            f"数据库文件不存在，只读读取中止（no such table: xp_profile）：{path}"
+        )
     try:
         connection = _connect_readonly(path)
     except sqlite3.Error as exc:
@@ -1849,15 +1866,20 @@ def profile_tags_exist_readonly(tags) -> dict[str, bool]:
 def get_high_weight_unclassified_profile_tags_readonly(
     limit: int = 40,
     min_profile_weight: float = 0.0,
+    *,
+    offset: int = 0,
 ) -> list[dict]:
-    """Read the review queue through a read-only SQLite connection.
+    """Read one page of the review queue through a read-only SQLite connection.
 
     The connection is opened with ``mode=ro``: a missing file or an
     incompatible schema aborts the call instead of creating or migrating a
-    database, so a preview can never touch production data.
+    database, so a preview can never touch production data.  ``offset`` walks
+    the same ``ABS(weight) DESC, tag ASC`` order as the maintenance path, so
+    both read-only previews select identical batches page by page.
     """
     limit = max(1, int(limit))
     minimum = abs(float(min_profile_weight))
+    offset = max(0, int(offset))
     path = Path(DB_PATH)
     connection = _open_preview_readonly(path)
     try:
@@ -1870,9 +1892,9 @@ def get_high_weight_unclassified_profile_tags_readonly(
             WHERE ABS(xp.weight) >= ?
               AND (classification.normalized_tag IS NULL OR classification.classification = ?)
             ORDER BY ABS(xp.weight) DESC, xp.tag ASC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (minimum, TAG_CATEGORY_UNRESOLVED, limit),
+            (minimum, TAG_CATEGORY_UNRESOLVED, limit, offset),
         ).fetchall()
     except sqlite3.DatabaseError as exc:
         raise DatabaseSchemaMismatchError(

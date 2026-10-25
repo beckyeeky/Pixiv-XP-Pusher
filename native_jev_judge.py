@@ -98,6 +98,9 @@ __all__ = [
     "native_backend_selected",
     "native_task_lock_for_config",
     "native_task_lock_path",
+    "pause_retry_claim",
+    "pause_retry_token",
+    "PauseRetryToken",
     "resolve_search_credential",
 ]
 
@@ -144,6 +147,104 @@ _UNAVAILABLE_OUTCOMES = frozenset({
 })
 _ENGINE_BLOCKED_OUTCOMES = frozenset({"cooldown", "budget_exhausted", "not_configured"})
 _SECRET_PATTERN = re.compile(r"(sk-[A-Za-z0-9_\-]{4,}|Bearer\s+[A-Za-z0-9._\-]{8,})")
+
+# ---------------------------------------------------------------------------
+# Automatic pause vocabulary
+#
+# A *pause* is a durable "this tag already got a complete classification
+# attempt and no verdict" marker.  It is never a timed retry: it survives
+# restarts, the 24h tag cooldown and the decision-cache TTL, and only an
+# explicit single-tag retry (or a human decision) clears it.
+#
+# A *cooldown* stays what it always was: a short, self-expiring backoff that
+# keeps a batch from re-spending a request on the same tag or engine.
+#
+# Only reasons produced by ``NativeJevJudge.hold`` -- a completed search + model
+# attempt that ended without an acceptable verdict -- may create a pause.
+# Operational conditions (defer) never do.
+# ---------------------------------------------------------------------------
+PAUSE_SOURCE_NATIVE_HOLD = "native_hold"
+PAUSE_SOURCE_LEGACY_IMPORT = "legacy_cooldown_import"
+
+#: Reasons a *hold* may carry (``evaluate_sources`` + ``NativeJevJudge.hold``).
+HOLD_REASONS = frozenset({
+    "low_relevance", "no_evidence", "model_unresolved",
+    "insufficient_agreement", "conflicting_classification",
+})
+
+#: Reasons that describe infrastructure / budget / lock state.  They are
+#: spelled out so a reviewer can check that none of them can ever pause a tag.
+NON_HOLD_REASONS = frozenset({
+    "budget_exhausted", "task_lock_timeout", "internal_error", "jev_rate_limited",
+    "jev_unavailable", "search_unavailable", "engine_cooldown",
+    "insufficient_engines_configured", "engines_not_configured", "engines_unavailable",
+    "lock_timeout",
+})
+
+#: Bounded shape of one pause entry; nothing else may be persisted.
+_PAUSE_ENTRY_KEYS = frozenset({
+    "reason", "source", "since", "last_attempt_at", "attempts", "imported_from",
+})
+
+
+class PauseRetryToken:
+    """One-shot permission to execute exactly one paused tag, exactly once.
+
+    A manual single-tag retry must not *resume* (permanently delete) the pause
+    before the attempt: an infrastructure deferral, an exception or a
+    cancellation would then silently drop the only record that the tag already
+    spent a complete attempt.  The click therefore mints this token, which the
+    execution boundary consults and immediately consumes: the tag may run once,
+    the durable pause (``since``/``attempts``) stays untouched, and only a
+    successful classification clears it afterwards.
+
+    The token lives in a context variable, so it is confined to the asyncio
+    task/thread context that created it, and the single-tag entry holds the
+    single Native Jev task lock for as long as the token exists -- a concurrent
+    batch can neither acquire that lock nor inherit the token.
+    """
+
+    def __init__(self, tags: Iterable[str]):
+        self._remaining = {str(tag) for tag in tags if str(tag).strip()}
+        self._reset = None
+
+    def claim(self, tag: str) -> bool:
+        """Consume this token for ``tag``; False when it was not granted."""
+        name = str(tag)
+        if name not in self._remaining:
+            return False
+        self._remaining.discard(name)
+        return True
+
+    def __enter__(self) -> "PauseRetryToken":
+        self._reset = _PAUSE_RETRY.set(self)
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        if self._reset is not None:
+            try:
+                _PAUSE_RETRY.reset(self._reset)
+            finally:
+                self._reset = None
+        return False
+
+
+#: Active :class:`PauseRetryToken` for this task, if any.  ``None`` means "no
+#: explicit manual retry": every paused tag must then stay out of the queue.
+_PAUSE_RETRY: contextvars.ContextVar[PauseRetryToken | None] = contextvars.ContextVar(
+    "native_jev_pause_retry", default=None,
+)
+
+
+def pause_retry_token(tags: Iterable[str]) -> PauseRetryToken:
+    """Mint a one-shot pause bypass for the named tags (manual retry only)."""
+    return PauseRetryToken(tags)
+
+
+def pause_retry_claim(tag: str) -> bool:
+    """True exactly once per grant; the caller may then execute that one tag."""
+    token = _PAUSE_RETRY.get()
+    return token.claim(tag) if token is not None else False
 
 
 def error_code(exc: BaseException | None) -> str:
@@ -542,7 +643,12 @@ class NativeJevTaskLock:
 
 
 class NativeJevStateStore:
-    """Persist accepted decisions and cooldowns locally; never stores secrets."""
+    """Persist accepted decisions, cooldowns and automatic pauses; never stores secrets.
+
+    ``cooldowns`` expire on their own.  ``pauses`` do not: they record that the
+    tag already received a complete attempt without a verdict, so a later run
+    must not spend another request unless a human retries that one tag.
+    """
 
     def __init__(self, path: str | Path, *, clock: Callable[[], float] = time.time):
         self._path = Path(path)
@@ -551,17 +657,22 @@ class NativeJevStateStore:
         self._state = self._read()
 
     def _read(self) -> dict:
+        empty = {"schema_version": 1, "cache": {}, "cooldowns": {}, "pauses": {}}
         if not self._path.exists():
-            return {"schema_version": 1, "cache": {}, "cooldowns": {}}
+            return dict(empty)
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return {"schema_version": 1, "cache": {}, "cooldowns": {}}
+            return dict(empty)
         if not isinstance(data, dict):
-            return {"schema_version": 1, "cache": {}, "cooldowns": {}}
+            return dict(empty)
         data.setdefault("schema_version", 1)
         data["cache"] = data.get("cache") if isinstance(data.get("cache"), dict) else {}
         data["cooldowns"] = data.get("cooldowns") if isinstance(data.get("cooldowns"), dict) else {}
+        # Older state files have no ``pauses`` key: adding one is the whole
+        # migration, and it must not invent an entry for any existing
+        # ``unresolved`` row (those were never proven to be attempted).
+        data["pauses"] = data.get("pauses") if isinstance(data.get("pauses"), dict) else {}
         return data
 
     def _flush(self) -> None:
@@ -603,10 +714,32 @@ class NativeJevStateStore:
 
     def _prune_unlocked(self) -> None:
         now = float(self._clock())
-        self._state["cooldowns"] = {
-            key: entry for key, entry in self._state["cooldowns"].items()
-            if isinstance(entry, dict) and float(entry.get("until") or 0) > now
-        }
+        keep = {}
+        for key, entry in self._state["cooldowns"].items():
+            if not isinstance(entry, dict):
+                continue
+            try:
+                until = float(entry.get("until") or 0)
+            except (TypeError, ValueError):
+                until = 0.0
+            if until > now:
+                keep[key] = entry
+                continue
+            # An expired ``tag:`` cooldown whose stored reason is a hold is the
+            # *only* record that this tag already completed an attempt: the
+            # deployment migration reads exactly that evidence.  Dropping it
+            # here (on any unrelated write) would silently erase provable
+            # history before the operator ever imported it, so it is kept until
+            # a pause for the same tag exists.  It is not a live cooldown:
+            # ``is_cooling``/``cooling_tags`` still report it as expired.
+            name = str(key)
+            if (
+                name.startswith("tag:")
+                and str(entry.get("reason") or "") in HOLD_REASONS
+                and name[len("tag:"):] not in self._state["pauses"]
+            ):
+                keep[key] = entry
+        self._state["cooldowns"] = keep
         self._state["cache"] = {
             key: entry for key, entry in self._state["cache"].items()
             if isinstance(entry, dict) and float(entry.get("expires_at") or 0) > now
@@ -628,6 +761,150 @@ class NativeJevStateStore:
         with self._lock:
             entry = self._state["cooldowns"].get(key) or {}
         return str(entry.get("reason") or "")
+
+    def clear_cooldown(self, key: str) -> bool:
+        """Remove one cooldown; used only by an explicit single-tag retry."""
+        with self._lock:
+            if self._state["cooldowns"].pop(key, None) is None:
+                return False
+            self._flush()
+        return True
+
+    # -- automatic pauses ------------------------------------------------
+    def pause_entry(self, tag: str) -> dict | None:
+        """Return a copy of one durable pause entry, if the tag is paused."""
+        with self._lock:
+            entry = self._state["pauses"].get(str(tag))
+            if not isinstance(entry, dict):
+                return None
+            return {key: entry[key] for key in entry if key in _PAUSE_ENTRY_KEYS}
+
+    def is_paused(self, tag: str) -> bool:
+        """True while a completed-but-unresolved attempt keeps the tag out of batches.
+
+        Deliberately independent of ``is_cooling``: a pause has no ``until``, so
+        an expired cooldown or an expired cached decision can never revive a
+        tag that already spent its attempt.
+        """
+        with self._lock:
+            return isinstance(self._state["pauses"].get(str(tag)), dict)
+
+    def paused_tags(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(
+                str(tag) for tag, entry in self._state["pauses"].items()
+                if isinstance(entry, dict)
+            )
+
+    def cooling_tags(self) -> frozenset[str]:
+        """Tags with a live ``tag:`` cooldown, as bare tag names."""
+        now = float(self._clock())
+        with self._lock:
+            entries = dict(self._state["cooldowns"])
+        cooling = set()
+        for key, entry in entries.items():
+            name = str(key)
+            if not name.startswith("tag:") or not isinstance(entry, dict):
+                continue
+            try:
+                until = float(entry.get("until") or 0)
+            except (TypeError, ValueError):
+                continue
+            if until > now:
+                cooling.add(name[len("tag:"):])
+        return frozenset(cooling)
+
+    def pause(self, tag: str, reason: str, *, source: str = PAUSE_SOURCE_NATIVE_HOLD) -> dict | None:
+        """Record a durable pause for one completed-but-unresolved attempt.
+
+        Returns ``None`` -- and writes nothing -- for any reason that is not a
+        real hold verdict, so an infrastructure failure can never silently take
+        a tag out of the queue.
+        """
+        name = str(tag).strip()
+        normalized_reason = str(reason or "").strip()
+        if not name or normalized_reason not in HOLD_REASONS:
+            return None
+        if normalized_reason in NON_HOLD_REASONS:  # defensive: vocabularies overlap never
+            return None
+        now = float(self._clock())
+        with self._lock:
+            self._prune_unlocked()
+            previous = self._state["pauses"].get(name)
+            previous = previous if isinstance(previous, dict) else {}
+            try:
+                attempts = max(0, int(previous.get("attempts") or 0))
+            except (TypeError, ValueError):
+                attempts = 0
+            entry = {
+                "reason": _bounded(normalized_reason, 80),
+                "source": _bounded(source, 80) or PAUSE_SOURCE_NATIVE_HOLD,
+                "since": float(previous.get("since") or now),
+                "last_attempt_at": now,
+                "attempts": attempts + 1,
+            }
+            if previous.get("imported_from"):
+                entry["imported_from"] = _bounded(previous["imported_from"], 80)
+            self._state["pauses"][name] = entry
+            self._flush()
+        return dict(entry)
+
+    def resume(self, tag: str) -> dict | None:
+        """Clear one pause and return what was cleared (an explicit retry only)."""
+        name = str(tag).strip()
+        with self._lock:
+            entry = self._state["pauses"].pop(name, None)
+            if entry is None:
+                return None
+            self._flush()
+        return entry if isinstance(entry, dict) else {}
+
+    def import_legacy_holds(self, *, dry_run: bool = True) -> list[dict]:
+        """Import only *provable* holds from existing ``tag:`` cooldowns.
+
+        Before this candidate, a hold was recorded as a 24h ``tag:`` cooldown
+        whose ``reason`` is the hold reason itself.  That is the single piece of
+        evidence this import accepts:
+
+        * the key must be ``tag:<name>`` (an ``engine:`` cooldown is not a tag);
+        * the stored reason must be one of :data:`HOLD_REASONS`;
+        * a tag that is already paused is left untouched (no counter churn).
+
+        Every other unresolved row -- including the thousands of historical
+        ``unresolved`` classifications -- is left alone: nothing proves those
+        were ever attempted.  Cooldown expiry is irrelevant here, which is why
+        expired holds are imported too.
+        """
+        with self._lock:
+            candidates = sorted(
+                (str(key)[len("tag:"):], str(entry.get("reason") or ""))
+                for key, entry in self._state["cooldowns"].items()
+                if isinstance(entry, dict)
+                and str(key).startswith("tag:")
+                and str(entry.get("reason") or "") in HOLD_REASONS
+            )
+            already = self._state["pauses"]
+            planned = [
+                {"tag": tag, "reason": reason, "source": PAUSE_SOURCE_LEGACY_IMPORT,
+                 "imported_from": "tag_cooldown"}
+                for tag, reason in candidates if tag and tag not in already
+            ]
+        if dry_run or not planned:
+            return planned
+        now = float(self._clock())
+        with self._lock:
+            for item in planned:
+                self._state["pauses"].setdefault(item["tag"], {
+                    "reason": item["reason"],
+                    "source": PAUSE_SOURCE_LEGACY_IMPORT,
+                    "since": now,
+                    "last_attempt_at": now,
+                    "attempts": 1,
+                    "imported_from": "tag_cooldown",
+                })
+            self._flush()
+        return planned
+
 
     def get_decision(
         self, tag: str, *, policy_fingerprint: str | None = None,
@@ -1845,12 +2122,28 @@ class NativeJevJudge:
                         "reason": "existing_classification",
                     })
 
-        if self._state.is_cooling(f"tag:{cache_key}"):
-            return self._finish({
-                "tag": normalized, "status": "cooldown",
-                "reason": self._state.cooldown_reason(f"tag:{cache_key}") or "unresolved_cooldown",
-                "cooldown_seconds": round(self._state.cooldown_remaining(f"tag:{cache_key}"), 1),
-            })
+        pause_entry = self._state.pause_entry(cache_key)
+        cooling = self._state.is_cooling(f"tag:{cache_key}")
+        if pause_entry is not None or cooling:
+            # Durable pause / this tag's own backoff.  The queue excludes both,
+            # but the queue is only a snapshot -- a batch, a reviewed batch or
+            # the preview CLI may have been selected before another task
+            # authored the pause.  The execution boundary is where that race is
+            # closed: no request is spent unless an explicit single-tag retry
+            # token was granted, and the token is consumed by this one attempt
+            # (a granted retry may therefore ignore *this* tag's pause and
+            # backoff for exactly one execution).
+            if not pause_retry_claim(normalized):
+                if pause_entry is not None:
+                    return self._finish({
+                        "tag": normalized, "status": "paused", "automatic_pause": True,
+                        "reason": pause_entry.get("reason") or "automatic_pause",
+                    })
+                return self._finish({
+                    "tag": normalized, "status": "cooldown",
+                    "reason": self._state.cooldown_reason(f"tag:{cache_key}") or "unresolved_cooldown",
+                    "cooldown_seconds": round(self._state.cooldown_remaining(f"tag:{cache_key}"), 1),
+                })
 
         cached = self._state.get_decision(
             cache_key,
@@ -1875,12 +2168,18 @@ class NativeJevJudge:
         source_results: list[dict] = []
 
         def hold(reason: str, cooldown: bool = True) -> dict:
+            # A hold is the one outcome that means "this tag already had a
+            # complete attempt and no verdict".  It is recorded twice: as the
+            # existing short cooldown (backoff) and as a durable pause that the
+            # queue honours long after the cooldown expired.
             if cooldown:
                 self._state.cool(
                     f"tag:{cache_key}", self._policy.unresolved_cooldown_seconds, reason,
                 )
+            paused = self._state.pause(cache_key, reason)
             return self._finish(
-                {"tag": normalized, "status": "hold", "reason": reason, "classification": None},
+                {"tag": normalized, "status": "hold", "reason": reason, "classification": None,
+                 "automatic_pause": bool(paused)},
                 search_queries=search_queries, jev_calls=jev_calls,
                 jev_choices=jev_choices, trace=trace, evidences=evidences,
             )
@@ -2204,7 +2503,10 @@ class ConfiguredNativeJevJudge:
             )
             error.usage = usage
             raise error
-        if status in {"deferred", "cooldown", "budget_exhausted"}:
+        if status in {"deferred", "paused", "cooldown", "budget_exhausted"}:
+            # ``paused`` is the execution-boundary recheck: the tag carries a
+            # durable pause and no explicit retry token was granted, so the run
+            # defers without spending a request and without touching the pause.
             error = GroundedJudgeDeferredError(
                 f"Native Jev 暂不可用：{result.get('reason') or status}"
             )
@@ -2553,6 +2855,47 @@ def refresh_native_runtime_snapshot(config: Mapping | None) -> bool:
         return False
     runtime.refresh_from_disk()
     return True
+
+
+def native_state_path(config: Mapping | None) -> Path | None:
+    """State file this configuration uses, or ``None`` for other backends."""
+    if not native_backend_selected(config):
+        return None
+    return Path(str(native_jev_section(config).get("state_path") or "data/native_jev_state.json"))
+
+
+def read_native_state_store(config: Mapping | None) -> NativeJevStateStore | None:
+    """Read-only view of the pause/cooldown ledger for queue selection.
+
+    A fresh instance is built per call so a selection always sees the newest
+    file and can never be tricked by a long-lived in-memory snapshot.  Reading
+    never creates the file: a preview of a system that has never run the native
+    backend must not fabricate pause state.
+    """
+    path = native_state_path(config)
+    return None if path is None else NativeJevStateStore(path)
+
+
+def native_state_store(config: Mapping | None) -> NativeJevStateStore | None:
+    """The *mutating* store for ``config``: the live runtime's store if built.
+
+    Writes must land on the instance the judge itself uses, because a runtime
+    flushes its whole snapshot: a second instance writing to the same file
+    would be silently overwritten by the runtime's next flush.  The caller is
+    responsible for holding the single task lock and calling ``reload()`` (see
+    ``ClassificationMaintenance.classify_tag``).
+    """
+    if not native_backend_selected(config):
+        return None
+    native = native_jev_section(config)
+    signature = _native_signature(config, native)
+    with _NATIVE_RUNTIME_LOCK:
+        runtime = _NATIVE_RUNTIMES.get(signature)
+    if runtime is not None:
+        return runtime.state
+    return NativeJevStateStore(
+        Path(str(native.get("state_path") or "data/native_jev_state.json")),
+    )
 
 
 # ---------------------------------------------------------------------------

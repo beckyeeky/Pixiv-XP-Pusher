@@ -103,6 +103,7 @@ class WebEntrypointTests(unittest.TestCase):
             # Rendered backend/outcome metadata now travels with the page.
             "{{ classification_backend | tojson }}": "{}",
             "{{ outcome_labels | tojson }}": "{}",
+            "{{ (pause_reason_labels or {}) | tojson }}": "{}",
             "{{ classification_backend_views | tojson }}": "{}",
         }
         for name in ("dashboard.html", "gallery.html", "tags.html", "settings_v2.html", "import_export.html"):
@@ -291,6 +292,26 @@ class WebEntrypointTests(unittest.TestCase):
         get_queue.assert_awaited_once_with(25)
         review.assert_awaited_once_with("needs_review", "feature")
         self.assertTrue(response["success"])
+
+    def test_tag_reviews_annotates_only_paused_rows(self):
+        """A paused tag stays reviewable and shows why automatic batches skip it."""
+        import native_jev_judge
+
+        state_path = Path(tempfile.mkdtemp()) / "native.json"
+        self.addCleanup(lambda: None)
+        native_jev_judge.NativeJevStateStore(state_path).pause("paused_tag", "no_evidence")
+        queue = [{"tag": "paused_tag"}, {"tag": "fresh_tag"}]
+        runtime_config = {"tag_classifier": {"grounded_judge": {
+            "backend": "native_jev",
+            "native_jev": {"state_path": str(state_path)},
+        }}}
+        with patch.object(web_app_module.db, "get_tag_review_queue", return_value=queue), \
+             patch.object(web_app_module, "load_config", return_value=runtime_config):
+            payload = asyncio.run(api_tag_reviews(limit=25, _=None))
+
+        self.assertEqual(payload["items"][0]["automatic_pause"]["reason"], "no_evidence")
+        self.assertNotIn("automatic_pause", payload["items"][1])
+        self.assertEqual(payload["items"][1], {"tag": "fresh_tag"})
 
     def test_maintenance_status_api_exposes_settled_delivery_and_background_work(self):
         completion = '{"status": "succeeded", "completed_at": "2026-07-11T10:00:00"}'

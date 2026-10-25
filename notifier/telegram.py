@@ -1134,7 +1134,11 @@ class TelegramNotifier(BaseNotifier):
                     await query.answer("批处理数量无效", show_alert=True)
                     return
                 effective_limit = max(1, min(limit, requested))
-                items = await maintenance.preview(effective_limit)
+                # Paused/cooling tags are excluded before the limit is applied
+                # and the shortfall is backfilled; the counters are reported
+                # below so the operator sees why the batch looked different.
+                selection = await maintenance.select_eligible(effective_limit)
+                items = selection["items"]
                 if not items:
                     await query.edit_message_text(
                         "🏷️ 当前没有达到维护阈值的未分类标签。",
@@ -1149,14 +1153,29 @@ class TelegramNotifier(BaseNotifier):
                     f"（本次上限 {effective_limit}）…",
                 )
                 try:
-                    summary = await maintenance.run_tags(tags)
+                    summary = {
+                        **await maintenance.run_tags(tags),
+                        "skipped_paused": selection["skipped_paused"],
+                        "skipped_cooling": selection["skipped_cooling"],
+                    }
                     usage = summary["usage"]
                     remaining = await db.get_tag_review_count()
+                    skipped_paused = int(summary.get("skipped_paused") or 0)
+                    skipped_cooling = int(summary.get("skipped_cooling") or 0)
+                    skipped_line = ""
+                    if skipped_paused or skipped_cooling:
+                        # Automatic batches skip these tags but never resume
+                        # them: only a single-tag retry clears a pause.
+                        skipped_line = (
+                            f"跳过自动暂停：{skipped_paused}；冷却中：{skipped_cooling}"
+                            "（已按权重向后补足）\n"
+                        )
                     text = (
                         "🤖 *AI 批量处理完成*\n\n"
                         f"后端：{escape_telegram_markdown(backend_view['backend_label'])}\n"
                         f"本次安全上限：{effective_limit}\n"
                         f"已尝试：{summary['attempted']}\n"
+                        f"{skipped_line}"
                         f"{escape_telegram_markdown(outcome_line(summary, include_zero=True))}\n"
                         f"当前待人工决定：*{remaining}*\n\n"
                         f"API tokens：{usage.get('total', 0)}；搜索查询约：{usage.get('search_queries', 0)} 次"

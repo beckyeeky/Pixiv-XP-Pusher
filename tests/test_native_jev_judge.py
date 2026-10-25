@@ -731,23 +731,51 @@ class JudgeBehaviourTests(unittest.TestCase):
         self.assertEqual(len(router.calls), calls)
 
     def test_no_evidence_holds_the_tag_and_starts_a_cooldown(self):
+        """A hold starts the short backoff *and* the durable pause.
+
+        Contract note (jev-queue-fixes): the second call is now reported as
+        ``paused`` instead of ``cooldown`` because the durable pause -- which
+        has no expiry -- is checked first.  What this test pins is unchanged:
+        the same tag is not re-evaluated and no request is spent.
+        """
         jev = FakeJev()
         judge, router = self._judge([], jev=jev)
         first = run(judge.evaluate("サンプルタグ"))
         self.assertEqual(first["status"], "hold")
         self.assertEqual(first["reason"], "no_evidence")
+        self.assertTrue(first["automatic_pause"])
         self.assertEqual(jev.calls, [])
+        self.assertTrue(judge._state.is_cooling("tag:サンプルタグ"))
         second = run(judge.evaluate("サンプルタグ"))
-        self.assertEqual(second["status"], "cooldown")
+        self.assertEqual(second["status"], "paused")
+        self.assertEqual(second["reason"], "no_evidence")
         self.assertEqual(len(router.calls), 1)
 
-    def test_cooldown_expires_and_the_tag_is_retried(self):
+    def test_cooldown_expiry_alone_never_retries_a_paused_tag(self):
+        """Contract note (jev-queue-fixes): replaces the old "retried" test.
+
+        The old assertion ``cooldown expires -> the tag is retried`` is exactly
+        the loop this candidate removes: a completed attempt without a verdict
+        must not come back on a timer.  Expiry alone now stays deferred, and
+        only an explicit single-tag retry token buys one more execution.
+        """
+        from native_jev_judge import pause_retry_token
+
         clock = [0.0]
         judge, router = self._judge([], clock=lambda: clock[0])
         run(judge.evaluate("サンプルタグ"))
         clock[0] = 3601
+        self.assertFalse(judge._state.is_cooling("tag:サンプルタグ"))
         again = run(judge.evaluate("サンプルタグ"))
-        self.assertEqual(again["status"], "hold")
+        self.assertEqual(again["status"], "paused")
+        self.assertEqual(len(router.calls), 1)
+
+        with pause_retry_token(["サンプルタグ"]):
+            explicit = run(judge.evaluate("サンプルタグ"))
+        self.assertEqual(explicit["status"], "hold")
+        self.assertEqual(len(router.calls), 2)
+        # The token was consumed: a second implicit call is deferred again.
+        self.assertEqual(run(judge.evaluate("サンプルタグ"))["status"], "paused")
         self.assertEqual(len(router.calls), 2)
 
     def test_unavailable_search_infrastructure_defers_instead_of_holding(self):

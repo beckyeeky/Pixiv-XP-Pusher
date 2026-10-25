@@ -500,6 +500,7 @@ const tagCategoryLabels = {
 // same helpers the Web API and Telegram use), so this page cannot drift.
 const CLASSIFICATION_BACKEND = {{ classification_backend | tojson }};
 const OUTCOME_LABELS = {{ outcome_labels | tojson }};
+const PAUSE_REASON_LABELS = {{ (pause_reason_labels or {}) | tojson }};
 const OUTCOME_ORDER = ['accepted', 'unresolved', 'deferred', 'failed', 'preserved', 'human_override'];
 
 function formatOutcomeCounts(payload, {includeZero = true} = {}) {
@@ -525,6 +526,13 @@ function formatEvidence(item) {
     return `<li><strong>${escapeHtml(item.source)}</strong>：${escapeHtml(tagCategoryLabels[item.classification] || item.classification)}（置信度 ${escapeHtml(item.confidence)}，${freshness}）<br>${observed}；${verified}</li>`;
 }
 
+function formatPause(pause) {
+    if (!pause) return '';
+    const label = PAUSE_REASON_LABELS[pause.reason] || pause.reason || '原因未记录';
+    const attempts = Number(pause.attempts || 0);
+    return `自动暂停：${escapeHtml(label)}（${escapeHtml(pause.reason || 'unknown')}，已尝试 ${attempts} 次）· 自动批量跳过；点「🤖 重新尝试」只重试这一个标签`;
+}
+
 function renderReviewQueue(items) {
     const queue = document.getElementById('reviewQueue');
     if (!items.length) {
@@ -537,9 +545,14 @@ function renderReviewQueue(items) {
         const actions = ['feature', 'character', 'copyright', 'artist', 'non_preference']
             .map(category => `<button type="button" onclick="submitManualDecision(decodeURIComponent('${encodedTag}'), '${category}')">标为${tagCategoryLabels[category]}</button>`)
             .join('');
+        const pause = formatPause(item.automatic_pause);
+        const pauseLine = pause ? `<div class="review-meta review-pause">⏸ ${pause}</div>` : '';
+        const aiLabel = item.automatic_pause
+            ? `🤖 重新尝试（仅此标签）`
+            : `🤖 ${escapeHtml(CLASSIFICATION_BACKEND.short_label || 'AI')} 分类`;
         return `<article class="review-item" data-review-tag="${escapeHtml(item.tag)}">
-            <div class="review-item-header"><div><div class="review-tag">${escapeHtml(item.tag)}</div><div class="review-meta">状态：未解决 · 影响权重：${escapeHtml(item.profile_weight)} · 当前来源：${escapeHtml(item.classification_source)}</div></div></div>
-            <ul class="evidence-list">${evidence}</ul><div class="review-actions" aria-label="manual decision"><button type="button" onclick="classifyWithGroundedJudge(decodeURIComponent('${encodedTag}'))">🤖 ${escapeHtml(CLASSIFICATION_BACKEND.short_label || 'AI')} 分类</button>${actions}</div>
+            <div class="review-item-header"><div><div class="review-tag">${escapeHtml(item.tag)}</div><div class="review-meta">状态：未解决 · 影响权重：${escapeHtml(item.profile_weight)} · 当前来源：${escapeHtml(item.classification_source)}</div>${pauseLine}</div></div>
+            <ul class="evidence-list">${evidence}</ul><div class="review-actions" aria-label="manual decision"><button type="button" onclick="classifyWithGroundedJudge(decodeURIComponent('${encodedTag}'))">${aiLabel}</button>${actions}</div>
         </article>`;
     }).join('');
 }
@@ -685,7 +698,7 @@ async function classifyAllWithGroundedJudge() {
     input.value = requested;
     if (!await PixivUI.confirm({
         title: '确认批量分类',
-        message: `最多处理 ${requested} 个高权重未分类标签（后端：${CLASSIFICATION_BACKEND.backend_label || '未设置'}），不会处理低于权重阈值的标签。`,
+        message: `最多处理 ${requested} 个高权重未分类标签（后端：${CLASSIFICATION_BACKEND.backend_label || '未设置'}），不会处理低于权重阈值的标签；自动暂停与冷却中的标签会被跳过，并按权重向后补足。`,
         confirmLabel: '开始处理',
     })) return;
     feedback.textContent = `正在使用「${CLASSIFICATION_BACKEND.backend_label || '已配置的后端'}」批量处理，最多 ${requested} 条…`;
@@ -697,7 +710,11 @@ async function classifyAllWithGroundedJudge() {
         await loadReviewQueue();
         const usage = payload.usage || {};
         const outcomes = payload.outcome_text || formatOutcomeCounts(payload);
-        feedback.textContent = `AI 批量处理完成（后端：${payload.backend_label || CLASSIFICATION_BACKEND.backend_label || '未设置'}；安全上限 ${payload.effective_limit} 条，权重阈值 ${payload.min_profile_weight}）：${outcomes}；已尝试 ${payload.attempted}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次。`;
+        const skipped = Number(payload.skipped_paused || 0) + Number(payload.skipped_cooling || 0);
+        const skippedText = skipped
+            ? `；跳过自动暂停 ${Number(payload.skipped_paused || 0)} 条、冷却中 ${Number(payload.skipped_cooling || 0)} 条（已向后补足）`
+            : '';
+        feedback.textContent = `AI 批量处理完成（后端：${payload.backend_label || CLASSIFICATION_BACKEND.backend_label || '未设置'}；安全上限 ${payload.effective_limit} 条，权重阈值 ${payload.min_profile_weight}）：${outcomes}；已尝试 ${payload.attempted}${skippedText}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次。`;
     } catch (error) {
         feedback.textContent = `AI 批量处理失败：${error.message}`;
     } finally {

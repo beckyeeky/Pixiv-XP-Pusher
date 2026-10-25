@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import copy
 import json
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--output", type=Path, help="write the JSON report here (default: stdout)")
     parser.add_argument("--audit-log", type=Path, help="override native_jev.audit_log_path for this run")
     parser.add_argument("--state-path", type=Path, help="override native_jev.state_path for this run")
+    parser.add_argument("--include-paused", action="store_true",
+                        help="include automatically paused / cooling tags (diagnostics only)")
     parser.add_argument("--apply", action="store_true",
                         help="persist gated classifications (requires --confirm-apply)")
     parser.add_argument("--confirm-apply", action="store_true",
@@ -69,21 +72,32 @@ def _split_tags(value: str | None) -> list[str]:
     ))
 
 
-async def _select_tags(args: argparse.Namespace) -> list[str]:
-    """Resolve the preview queue without ever writing to the database."""
+async def _select_tags(args: argparse.Namespace, config: dict | None = None) -> list[str]:
+    """Resolve the preview queue through the shared maintenance selection.
+
+    The preview CLI and the maintenance CLI must never scan, exclude or
+    paginate differently, so both call
+    ``ClassificationMaintenance.available_candidates`` -- with the read-only
+    database accessor, which aborts on a missing/incompatible database instead
+    of creating or migrating one.
+
+    ``--include-paused`` drops the paused/cooling exclusions (a *paid*
+    diagnostic: one real request per selected tag) but still never resumes or
+    writes anything.
+    """
     explicit = _split_tags(args.tags)
     if explicit:
+        # An explicit tag list is an operator decision: never filtered.
         return explicit[: max(1, int(args.limit))]
     import database as db
 
+    limit = max(1, int(args.limit))
     try:
-        # Read-only connection: no init_db, no migration, no file creation.
-        candidates = db.get_high_weight_unclassified_profile_tags_readonly(
-            max(1, int(args.limit)), float(args.min_weight),
+        candidates = await ClassificationMaintenance(config or {}).available_candidates(
+            limit, float(args.min_weight), include_paused=args.include_paused,
         )
-    except db.DatabaseNotInitializedError as exc:
-        raise SystemExit(f"只读预览中止：{exc}") from exc
-    except db.DatabaseSchemaMismatchError as exc:
+    except (db.DatabaseNotInitializedError, db.DatabaseSchemaMismatchError,
+            sqlite3.OperationalError) as exc:
         raise SystemExit(f"只读预览中止：{exc}") from exc
     return [item["tag"] for item in candidates]
 
@@ -217,7 +231,7 @@ async def run(args: argparse.Namespace) -> dict:
     if grounded.get("backend") != "native_jev":
         raise SystemExit("当前配置未选择 native_jev 后端，预览中止")
     config = _effective_config(args, base)
-    tags = await _select_tags(args)
+    tags = await _select_tags(args, base)
     if not tags:
         raise SystemExit("没有可预览的标签")
     if _split_tags(args.tags):

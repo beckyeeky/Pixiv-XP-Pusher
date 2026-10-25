@@ -228,6 +228,8 @@ class TelegramTextParityTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("database.get_high_weight_unclassified_profile_tags",
                    new=AsyncMock(return_value=candidates)), \
+             patch("database.get_high_weight_unclassified_profile_tags_readonly",
+                   new=Mock(return_value=candidates)), \
              patch("database.set_state", new=AsyncMock()), \
              patch("notifier.telegram.load_config", return_value=config), \
              patch("classification_maintenance.run_scheduled_maintenance",

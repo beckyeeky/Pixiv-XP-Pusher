@@ -121,6 +121,7 @@ DeepSeek Search 仅在优先层无法提供足够的相关来源（默认 2 个�
 | --- | --- | --- |
 | 决策缓存 | `state_path`（默认 `data/native_jev_state.json`） | 已激活决策按 `decision_cache_ttl_seconds`（默认 7 天）复用，命中时不再请求任何 Provider，状态 `cached`；条目绑定 `policy_fingerprint`（model/阈值/最少来源/提及要求），阈值或策略变低的旧条目**不再复用**，并按当前策略重新校验 |
 | 未解决冷却 | 同上 `cooldowns["tag:<tag>"]` | `hold` 后默认 24 小时不再检索/调用模型 |
+| 自动暂停（候选 `jev-queue-pause`） | 同上 `pauses[<tag>]` | `hold` 时写入的**持久**记录（无到期时间）：自动批量入口在选择前排除全部暂停/冷却标签并向后补足；只有单标签显式手动重试才清除。详见 [jev-queue-pause.md](jev-queue-pause.md) |
 | 限流冷却 | 同上 `cooldowns["engine:<engine>"]` | 402/429/432/401/403 后默认 900 秒跳过该引擎；5xx/超时默认 60 秒 |
 | 模型冷却 | 同上 `cooldowns["engine:jev"]` | System One 429 后默认 900 秒内所有标签 deferred |
 | 并发预算 | 进程内 `ConcurrencyBudget` | 同时进行的检索 + 模型请求不超过 `max_concurrent_requests`（默认 4） |

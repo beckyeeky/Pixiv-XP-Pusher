@@ -29,7 +29,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from classification_maintenance import (
     OUTCOME_LABELS,
@@ -276,8 +276,13 @@ class TelegramPlainTextTests(unittest.IsolatedAsyncioTestCase):
         query = query or SimpleNamespace(edit_message_text=AsyncMock(), answer=AsyncMock())
         query.message = SimpleNamespace(chat_id=99)
         candidates = [{"tag": "a", "profile_weight": 3.0}]
+        # ``preview()`` reads the queue through the read-only accessor (a
+        # preview must never create/migrate the database), so the queue double
+        # has to stand in for that call as well.
         with patch("database.get_high_weight_unclassified_profile_tags",
                    new=AsyncMock(return_value=candidates)), \
+             patch("database.get_high_weight_unclassified_profile_tags_readonly",
+                   new=Mock(return_value=candidates)), \
              patch("database.set_state", new=AsyncMock()), \
              patch("notifier.telegram.load_config", return_value=native_runtime_config()), \
              patch("classification_maintenance.run_scheduled_maintenance",

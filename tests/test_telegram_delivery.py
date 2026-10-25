@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from types import MethodType, SimpleNamespace
-from unittest.mock import ANY, AsyncMock, call, patch
+from unittest.mock import ANY, AsyncMock, Mock, call, patch
 
 try:
     from notifier.telegram import TelegramNotifier
@@ -524,6 +524,7 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
         summary = {"accepted": 1, "unresolved": 1, "failed": 0}
 
         with patch("database.get_high_weight_unclassified_profile_tags", new=AsyncMock(side_effect=[candidates, candidates])) as select, \
+             patch("database.get_high_weight_unclassified_profile_tags_readonly", new=Mock(side_effect=[candidates, candidates])) as select_readonly, \
              patch("database.set_state", new=AsyncMock()), \
              patch("notifier.telegram.load_config", return_value={"tag_classifier": {"maintenance": {"concurrency": 3, "max_tags_per_run": 25, "min_profile_weight": 1.5}}}), \
              patch("classification_maintenance.run_scheduled_maintenance", new=AsyncMock(return_value=summary)) as run:
@@ -531,7 +532,9 @@ class TelegramDeliveryTests(unittest.IsolatedAsyncioTestCase):
             await notifier._handle_menu_callback(query, "menu:tag_review:high_weight:confirm")
 
         self.assertIn("高权重未分类候选", query.edit_message_text.await_args_list[0].args[0])
-        select.assert_has_awaits([
+        # The two previews (listing + reviewed snapshot) read through the
+        # read-only accessor with exactly the same arguments.
+        select_readonly.assert_has_calls([
             call(limit=25, min_profile_weight=1.5),
             call(limit=25, min_profile_weight=1.5),
         ])

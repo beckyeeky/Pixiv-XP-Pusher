@@ -92,7 +92,16 @@ async def test_permanent_confirmed_and_unresolved_cooldown(isolated):
     fresh = await db.get_tag_classifications(['human','accepted','cooling','retry'])
     assert set(fresh) == {'human','accepted','cooling'}
     manager = ClassificationMaintenance({'tag_classifier': {'maintenance': {'allow_automatic_external_search': True}}})
-    assert await manager._select_profile_tags({'human':10,'accepted':9,'cooling':8,'retry':7,'new':6}) == ['retry','new']
+    # Contract note (jev-queue-fixes): the automatic profile path now excludes
+    # only an *explicit* classification and stays consistent with the SQL queue
+    # and the review queue.  ``cooling`` is an ``unresolved`` row -- a missing
+    # verdict, not a decision -- and there is no pause/attempt evidence for it,
+    # so it must stay selectable (and, being unresolved, is ordered first).
+    selected = await manager._select_profile_tags(
+        {'human':10,'accepted':9,'cooling':8,'retry':7,'new':6},
+    )
+    assert selected == ['cooling','retry','new']
+    assert 'human' not in selected and 'accepted' not in selected
 
 @pytest.mark.asyncio
 async def test_cache_only_never_becomes_exposed_or_metadata(isolated):
