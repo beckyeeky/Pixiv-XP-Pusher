@@ -19,6 +19,16 @@ class GroundedJudgeDeferredError(RuntimeError):
     """Classification could not run because its external evidence path is unavailable."""
 
 
+class ExistingClassificationPreserved(RuntimeError):
+    """The tag already has a human or explicit classification that must be kept."""
+
+    def __init__(self, classification: str = "", source: str = ""):
+        super().__init__("已有明确分类，保持原值")
+        self.classification = str(classification or "")
+        self.source = str(source or "")
+        self.usage: dict = {}
+
+
 @dataclass(frozen=True)
 class GeminiJudgeConfig:
     api_key: str
@@ -186,6 +196,13 @@ async def classify_single_tag(tag: str, translation: str | None, config: dict) -
     if settings.get("backend") == "search_first":
         from search_grounded_judge import build_configured_search_grounded_judge
         return await build_configured_search_grounded_judge(config).classify(tag, translation)
+    if settings.get("backend") == "native_jev":
+        from native_jev_judge import NativeJevDisabledError, build_configured_native_jev_judge
+        try:
+            judge = build_configured_native_jev_judge(config)
+        except NativeJevDisabledError as exc:
+            raise GroundedJudgeDeferredError(str(exc)) from exc
+        return await judge.classify(tag, translation)
     judge = _selected_gemini_judge(config)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{judge.model}:generateContent?key={judge.api_key}"
     payload = {

@@ -109,6 +109,12 @@ providers:
     type: tavily_search
     api_key: ""
 
+  # Native Jev（可选后端）使用 Exa 作为优先检索来源；与上面一样，每个账号一个 Provider。
+  # 也可以留空 api_key，改用 EXA_API_KEY 环境变量或 native_jev.env_file 指向的 env 文件。
+  # exa_search_1:
+  #   type: exa_search
+  #   api_key: ""
+
 models:
   # Model 只引用一个 Provider；多个 Judge 可选择不同的 Model。
   deepseek_flash:
@@ -157,6 +163,39 @@ tag_classifier:
     # 旧版原生 Grounded Judge 的兼容重试字段；Search-first 搜索池有自己的额度切换机制。
     retry_by_status:
       "503": {max_retries: 5, retry_delay_seconds: 5}
+
+    # ---- 可选：原生 Jev 后端（默认关闭；不启用时上面的 Search-first 行为不变）----
+    # 把 backend 改为 native_jev 后才会读取本段；token 与费用由 OpenRouter 结算。
+    # native_jev:
+    #   enabled: false # 必须显式 true 才会构建后端；未启用时维护任务直接 deferred
+    #   model: "jev-1.13"
+    #   jev_provider: openrouter # 复用现有 openai_compatible Provider 的 api_key / base_url
+    #   jev_endpoint: "https://openrouter.ai/api/v1/systemone"
+    #   exa_providers: [exa_search_1]
+    #   tavily_providers: [tavily_search_1] # 留空则沿用上面的 tavily_providers
+    #   deepseek_search_provider: deepseek # 仅第三顺位 fallback；留空则不启用
+    #   env_file: "/etc/pixiv-xp-pusher/exa.env" # 可选；只读 KEY=VALUE，不写入日志
+    #   min_confidence: 0.9 # 严格大于该值才计入一致来源
+    #   min_agreeing_sources: 2 # 至少两个不同搜索来源一致
+    #   require_tag_mention: true # 证据未提及标签则视为低相关，不调用模型
+    #   max_evidence_chars: 2500
+    #   top_k: 3
+    #   unresolved_cooldown_seconds: 86400
+    #   rate_limit_cooldown_seconds: 900
+    #   transient_error_cooldown_seconds: 60
+    #   decision_cache_ttl_seconds: 604800
+    #   per_run_request_budget: 24
+    #   budget_window_seconds: 300
+    #   max_concurrent_requests: 4
+    #   timeout_seconds: 45
+    #   max_retries: 0
+    #   state_path: "data/native_jev_state.json"
+    #   quota_state_path: "data/search_judge_quota_usage.json"
+    #   audit_log_path: "" # 非空时写入 JSONL 审计（不含密钥/请求头/原始异常）
+    #   quota_estimates: # 仅本地估算上限，不代表已查询上游剩余额度
+    #     exa_monthly_requests: 1000
+    #     tavily_monthly_requests: 500
+    #     deepseek_search_monthly_requests: 200
   # Search-first 不使用旧版 Judge 列表。
   judges: []
   danbooru:

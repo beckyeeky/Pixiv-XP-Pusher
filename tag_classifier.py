@@ -63,7 +63,12 @@ class TagClassifier:
         self.maintenance_min_weight = self.maintenance.policy.min_profile_weight
         self.prefer_unresolved_first = self.maintenance.policy.prefer_unresolved_first
         grounded_cfg = cfg.get("grounded_judge") if isinstance(cfg.get("grounded_judge"), dict) else {}
-        self.search_first_enabled = grounded_cfg.get("backend", "gemini") == "search_first"
+        self.maintenance_search_backend = str(
+            grounded_cfg.get("backend", "gemini") or "gemini"
+        ).strip().lower()
+        # Both search-backed maintenance backends replace the legacy Judge path
+        # during delivery; the attribute name is kept for existing callers.
+        self.search_first_enabled = self.maintenance_search_backend in {"search_first", "native_jev"}
         self.legacy_api_key = cfg.get("api_key", "")
         self.legacy_base_url = cfg.get("base_url") or "https://api.deepseek.com/v1"
         self.legacy_model = cfg.get("model") or "deepseek-v4-flash"

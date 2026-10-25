@@ -1598,7 +1598,11 @@ function collectConfig() {
         maintenance.max_tags_per_run || 40,
     );
     maintenance.min_profile_weight = Math.abs(asFloat(document.getElementById('tag_classifier_min_profile_weight').value, maintenance.min_profile_weight || 1));
-    groundedJudge.backend = 'search_first';
+    // This page has no Native Jev controls, so an unrelated save must not
+    // downgrade a backend it cannot configure. Keep the loaded value.
+    if (typeof groundedJudge.backend !== 'string' || !groundedJudge.backend) {
+        groundedJudge.backend = 'search_first';
+    }
     tagClassifier.judges = [];
     groundedJudge.search_classifier_model = document.getElementById('tag_classifier_search_model').value || '';
     groundedJudge.brave_request_limit = asInt(document.getElementById('tag_classifier_brave_request_limit').value, groundedJudge.brave_request_limit || 1000);

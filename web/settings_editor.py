@@ -328,6 +328,7 @@ def apply_settings_payload(
             if isinstance(value, dict) else deepcopy(value)
             for name, value in payload["models"].items()
         }
+    _preserve_native_jev_backend(current, merged, payload)
     from config import normalize_config
 
     _validate_classification_maintenance_fields(merged)
@@ -360,6 +361,45 @@ def apply_settings_payload(
     merged.pop("web_password", None)
     merged.pop("web_password_confirm", None)
     return merged
+
+
+def _preserve_native_jev_backend(current: dict, merged: dict, payload: dict) -> None:
+    """Keep the Native Jev backend unless the payload explicitly disables it.
+
+    The settings page renders no Native Jev controls, yet it used to submit
+    ``backend: search_first`` for an unrelated save, which also dropped the whole
+    ``native_jev`` subtree during normalization.  A payload may only move the
+    backend away from ``native_jev`` by explicitly sending
+    ``native_jev.enabled: false`` (a decision only a native-aware client can
+    express); anything else keeps the current backend and subtree untouched.
+    """
+    current_classifier = current.get("tag_classifier")
+    current_grounded = (
+        current_classifier.get("grounded_judge")
+        if isinstance(current_classifier, dict) else None
+    )
+    if not isinstance(current_grounded, dict) or current_grounded.get("backend") != "native_jev":
+        return
+    submitted_classifier = payload.get("tag_classifier")
+    submitted_grounded = (
+        submitted_classifier.get("grounded_judge")
+        if isinstance(submitted_classifier, dict) else None
+    )
+    if isinstance(submitted_grounded, dict):
+        submitted_native = submitted_grounded.get("native_jev")
+        if isinstance(submitted_native, dict) and submitted_native.get("enabled") is False:
+            return
+    merged_classifier = merged.setdefault("tag_classifier", {})
+    if not isinstance(merged_classifier, dict):
+        merged_classifier = {}
+        merged["tag_classifier"] = merged_classifier
+    merged_grounded = merged_classifier.setdefault("grounded_judge", {})
+    if not isinstance(merged_grounded, dict):
+        merged_grounded = {}
+        merged_classifier["grounded_judge"] = merged_grounded
+    merged_grounded["backend"] = "native_jev"
+    if isinstance(current_grounded.get("native_jev"), dict):
+        merged_grounded["native_jev"] = deepcopy(current_grounded["native_jev"])
 
 
 def _preserve_or_delete_provider_credentials(current: dict, payload: dict) -> None:

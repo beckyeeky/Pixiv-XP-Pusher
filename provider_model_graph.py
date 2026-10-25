@@ -25,6 +25,7 @@ ALLOWED_PROVIDER_TYPES = frozenset({
     "danbooru",
     "brave_search",
     "tavily_search",
+    "exa_search",
 })
 PROVIDER_TYPE_LABELS = {
     "openai": "OpenAI",
@@ -33,6 +34,7 @@ PROVIDER_TYPE_LABELS = {
     "google": "Google",
     "brave_search": "Brave Search",
     "tavily_search": "Tavily Search",
+    "exa_search": "Exa Search",
     "local": "本地服务",
     "openai_compatible": "自定义 OpenAI-compatible",
 }
@@ -41,6 +43,7 @@ NON_MODEL_PROVIDER_TYPES = frozenset({
     "danbooru",
     "brave_search",
     "tavily_search",
+    "exa_search",
 })
 OPENAI_CHAT_PROVIDER_TYPES = frozenset({
     "openai",
@@ -64,7 +67,11 @@ MODEL_REFERENCES = (
 SEARCH_PROVIDER_REFERENCES = (
     (("tag_classifier", "grounded_judge", "brave_providers"), "brave_search", "Brave Search"),
     (("tag_classifier", "grounded_judge", "tavily_providers"), "tavily_search", "Tavily Search"),
+    (("tag_classifier", "grounded_judge", "exa_providers"), "exa_search", "Exa Search"),
 )
+# Search-first keeps the historical Brave + Tavily requirement; Exa is only
+# consumed by the optional Native Jev backend.
+SEARCH_FIRST_PROVIDER_REFERENCES = SEARCH_PROVIDER_REFERENCES[:2]
 
 
 def model_capabilities(model: dict) -> list[str]:
@@ -242,7 +249,7 @@ class ProviderModelGraph:
                     raise ValueError(
                         "Search-first 必须选择 OpenAI Chat Completions 兼容的 LLM Model"
                     )
-                for path, provider_type, label in SEARCH_PROVIDER_REFERENCES:
+                for path, provider_type, label in SEARCH_FIRST_PROVIDER_REFERENCES:
                     selected = _path_value(self.config, path, [])
                     if not isinstance(selected, list) or not selected or any(
                         self.providers.get(name, {}).get("type") != provider_type
@@ -251,6 +258,30 @@ class ProviderModelGraph:
                         raise ValueError(
                             f"Search-first 至少需要一个有效的 {label} Provider"
                         )
+            elif isinstance(grounded, dict) and grounded.get("backend") == "native_jev":
+                native = grounded.get("native_jev")
+                native = native if isinstance(native, dict) else {}
+                search_names = []
+                for field_name, provider_type in (
+                    ("exa_providers", "exa_search"),
+                    ("tavily_providers", "tavily_search"),
+                ):
+                    selected = native.get(field_name) or []
+                    if not isinstance(selected, list):
+                        raise ValueError(f"Native Jev 的 {field_name} 必须是 Provider 列表")
+                    for name in selected:
+                        if self.providers.get(name, {}).get("type") != provider_type:
+                            raise ValueError(
+                                f"Native Jev 的 {field_name} 引用了类型不匹配的 Provider {name}"
+                            )
+                        search_names.append(name)
+                if not search_names:
+                    raise ValueError("Native Jev 至少需要一个有效的 Exa 或 Tavily Provider")
+                jev_provider = self.providers.get(str(native.get("jev_provider") or ""), {})
+                if jev_provider.get("type") not in OPENAI_CHAT_PROVIDER_TYPES:
+                    raise ValueError("Native Jev 必须引用 OpenAI-compatible 的 OpenRouter Provider")
+                if not str(jev_provider.get("base_url") or "").strip():
+                    raise ValueError("Native Jev 的 OpenRouter Provider 需要 Base URL")
 
         for path, _label, capability, multiple in MODEL_REFERENCES[1:4]:
             if multiple:

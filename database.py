@@ -1753,6 +1753,139 @@ async def get_high_weight_unclassified_profile_tags(
         ]
 
 
+class DatabaseNotInitializedError(RuntimeError):
+    """The database file is absent, so a read-only preview cannot run."""
+
+
+class DatabaseSchemaMismatchError(RuntimeError):
+    """The database file exists but does not carry the expected schema."""
+
+
+#: Minimum tables/columns a read-only preview needs.  Anything else is reported
+#: as a schema mismatch instead of being repaired (a preview never migrates).
+PREVIEW_REQUIRED_SCHEMA = {
+    "xp_profile": ("tag", "weight"),
+    "tag_classification_cache": ("normalized_tag", "classification"),
+}
+
+
+def _connect_readonly(path: Path) -> sqlite3.Connection:
+    from urllib.parse import quote
+
+    uri = f"file:{quote(str(path.resolve()))}?mode=ro"
+    return sqlite3.connect(uri, uri=True, timeout=5.0)
+
+
+def _validate_preview_schema(connection: sqlite3.Connection) -> None:
+    """Reject a database the read-only preview cannot safely read."""
+    tables = {
+        str(row[0]) for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    for table, columns in PREVIEW_REQUIRED_SCHEMA.items():
+        if table not in tables:
+            raise DatabaseSchemaMismatchError(
+                f"数据库 schema 不匹配，只读预览中止：缺少表 {table}"
+            )
+        present = {
+            str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")
+        }
+        missing = [column for column in columns if column not in present]
+        if missing:
+            raise DatabaseSchemaMismatchError(
+                f"数据库 schema 不匹配，只读预览中止：表 {table} 缺少列 {', '.join(missing)}"
+            )
+
+
+def _open_preview_readonly(path: Path) -> sqlite3.Connection:
+    """Open the preview database read-only; never creates and never migrates it."""
+    path = Path(path)
+    if not path.exists():
+        raise DatabaseNotInitializedError(f"数据库不存在，只读预览中止：{path}")
+    try:
+        connection = _connect_readonly(path)
+    except sqlite3.Error as exc:
+        raise DatabaseSchemaMismatchError(f"数据库无法以只读方式打开：{path}") from exc
+    try:
+        _validate_preview_schema(connection)
+    except DatabaseSchemaMismatchError:
+        connection.close()
+        raise
+    return connection
+
+
+def profile_tags_exist_readonly(tags) -> dict[str, bool]:
+    """Report which tags exist in the profile, through a read-only connection.
+
+    A missing database or an incompatible schema aborts instead of creating or
+    migrating a file, so a read-only command can never leave an empty database
+    behind -- not even when the caller supplied an explicit tag list.
+    """
+    wanted = [str(tag) for tag in dict.fromkeys(tags or ()) if str(tag).strip()]
+    if not wanted:
+        return {}
+    path = Path(DB_PATH)
+    connection = _open_preview_readonly(path)
+    found: set[str] = set()
+    try:
+        for start in range(0, len(wanted), 400):
+            chunk = wanted[start:start + 400]
+            placeholders = ",".join("?" for _ in chunk)
+            try:
+                rows = connection.execute(
+                    f"SELECT tag FROM xp_profile WHERE tag IN ({placeholders})", chunk,
+                ).fetchall()
+            except sqlite3.DatabaseError as exc:
+                raise DatabaseSchemaMismatchError(
+                    f"数据库 schema 不匹配，只读预览中止：{path}"
+                ) from exc
+            found.update(str(row[0]) for row in rows)
+    finally:
+        connection.close()
+    return {tag: tag in found for tag in wanted}
+
+
+def get_high_weight_unclassified_profile_tags_readonly(
+    limit: int = 40,
+    min_profile_weight: float = 0.0,
+) -> list[dict]:
+    """Read the review queue through a read-only SQLite connection.
+
+    The connection is opened with ``mode=ro``: a missing file or an
+    incompatible schema aborts the call instead of creating or migrating a
+    database, so a preview can never touch production data.
+    """
+    limit = max(1, int(limit))
+    minimum = abs(float(min_profile_weight))
+    path = Path(DB_PATH)
+    connection = _open_preview_readonly(path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT xp.tag, xp.weight, classification.classification
+            FROM xp_profile AS xp
+            LEFT JOIN tag_classification_cache AS classification
+                ON classification.normalized_tag = xp.tag
+            WHERE ABS(xp.weight) >= ?
+              AND (classification.normalized_tag IS NULL OR classification.classification = ?)
+            ORDER BY ABS(xp.weight) DESC, xp.tag ASC
+            LIMIT ?
+            """,
+            (minimum, TAG_CATEGORY_UNRESOLVED, limit),
+        ).fetchall()
+    except sqlite3.DatabaseError as exc:
+        raise DatabaseSchemaMismatchError(
+            f"数据库 schema 不匹配，只读预览中止：{path}"
+        ) from exc
+    finally:
+        connection.close()
+    return [
+        {"tag": str(tag), "profile_weight": float(weight), "classification": classification}
+        for tag, weight, classification in rows
+    ]
+
+
 async def get_tag_review_count() -> int:
     """Return the exact number of tags still awaiting a human decision."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1803,8 +1936,16 @@ async def activate_ai_tag_classification(
     languages: str,
     *,
     grounding_provenance: dict | None = None,
+    preserve_resolved: bool = False,
 ) -> bool:
-    """Persist a complete AI Classification Record unless a human owns the tag."""
+    """Persist a complete AI Classification Record unless a human owns the tag.
+
+    ``preserve_resolved`` is the Native Jev option: inside one real SQLite
+    transaction it re-reads the cache row, so an explicit AI or human decision
+    that landed while this operation was waiting for search/model results is
+    never overwritten.  Legacy backends keep the previous last-writer-wins
+    semantics by leaving the flag at its default.
+    """
     tag = normalize_tag(tag)
     category = normalize_tag_category(classification)
     if not tag or category == TAG_CATEGORY_UNRESOLVED or not explanation or not languages:
@@ -1815,62 +1956,88 @@ async def activate_ai_tag_classification(
         grounding_provenance or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT classification, source FROM tag_classification_cache WHERE normalized_tag = ?", (tag,)
-        )
-        current = await cursor.fetchone()
-        if current and current[1] == "manual":
-            return False
-        if not current:
-            await db.execute(
-                "INSERT INTO tag_classification_cache (normalized_tag, classification, source, updated_at) VALUES (?, ?, 'ai', CURRENT_TIMESTAMP)",
-                (tag, TAG_CATEGORY_UNRESOLVED),
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                "SELECT classification, source FROM tag_classification_cache WHERE normalized_tag = ?", (tag,)
             )
-        await db.execute(
-            """INSERT INTO ai_tag_classification_records
-               (tag, classification, explanation, languages, grounding_provenance,
-                invalidated_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
-               ON CONFLICT(tag) DO UPDATE SET classification=excluded.classification,
-               explanation=excluded.explanation, languages=excluded.languages,
-               grounding_provenance=excluded.grounding_provenance,
-               invalidated_at=NULL, updated_at=CURRENT_TIMESTAMP""",
-            (tag, category, explanation, languages, provenance_json),
-        )
-        await db.execute(
-            "UPDATE tag_classification_cache SET classification = ?, source = 'ai', updated_at = CURRENT_TIMESTAMP WHERE normalized_tag = ?",
-            (category, tag),
-        )
-        await db.commit()
+            current = await cursor.fetchone()
+            if current:
+                current_category = normalize_tag_category(current[0])
+                if current[1] == "manual":
+                    await db.rollback()
+                    return False
+                if preserve_resolved and current_category != TAG_CATEGORY_UNRESOLVED:
+                    await db.rollback()
+                    return False
+            else:
+                await db.execute(
+                    "INSERT INTO tag_classification_cache (normalized_tag, classification, source, updated_at) VALUES (?, ?, 'ai', CURRENT_TIMESTAMP)",
+                    (tag, TAG_CATEGORY_UNRESOLVED),
+                )
+            await db.execute(
+                """INSERT INTO ai_tag_classification_records
+                   (tag, classification, explanation, languages, grounding_provenance,
+                    invalidated_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
+                   ON CONFLICT(tag) DO UPDATE SET classification=excluded.classification,
+                   explanation=excluded.explanation, languages=excluded.languages,
+                   grounding_provenance=excluded.grounding_provenance,
+                   invalidated_at=NULL, updated_at=CURRENT_TIMESTAMP""",
+                (tag, category, explanation, languages, provenance_json),
+            )
+            await db.execute(
+                "UPDATE tag_classification_cache SET classification = ?, source = 'ai', updated_at = CURRENT_TIMESTAMP WHERE normalized_tag = ?",
+                (category, tag),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
         return True
 
 
-async def mark_ai_tag_unresolved(tag: str) -> bool:
-    """Keep a failed Grounded Judge result in the human review queue."""
+async def mark_ai_tag_unresolved(tag: str, *, preserve_resolved: bool = False) -> bool:
+    """Keep a failed Grounded Judge result in the human review queue.
+
+    With ``preserve_resolved`` (Native Jev), a human decision or an explicit AI
+    classification written while this operation was in flight stays untouched:
+    the status is only downgraded when the current row is still unresolved.
+    """
     tag = normalize_tag(tag)
     if not tag:
         return False
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT source FROM tag_classification_cache WHERE normalized_tag = ?", (tag,)
-        )
-        current = await cursor.fetchone()
-        if current and current[0] == "manual":
-            return False
-        await db.execute(
-            """INSERT INTO tag_classification_cache (normalized_tag, classification, source, updated_at)
-               VALUES (?, ?, 'ai', CURRENT_TIMESTAMP)
-               ON CONFLICT(normalized_tag) DO UPDATE SET classification=excluded.classification,
-               source=excluded.source, updated_at=CURRENT_TIMESTAMP""",
-            (tag, TAG_CATEGORY_UNRESOLVED),
-        )
-        await db.execute(
-            "UPDATE ai_tag_classification_records "
-            "SET invalidated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP "
-            "WHERE tag = ? AND invalidated_at IS NULL",
-            (tag,),
-        )
-        await db.commit()
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                "SELECT classification, source FROM tag_classification_cache WHERE normalized_tag = ?", (tag,)
+            )
+            current = await cursor.fetchone()
+            if current:
+                if current[1] == "manual":
+                    await db.rollback()
+                    return False
+                if preserve_resolved and normalize_tag_category(current[0]) != TAG_CATEGORY_UNRESOLVED:
+                    await db.rollback()
+                    return False
+            await db.execute(
+                """INSERT INTO tag_classification_cache (normalized_tag, classification, source, updated_at)
+                   VALUES (?, ?, 'ai', CURRENT_TIMESTAMP)
+                   ON CONFLICT(normalized_tag) DO UPDATE SET classification=excluded.classification,
+                   source=excluded.source, updated_at=CURRENT_TIMESTAMP""",
+                (tag, TAG_CATEGORY_UNRESOLVED),
+            )
+            await db.execute(
+                "UPDATE ai_tag_classification_records "
+                "SET invalidated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP "
+                "WHERE tag = ? AND invalidated_at IS NULL",
+                (tag,),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
     return True
 
 

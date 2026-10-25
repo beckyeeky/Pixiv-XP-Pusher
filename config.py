@@ -516,13 +516,14 @@ def normalize_config(config: dict) -> dict:
         }
     grounded_judge_cfg["retry_by_status"] = normalized_retry_by_status
     backend = str(grounded_judge_cfg.get("backend", "gemini") or "").strip().lower()
-    if backend not in {"gemini", "search_first"}:
+    if backend not in {"gemini", "search_first", "native_jev"}:
         logger.warning("配置项 tag_classifier.grounded_judge.backend 非法，已回退为 gemini")
         backend = "gemini"
     grounded_judge_cfg["backend"] = backend
     for field_name, provider_type in (
         ("brave_providers", "brave_search"),
         ("tavily_providers", "tavily_search"),
+        ("exa_providers", "exa_search"),
     ):
         references = grounded_judge_cfg.get(field_name, [])
         if not isinstance(references, list):
@@ -555,6 +556,121 @@ def normalize_config(config: dict) -> dict:
         else ""
     )
 
+    # Native Jev is an opt-in backend.  Its section is normalized only when it
+    # exists or when the backend selects it, so legacy configs are unchanged.
+    native_jev_cfg = grounded_judge_cfg.get("native_jev")
+    if isinstance(native_jev_cfg, dict) or backend == "native_jev":
+        native_jev_cfg = native_jev_cfg if isinstance(native_jev_cfg, dict) else {}
+        grounded_judge_cfg["native_jev"] = native_jev_cfg
+        native_jev_cfg["enabled"] = native_jev_cfg.get("enabled") is True
+        native_jev_cfg["model"] = str(native_jev_cfg.get("model") or "jev-1.13").strip() or "jev-1.13"
+        native_jev_cfg["jev_provider"] = (
+            str(native_jev_cfg.get("jev_provider") or "openrouter").strip() or "openrouter"
+        )
+        native_jev_cfg["jev_endpoint"] = str(native_jev_cfg.get("jev_endpoint") or "").strip()
+        for field_name, provider_type in (
+            ("exa_providers", "exa_search"),
+            ("tavily_providers", "tavily_search"),
+        ):
+            references = native_jev_cfg.get(field_name, [])
+            if not isinstance(references, list):
+                references = []
+            native_jev_cfg[field_name] = list(dict.fromkeys(
+                name.strip() for name in references
+                if isinstance(name, str)
+                and name.strip() in normalized_providers
+                and normalized_providers[name.strip()].get("type") == provider_type
+            ))
+        deepseek_name = str(native_jev_cfg.get("deepseek_search_provider") or "").strip()
+        deepseek_provider = normalized_providers.get(deepseek_name, {})
+        native_jev_cfg["deepseek_search_provider"] = (
+            deepseek_name
+            if deepseek_provider.get("type") in {"deepseek", "openai_compatible", "local"}
+            else ""
+        )
+        try:
+            if isinstance(native_jev_cfg.get("min_confidence"), bool):
+                raise ValueError
+            min_confidence = float(native_jev_cfg.get("min_confidence", 0.9))
+        except (TypeError, ValueError):
+            logger.warning("配置项 tag_classifier.grounded_judge.native_jev.min_confidence 非法，已使用 0.9")
+            min_confidence = 0.9
+        if min_confidence < 0.9:
+            logger.warning(
+                "配置项 tag_classifier.grounded_judge.native_jev.min_confidence 低于下限 0.9，已提升为 0.9"
+            )
+        # 0.9 is the floor: a lower configured threshold would let one weak
+        # source activate a classification, and activation is strictly greater.
+        native_jev_cfg["min_confidence"] = min(1.0, max(0.9, min_confidence))
+        native_jev_cfg["min_agreeing_sources"] = max(2, _coerce_int(
+            native_jev_cfg.get("min_agreeing_sources", 2), default=2,
+            field_name="tag_classifier.grounded_judge.native_jev.min_agreeing_sources",
+        ))
+        native_jev_cfg["max_evidence_chars"] = max(200, _coerce_int(
+            native_jev_cfg.get("max_evidence_chars", 2500), default=2500,
+            field_name="tag_classifier.grounded_judge.native_jev.max_evidence_chars",
+        ))
+        native_jev_cfg["top_k"] = min(5, max(1, _coerce_int(
+            native_jev_cfg.get("top_k", 3), default=3,
+            field_name="tag_classifier.grounded_judge.native_jev.top_k",
+        )))
+        native_jev_cfg["require_tag_mention"] = native_jev_cfg.get("require_tag_mention") is not False
+        for field_name, default in (
+            ("unresolved_cooldown_seconds", 86400),
+            ("rate_limit_cooldown_seconds", 900),
+            ("transient_error_cooldown_seconds", 60),
+            ("decision_cache_ttl_seconds", 604800),
+            ("budget_window_seconds", 300),
+            ("per_run_request_budget", 24),
+            ("max_concurrent_requests", 4),
+            ("max_retries", 0),
+            ("timeout_seconds", 45),
+        ):
+            native_jev_cfg[field_name] = max(0, _coerce_int(
+                native_jev_cfg.get(field_name, default), default=default,
+                field_name=f"tag_classifier.grounded_judge.native_jev.{field_name}",
+            ))
+        native_jev_cfg["max_concurrent_requests"] = max(
+            1, native_jev_cfg["max_concurrent_requests"],
+        )
+        native_jev_cfg["state_path"] = str(
+            native_jev_cfg.get("state_path") or "data/native_jev_state.json"
+        )
+        native_jev_cfg["quota_state_path"] = str(
+            native_jev_cfg.get("quota_state_path") or grounded_judge_cfg["quota_state_path"]
+        )
+        native_jev_cfg["audit_log_path"] = str(native_jev_cfg.get("audit_log_path") or "").strip()
+        native_jev_cfg["lock_path"] = str(native_jev_cfg.get("lock_path") or "").strip()
+        native_jev_cfg["lock_timeout_seconds"] = max(0, _coerce_int(
+            native_jev_cfg.get("lock_timeout_seconds", 5), default=5,
+            field_name="tag_classifier.grounded_judge.native_jev.lock_timeout_seconds",
+        ))
+        native_jev_cfg["env_file"] = str(native_jev_cfg.get("env_file") or "").strip()
+        native_jev_cfg["default_language"] = (
+            str(native_jev_cfg.get("default_language") or "ja").strip() or "ja"
+        )
+        quota_estimates = native_jev_cfg.get("quota_estimates")
+        quota_estimates = quota_estimates if isinstance(quota_estimates, dict) else {}
+        native_jev_cfg["quota_estimates"] = {
+            key: max(1, _coerce_int(
+                quota_estimates.get(key, default), default=default,
+                field_name=f"tag_classifier.grounded_judge.native_jev.quota_estimates.{key}",
+            ))
+            for key, default in (
+                ("exa_monthly_requests", 1000),
+                ("tavily_monthly_requests", 500),
+                ("deepseek_search_monthly_requests", 200),
+            )
+        }
+        # Resolved view: the backend-level pool lists mirror into the shared
+        # grounded_judge fields when those were left empty, so configuration
+        # surfaces keep one discoverable list per search engine.
+        for field_name in ("exa_providers", "tavily_providers"):
+            if not grounded_judge_cfg.get(field_name) and native_jev_cfg.get(field_name):
+                grounded_judge_cfg[field_name] = list(native_jev_cfg[field_name])
+    else:
+        grounded_judge_cfg.pop("native_jev", None)
+
     judges = tag_classifier_cfg.get("judges", [])
     if not isinstance(judges, list):
         logger.warning("配置项 tag_classifier.judges 必须是 Judge Profile 名称列表，已回退为空列表")
@@ -569,10 +685,10 @@ def normalize_config(config: dict) -> dict:
             logger.warning("tag_classifier.judges 引用了不存在的 Model %s，已跳过", name)
             continue
         normalized_judges.append(name)
-    # Search-first fully replaces the legacy Gemini/multi-Judge evidence path.
-    # Keeping stale Judge references here would still initialize and call them
-    # during delivery even though maintenance uses the Search-first backend.
-    tag_classifier_cfg["judges"] = [] if backend == "search_first" else normalized_judges
+    # Search-first and Native Jev fully replace the legacy Gemini/multi-Judge
+    # evidence path.  Keeping stale Judge references here would still initialize
+    # and call them during delivery even though maintenance uses another backend.
+    tag_classifier_cfg["judges"] = [] if backend in {"search_first", "native_jev"} else normalized_judges
 
     daily_slate_cfg = filter_cfg.setdefault("daily_slate", {})
     if not isinstance(daily_slate_cfg, dict):

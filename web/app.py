@@ -36,6 +36,7 @@ from provider_model_graph import settings_rules as provider_model_settings_rules
 from push_schedule import DatabasePushScheduleState, PushScheduleModule
 from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
 from classification_maintenance import ClassificationMaintenance
+from grounded_judge import GroundedJudgeDeferredError
 from tag_mapping import AITagMappingCandidateGenerator
 from tag_relationship_judge import plan_ai_recommendation_staging
 from utils import normalize_tag
@@ -1108,6 +1109,8 @@ async def classify_tag_review(tag: str, _=Depends(require_auth)):
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except GroundedJudgeDeferredError:
+        raise HTTPException(status_code=503, detail="分类服务暂不可用，标签保持原状态") from None
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         logger.warning("Grounded Judge request failed for %s: %s", normalized_tag, exc)
         raise HTTPException(status_code=502, detail="Grounded Judge 请求失败，标签仍在审核队列") from exc

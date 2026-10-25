@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -24,6 +25,9 @@ from grounded_judge import GroundedJudgeDeferredError, validate_ai_classificatio
 class SearchError(Exception):
     """A search provider could not return a usable result."""
 
+    #: HTTP status behind this failure, when the provider answered with one.
+    http_status: int | None = None
+
 
 class SearchNoEvidence(SearchError):
     """A successful request had no sufficiently relevant evidence."""
@@ -35,6 +39,34 @@ class PoolQuotaExhausted(SearchError):
 
 class PoolUnavailable(SearchError):
     """A credential is invalid or temporarily unavailable and must not be reused."""
+
+
+class SearchTransportError(SearchError):
+    """The transport failed before an HTTP answer could be read.
+
+    aiohttp raises transport failures whose text may quote request or response
+    headers; such a message can echo a credential.  The transport therefore
+    converts every client-side failure into this fixed, message-free error, so
+    nothing downstream can persist the upstream text.
+    """
+
+    def __init__(self, message: str = "搜索传输层失败（未读取到可用响应）"):
+        super().__init__(message)
+        self.error_code = "transport_error"
+
+
+class SearchTimeoutError(SearchTransportError, TimeoutError):
+    """A closed transport failure that is still recognisably a timeout.
+
+    The message stays fixed (no upstream text, no credential), but the type
+    keeps the timeout category so ``SearchCredentialPool`` can retry it on the
+    same pool exactly as it retried the raw ``asyncio.TimeoutError``.
+    """
+
+    error_code = "timeout"
+
+    def __init__(self, message: str = "搜索请求超时（传输层）"):
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -156,6 +188,52 @@ class SearchCredentialPool:
             }
             for pool in self._pools
         ]
+
+    def refresh_from_ledger(
+        self, usage: Mapping[str, int] | None = None, *, period: str | None = None,
+    ) -> None:
+        """Adopt the on-disk monthly counter and the month it belongs to.
+
+        Called by a long-lived runtime right after it takes the single task
+        lock: the ledger on disk is authored by whichever process ran last, so
+        this process must continue counting from that value instead of from the
+        snapshot it loaded when it was built.  The value is adopted, never
+        combined with ``max``: a re-read is the only correct baseline, and the
+        next reservation must be exactly ``disk + 1``.
+
+        ``usage`` was read for ``period`` (the ledger's current month).  When
+        that month has advanced since this pool was built, the period must be
+        adopted *with* the baseline: advancing it later -- inside the next
+        reservation -- would first zero the counters and then write ``1`` over
+        the authoritative on-disk value.  The zeroing here is therefore silent;
+        the adopted baseline is persisted instead.
+        """
+        usage = usage or {}
+        current = period
+        if current is None and self._quota_period is not None:
+            current = self._quota_period()
+        advanced = (
+            current is not None
+            and self._quota_period is not None
+            and current != self._active_quota_period
+        )
+        if advanced:
+            for state in self._states.values():
+                state.requests_used = 0
+                state.exhausted = False
+            self._next_index = 0
+            self._active_quota_period = current
+        for pool in self._pools:
+            try:
+                used = max(0, int(usage.get(pool.pool_id, 0) or 0))
+            except (TypeError, ValueError):
+                continue
+            state = self._states[pool.pool_id]
+            state.requests_used = used
+            state.exhausted = pool.request_limit is not None and used >= pool.request_limit
+        if advanced and self._on_usage_change:
+            # Never leave the new month at the zeros written by the old period.
+            self._on_usage_change(self.status())
 
     def _select_pool(self) -> tuple[int, SearchPoolConfig]:
         selected: tuple[float, int, SearchPoolConfig] | None = None
@@ -297,17 +375,80 @@ async def _aiohttp_request_json(
     json_body: dict | None = None,
     timeout_seconds: float = 30,
 ) -> tuple[int, dict, dict[str, str]]:
-    """Small HTTP boundary that keeps concrete API clients independently testable."""
-    async with aiohttp.ClientSession() as session:
-        async with session.request(
-            method, url, headers=headers, params=params, json=json_body,
-            timeout=aiohttp.ClientTimeout(total=timeout_seconds),
-        ) as response:
-            try:
-                body = await response.json(content_type=None)
-            except (aiohttp.ContentTypeError, json.JSONDecodeError):
-                body = {}
-            return response.status, body if isinstance(body, dict) else {}, dict(response.headers)
+    """Small HTTP boundary that keeps concrete API clients independently testable.
+
+    Every aiohttp *client-side* failure (including a malformed response header
+    that quotes a credential) becomes a closed, message-free error; the raw
+    exception is chained but never rendered into a persisted string.  Two
+    categories stay distinguishable on purpose:
+
+    * a timeout becomes :class:`SearchTimeoutError`, which is still a
+      ``TimeoutError`` so :class:`SearchCredentialPool` retries it on the same
+      pool exactly as before;
+    * a body that cannot be *decoded* becomes an unreadable-response error
+      instead of an empty result -- an undecodable answer is not "no evidence".
+
+    A body that simply is not JSON keeps the legacy behaviour: ``{}`` is
+    returned and the client decides what an empty payload means.
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.request(
+                method, url, headers=headers, params=params, json=json_body,
+                timeout=aiohttp.ClientTimeout(total=timeout_seconds),
+            ) as response:
+                try:
+                    body = await response.json(content_type=None)
+                except UnicodeDecodeError as exc:
+                    # The bytes are not text at all: no client can read them.
+                    raise SearchTransportError("搜索响应无法解码（传输层）") from exc
+                except (aiohttp.ContentTypeError, json.JSONDecodeError, ValueError):
+                    body = {}
+                return response.status, body if isinstance(body, dict) else {}, dict(response.headers)
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        # Order matters: TimeoutError is an OSError, and the pool's retry
+        # contract depends on this class remaining a TimeoutError.
+        raise SearchTimeoutError() from exc
+    except (aiohttp.ClientError, OSError) as exc:
+        raise SearchTransportError() from exc
+    except (ValueError, UnicodeDecodeError) as exc:
+        # Header/body decoding outside the json() path (e.g. a malformed
+        # Content-Length or invalid header bytes).
+        raise SearchTransportError("搜索响应无法解析（传输层）") from exc
+
+
+_REDACTED_DETAIL_KEYS = frozenset({
+    "api_key", "api-key", "apikey", "x-api-key", "authorization", "auth",
+    "token", "access_token", "refresh_token", "secret", "password", "key",
+})
+#: A credential echo, not prose: long, alphanumeric-ish and mixing digits with
+#: letters (optionally a known provider prefix).  Field names such as
+#: "maximum_number_of_tokens" must survive so the validation message stays usable.
+_TOKEN_LIKE = re.compile(r"(?<![A-Za-z0-9_\-])(?=[A-Za-z0-9_\-]*[0-9])(?=[A-Za-z0-9_\-]*[A-Za-z])[A-Za-z0-9_\-]{20,}(?![A-Za-z0-9_\-])")
+
+
+def _redact_error_detail(value, *, depth: int = 0):
+    """Drop credential-shaped content from an upstream error body.
+
+    Providers may echo the rejected key in any field and any format, so error
+    detail is treated as hostile: keys that name a credential are removed and
+    long token-like strings are masked.
+    """
+    if depth > 4:
+        return "[truncated]"
+    if isinstance(value, Mapping):
+        return {
+            str(key): _redact_error_detail(item, depth=depth + 1)
+            for key, item in value.items()
+            if str(key).strip().lower() not in _REDACTED_DETAIL_KEYS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_error_detail(item, depth=depth + 1) for item in list(value)[:20]]
+    if isinstance(value, str):
+        return _TOKEN_LIKE.sub("[redacted]", value)[:400]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return "[redacted]"
 
 
 def _safe_error_detail(body: Mapping | None) -> str:
@@ -315,7 +456,9 @@ def _safe_error_detail(body: Mapping | None) -> str:
     if not body:
         return ""
     try:
-        serialized = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+        serialized = json.dumps(
+            _redact_error_detail(body), ensure_ascii=False, separators=(",", ":"),
+        )
     except (TypeError, ValueError):
         return ""
     return f"; detail={serialized[:1200]}"
@@ -324,13 +467,18 @@ def _safe_error_detail(body: Mapping | None) -> str:
 def _raise_for_search_status(provider: str, status: int, body: Mapping | None = None) -> None:
     detail = _safe_error_detail(body)
     if status in {429, 432}:
-        raise PoolQuotaExhausted(f"{provider} Quota Pool 已达到额度或限流{detail}")
-    if status in {401, 403}:
-        raise PoolUnavailable(f"{provider} Quota Pool 凭据不可用{detail}")
-    if status >= 500 or status in {408, 409}:
-        raise SearchError(f"{provider} 搜索暂时不可用 (HTTP {status}){detail}")
-    if status >= 400:
-        raise SearchError(f"{provider} 搜索请求失败 (HTTP {status}){detail}")
+        error, message = PoolQuotaExhausted, f"{provider} Quota Pool 已达到额度或限流{detail}"
+    elif status in {401, 403}:
+        error, message = PoolUnavailable, f"{provider} Quota Pool 凭据不可用{detail}"
+    elif status >= 500 or status in {408, 409}:
+        error, message = SearchError, f"{provider} 搜索暂时不可用 (HTTP {status}){detail}"
+    elif status >= 400:
+        error, message = SearchError, f"{provider} 搜索请求失败 (HTTP {status}){detail}"
+    else:
+        return
+    exc = error(message)
+    exc.http_status = int(status)
+    raise exc
 
 
 class BraveLLMContextClient:
@@ -346,6 +494,15 @@ class BraveLLMContextClient:
         self._request_json = request_json
         self._timeout_seconds = timeout_seconds
         self._endpoint = endpoint or self.endpoint
+
+    @property
+    def pool(self) -> SearchCredentialPool:
+        """The credential pool this adapter spends from (public for reporting)."""
+        return self._pool
+
+    def pool_status(self) -> list[dict]:
+        """Report-safe local quota status, identical with or without auditing."""
+        return self._pool.status()
 
     async def search(self, query: str) -> SearchResponse:
         async def request(selected: SearchPoolConfig) -> SearchResponse:
@@ -389,6 +546,15 @@ class TavilySearchClient:
         self._request_json = request_json
         self._timeout_seconds = timeout_seconds
         self._endpoint = endpoint or self.endpoint
+
+    @property
+    def pool(self) -> SearchCredentialPool:
+        """The credential pool this adapter spends from (public for reporting)."""
+        return self._pool
+
+    def pool_status(self) -> list[dict]:
+        """Report-safe local quota status, identical with or without auditing."""
+        return self._pool.status()
 
     async def search(self, query: str) -> SearchResponse:
         async def request(selected: SearchPoolConfig) -> SearchResponse:
@@ -537,7 +703,15 @@ class SearchGroundedJudge:
             except SearchError as exc:
                 search_errors.append(exc)
                 errors.append(str(exc))
-                search_trace.append({"provider": provider_name, "outcome": "no_evidence", "error": str(exc)})
+                # A provider that answered nothing usable is "no evidence"; a
+                # transport/decoding failure is an unavailable provider and must
+                # not be filed as if the search had returned nothing.
+                outcome = "no_evidence" if isinstance(exc, SearchNoEvidence) else "error"
+                entry = {"provider": provider_name, "outcome": outcome, "error": str(exc)}
+                code = getattr(exc, "error_code", "")
+                if isinstance(code, str) and code:
+                    entry["error_code"] = code
+                search_trace.append(entry)
                 continue
             if evidence.snippets:
                 search_trace.append({"provider": evidence.provider, "outcome": "evidence", "pool_id": evidence.pool_id})

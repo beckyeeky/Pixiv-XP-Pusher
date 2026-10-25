@@ -9,9 +9,15 @@ from typing import Awaitable, Callable
 
 import database as db
 from grounded_judge import (
+    ExistingClassificationPreserved,
     GroundedJudgeDeferredError,
     classify_single_tag,
     validate_ai_classification_record,
+)
+from native_jev_judge import (
+    error_code,
+    native_task_lock_for_config,
+    refresh_native_runtime_snapshot,
 )
 from tag_categories import TAG_CATEGORY_UNRESOLVED
 from utils import normalize_tag
@@ -26,13 +32,48 @@ def _bounded_text(value, limit: int) -> str:
     return str(value or "").strip()[:limit]
 
 
+ACTIVATION_KEYS = (
+    "agreeing_sources", "opposing_sources", "min_confidence", "agreeing_confidences",
+    "corroboration_basis", "shared_urls", "distinct_urls", "url_independence",
+    "engine_agreement_is_not_independent_web_evidence",
+)
+
+
+def _bounded_activation(activation: dict) -> dict:
+    """Keep the bounded, non-secret activation evidence for later review."""
+    bounded = {}
+    for key in ACTIVATION_KEYS:
+        value = activation.get(key)
+        if isinstance(value, (list, tuple)):
+            items = [_bounded_text(item, 300) for item in list(value)[:5]]
+            bounded[key] = [item for item in items if item]
+        elif isinstance(value, dict):
+            pairs = {}
+            for name, item in list(value.items())[:8]:
+                if isinstance(item, (int, float)) and not isinstance(item, bool):
+                    pairs[_bounded_text(name, 60)] = round(float(item), 4)
+                else:
+                    text = _bounded_text(item, 120)
+                    if text:
+                        pairs[_bounded_text(name, 60)] = text
+            if pairs:
+                bounded[key] = pairs
+        elif isinstance(value, (int, float, bool)):
+            bounded[key] = value
+        else:
+            text = _bounded_text(value, 120)
+            if text:
+                bounded[key] = text
+    return bounded
+
+
 def grounding_provenance(result: dict) -> dict:
     """Build the bounded, non-secret provenance stored on one AI decision."""
     if not isinstance(result, dict) or not any(
         result.get(key) for key in (*GROUNDING_TEXT_FIELDS, "source_urls", "evidence_excerpt", "search_trace")
     ):
         return {}
-    provenance = {"schema_version": 1, "backend": "search_first"}
+    provenance = {"schema_version": 1, "backend": _bounded_text(result.get("backend"), 40) or "search_first"}
     for key in GROUNDING_TEXT_FIELDS:
         value = _bounded_text(result.get(key), 200)
         if value:
@@ -50,12 +91,17 @@ def grounding_provenance(result: dict) -> dict:
         if not isinstance(item, dict):
             continue
         trace = {}
-        for key in ("provider", "outcome", "pool_id"):
+        for key in ("provider", "engine", "outcome", "pool_id", "error_code"):
             value = _bounded_text(item.get(key), 200)
             if value:
                 trace[key] = value
         if trace:
             provenance["search_trace"].append(trace)
+    activation = result.get("activation")
+    if isinstance(activation, dict):
+        bounded_activation = _bounded_activation(activation)
+        if bounded_activation:
+            provenance["activation"] = bounded_activation
     usage = {}
     raw_usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
     for key in USAGE_KEYS:
@@ -107,6 +153,20 @@ def empty_usage() -> dict[str, int]:
     return {key: 0 for key in USAGE_KEYS}
 
 
+def native_backend_active(config: dict) -> bool:
+    """True when this run uses the optional Native Jev backend."""
+    classifier = config.get("tag_classifier") if isinstance(config, dict) else {}
+    grounded = classifier.get("grounded_judge") if isinstance(classifier, dict) else {}
+    return isinstance(grounded, dict) and grounded.get("backend") == "native_jev"
+
+
+async def _mark_unresolved(tag: str, config: dict) -> bool:
+    """Write the review-queue marker, keeping the legacy call shape intact."""
+    if native_backend_active(config):
+        return await db.mark_ai_tag_unresolved(tag, preserve_resolved=True)
+    return await db.mark_ai_tag_unresolved(tag)
+
+
 async def classify_and_activate_tag(tag: str, config: dict) -> dict:
     """Run the exact Grounded Judge operation used by one manual review."""
     translation = await db.get_translated_tag(tag)
@@ -116,11 +176,24 @@ async def classify_and_activate_tag(tag: str, config: dict) -> dict:
     activated = await db.activate_ai_tag_classification(
         result["tag"], result["classification"], result["explanation"], result["languages"],
         grounding_provenance=provenance,
+        # Only Native Jev opts into the atomic "do not overwrite a decision that
+        # landed while we waited" rule; legacy backends keep their semantics.
+        preserve_resolved=native_backend_active(config),
     )
     if isinstance(raw_result.get("usage"), dict):
         result["usage"] = raw_result["usage"]
     if not activated:
-        return {**result, "status": "human_override"}
+        existing = await db.get_tag_classifications([result["tag"]], ttl_days=3650)
+        entry = existing.get(result["tag"]) or {}
+        if entry.get("source") != "ai":
+            # A human decision -- or a refusal without a visible AI row, which
+            # is the legacy contract -- is reported as human_override.
+            return {**result, "status": "human_override"}
+        return {
+            **result, "status": "preserved",
+            "preserved_classification": entry.get("classification"),
+            "preserved_source": entry.get("source"),
+        }
     return {**result, "status": "accepted"}
 
 
@@ -135,7 +208,7 @@ async def run_scheduled_maintenance(
     except (TypeError, ValueError):
         concurrency = 10
     summary = {"attempted": len(tags), "accepted": 0, "unresolved": 0, "deferred": 0, "failed": 0,
-               "human_override": 0, "usage": empty_usage(), "items": []}
+               "human_override": 0, "preserved": 0, "usage": empty_usage(), "items": []}
     semaphore = asyncio.Semaphore(concurrency)
 
     async def classify_one(tag: str) -> dict:
@@ -153,15 +226,42 @@ async def run_scheduled_maintenance(
         except GroundedJudgeDeferredError as exc:
             item = {"tag": tag, "status": "deferred", "error": str(exc),
                     "usage": getattr(exc, "usage", {})}
-        except ValueError as exc:
-            await db.mark_ai_tag_unresolved(tag)
-            item = {"tag": tag, "status": "unresolved", "error": str(exc),
+        except ExistingClassificationPreserved as exc:
+            item = {"tag": tag, "status": "preserved",
+                    "classification": getattr(exc, "classification", "") or None,
+                    "source": getattr(exc, "source", "") or None,
                     "usage": getattr(exc, "usage", {})}
+        except ValueError as exc:
+            preserved_over = not await _mark_unresolved(tag, config)
+            item = {
+                "tag": tag,
+                "status": "preserved" if preserved_over else "unresolved",
+                "error": str(exc), "usage": getattr(exc, "usage", {}),
+            }
         except Exception as exc:
-            await db.mark_ai_tag_unresolved(tag)
-            item = {"tag": tag, "status": "failed", "error": str(exc)}
+            if native_backend_active(config):
+                # Operational failure at the backend boundary.  ``str(exc)`` is
+                # never persisted (an upstream message may quote a header that
+                # echoes the credential) and the tag is NOT marked unresolved: an
+                # outage is not a classification verdict, so the run defers.
+                item = {
+                    "tag": tag,
+                    "status": "deferred",
+                    "reason": "internal_error",
+                    "error_code": error_code(exc),
+                }
+            else:
+                # Legacy backends (search_first) keep their original contract: a
+                # backend failure is a *failed* tag, and the tag goes back to the
+                # human review queue.  Only a human decision survives that write.
+                preserved_over = not await _mark_unresolved(tag, config)
+                item = {
+                    "tag": tag,
+                    "status": "preserved" if preserved_over else "failed",
+                    "error": str(exc),
+                }
         status = item.get("status", "failed")
-        if status not in ("accepted", "unresolved", "deferred", "failed", "human_override"):
+        if status not in ("accepted", "unresolved", "deferred", "failed", "human_override", "preserved"):
             status = "failed"
             item["status"] = status
         summary[status] += 1
@@ -188,10 +288,23 @@ class ClassificationMaintenance:
         self._db = database_module
 
     async def classify_tag(self, tag: str) -> dict:
+        """Run one manual review under the same single-task lock as a batch."""
         normalized = normalize_tag(tag)
         if not normalized:
             raise ValueError("必须提供有效标签")
-        return await self._classify(normalized, self.config)
+        lock = native_task_lock_for_config(self.config)
+        if lock is not None and not await lock.acquire_async():
+            # The Web single-tag entry must obey exactly the contract the batch
+            # and the CLI obey: it may not spend a request or touch the shared
+            # ledger while another task owns it.
+            return {"tag": normalized, "status": "deferred",
+                    "reason": "task_lock_timeout", "usage": {}}
+        try:
+            refresh_native_runtime_snapshot(self.config)
+            return await self._classify(normalized, self.config)
+        finally:
+            if lock is not None:
+                lock.release()
 
     async def preview(self, limit: int | None = None) -> list[dict]:
         effective_limit = self._effective_limit(limit)
@@ -235,7 +348,7 @@ class ClassificationMaintenance:
         maintenance = self.config.get("tag_classifier", {}).get("maintenance", {})
         if maintenance.get("allow_automatic_external_search") is not True:
             return {"attempted": 0, "accepted": 0, "unresolved": 0,
-                    "deferred": 0, "failed": 0, "human_override": 0,
+                    "deferred": 0, "failed": 0, "human_override": 0, "preserved": 0,
                     "usage": empty_usage(), "items": [],
                     "automatic_external_search": False}
         selected = await self._select_profile_tags(profile)
@@ -245,12 +358,33 @@ class ClassificationMaintenance:
         selected = list(dict.fromkeys(
             normalized for tag in tags if (normalized := normalize_tag(tag))
         ))[:self.policy.max_tags_per_run]
-        summary = await run_scheduled_maintenance(
-            selected,
-            self.config,
-            self._classify,
-            concurrency=self.policy.concurrency,
-        )
+        lock = native_task_lock_for_config(self.config)
+        if lock is not None and not await lock.acquire_async():
+            # Another process owns the native state ledger right now: defer the
+            # whole batch instead of letting two snapshots overwrite each other.
+            return {
+                "attempted": len(selected), "accepted": 0, "unresolved": 0,
+                "deferred": len(selected), "failed": 0, "human_override": 0,
+                "preserved": 0, "usage": empty_usage(), "lock": "timeout",
+                "items": [
+                    {"tag": tag, "status": "deferred", "reason": "task_lock_timeout",
+                     "usage": {}}
+                    for tag in selected
+                ],
+            }
+        try:
+            # The lock is held: adopt the newest on-disk snapshot before any
+            # decision, cooldown or counter from this run is written back.
+            refresh_native_runtime_snapshot(self.config)
+            summary = await run_scheduled_maintenance(
+                selected,
+                self.config,
+                self._classify,
+                concurrency=self.policy.concurrency,
+            )
+        finally:
+            if lock is not None:
+                lock.release()
         await self._db.set_state(
             SUMMARY_STATE_KEY,
             json.dumps(summary, ensure_ascii=False),
