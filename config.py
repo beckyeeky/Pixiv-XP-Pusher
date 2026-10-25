@@ -768,7 +768,7 @@ def normalize_config(config: dict) -> dict:
 
         for provider in normalized_providers.values():
             if (
-                provider.get("type") not in {"pixiv", "danbooru"}
+                provider.get("type") not in NON_MODEL_PROVIDER_TYPES
                 and "api_key" in provider
                 and not str(provider.get("api_key") or "").strip()
             ):
