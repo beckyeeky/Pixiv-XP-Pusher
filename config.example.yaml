@@ -142,10 +142,11 @@ tag_classifier:
   batch_size: 50
   concurrency: 5
   maintenance:
-    max_tags_per_run: 40 # 每次仅刷新高影响画像标签，避免全量重跑
-    concurrency: 10 # Grounded Judge 的并发请求数
+    max_tags_per_run: 40 # 每次仅刷新高影响画像标签，避免全量重跑；验收阶段建议 5
+    concurrency: 10 # Grounded Judge 的并发请求数；验收阶段建议 1
     min_profile_weight: 1.0 # 新标签先积累影响；达到绝对权重阈值后才进入维护
     prefer_unresolved_first: true
+    allow_automatic_external_search: false # 画像维护自动外搜开关；关闭时仅手动或明确确认的分类会检索
   grounded_judge:
     backend: search_first # Brave → 无证据时 Tavily → 所选 DeepSeek Model；同类账号按配额利用率均衡
     search_classifier_model: deepseek_flash

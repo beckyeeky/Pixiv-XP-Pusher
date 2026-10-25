@@ -71,6 +71,45 @@
         text-align: center;
     }
 
+    .classification-backend-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.75rem 0.9rem;
+        margin-bottom: 0.9rem;
+        background: var(--bg-secondary);
+    }
+
+    .classification-backend-line {
+        margin: 0 0 0.5rem;
+        font-weight: 600;
+        line-height: 1.55;
+        font-size: 0.9rem;
+    }
+
+    .classification-backend-facts,
+    .classification-backend-notes {
+        margin: 0 0 0.4rem;
+        padding-left: 1.1rem;
+        font-size: 0.82rem;
+        line-height: 1.6;
+        color: var(--text-secondary);
+    }
+
+    .classification-backend-flags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        margin: 0.2rem 0 0;
+    }
+
+    .backend-flag {
+        font-size: 0.78rem;
+        padding: 0.15rem 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        color: var(--text-secondary);
+    }
+
     .tag-result-item {
         display: flex;
         align-items: center;
@@ -337,9 +376,25 @@
     {% set maintenance = (config.get('tag_classifier') or {}).get('maintenance') or {} %}
     {% set ai_batch_max = maintenance.get('max_tags_per_run', 40) %}
     {% set ai_batch_default = 20 if ai_batch_max >= 20 else ai_batch_max %}
+    <div class="classification-backend-card" id="classificationBackendCard">
+        <p class="classification-backend-line">{{ classification_backend.line }}</p>
+        <ul class="classification-backend-facts">
+            {% for fact in classification_backend.facts %}<li><strong>{{ fact.label }}</strong>：{{ fact.value }}</li>{% endfor %}
+        </ul>
+        <p class="classification-backend-flags">
+            <span class="backend-flag">{% if classification_backend.native_requested %}{% if classification_backend.native_enabled %}原生 Jev 已启用{% else %}原生 Jev 未启用（维护暂缓）{% endif %}{% else %}未使用原生 Jev{% endif %}</span>
+            <span class="backend-flag">自动外搜：{{ '已启用' if classification_backend.automatic_external_search else '已关闭' }}</span>
+            <span class="backend-flag">维护开关：{{ '已启用' if classification_backend.maintenance_enabled else '已关闭' }}</span>
+        </p>
+        {% if classification_backend.notes %}<ul class="classification-backend-notes">{% for note in classification_backend.notes %}<li>{{ note }}</li>{% endfor %}</ul>{% endif %}
+        <p class="classification-backend-flags">
+            <span class="backend-flag">结果计数说明</span>
+            {% for status, label in outcome_labels.items() %}<span class="backend-flag">{{ label }}</span>{% endfor %}
+        </p>
+    </div>
     <div class="tag-ai-batch-panel">
         <h3>🤖 AI 批量处理标签</h3>
-        <p>使用 Brave/Tavily 搜索与 DeepSeek 分类；只选择绝对画像权重 ≥ {{ maintenance.get('min_profile_weight', 1.0) }} 的未分类标签。系统配置上限为每次 {{ ai_batch_max }} 条。</p>
+        <p>按上方所选后端执行一次有界判定（{{ classification_backend.search_order_text }}）；只选择绝对画像权重 ≥ {{ maintenance.get('min_profile_weight', 1.0) }} 的未分类标签。系统配置上限为每次 {{ ai_batch_max }} 条。</p>
         <div class="tag-ai-batch-controls">
             <label for="tagAiBatchLimit">本次最多处理</label>
             <input id="tagAiBatchLimit" type="number" min="1" max="{{ ai_batch_max }}" value="{{ ai_batch_default }}">
@@ -441,6 +496,20 @@ const tagCategoryLabels = {
     feature: '特征', character: '角色', copyright: '作品', artist: '作者', non_preference: '非偏好'
 };
 
+// Backend facts and outcome labels come from classification_maintenance (the
+// same helpers the Web API and Telegram use), so this page cannot drift.
+const CLASSIFICATION_BACKEND = {{ classification_backend | tojson }};
+const OUTCOME_LABELS = {{ outcome_labels | tojson }};
+const OUTCOME_ORDER = ['accepted', 'unresolved', 'deferred', 'failed', 'preserved', 'human_override'];
+
+function formatOutcomeCounts(payload, {includeZero = true} = {}) {
+    const source = payload || {};
+    return OUTCOME_ORDER
+        .filter(status => includeZero || Number(source[status] || 0) > 0)
+        .map(status => `${OUTCOME_LABELS[status] || status} ${Number(source[status] || 0)}`)
+        .join('、');
+}
+
 let aiMappingBatchPreviewState = null;
 
 function escapeHtml(value) {
@@ -470,7 +539,7 @@ function renderReviewQueue(items) {
             .join('');
         return `<article class="review-item" data-review-tag="${escapeHtml(item.tag)}">
             <div class="review-item-header"><div><div class="review-tag">${escapeHtml(item.tag)}</div><div class="review-meta">状态：未解决 · 影响权重：${escapeHtml(item.profile_weight)} · 当前来源：${escapeHtml(item.classification_source)}</div></div></div>
-            <ul class="evidence-list">${evidence}</ul><div class="review-actions" aria-label="manual decision"><button type="button" onclick="classifyWithGroundedJudge(decodeURIComponent('${encodedTag}'))">Grounded Judge 分类</button>${actions}</div>
+            <ul class="evidence-list">${evidence}</ul><div class="review-actions" aria-label="manual decision"><button type="button" onclick="classifyWithGroundedJudge(decodeURIComponent('${encodedTag}'))">🤖 ${escapeHtml(CLASSIFICATION_BACKEND.short_label || 'AI')} 分类</button>${actions}</div>
         </article>`;
     }).join('');
 }
@@ -498,7 +567,10 @@ function removeReviewItem(tag) {
 
 function renderMaintenanceStatus(status) {
     const show = value => !value ? '尚无记录' : `${escapeHtml(value.status || 'unknown')}${value.completed_at ? `（${escapeHtml(value.completed_at)}）` : ''}${value.error ? `：${escapeHtml(value.error)}` : ''}`;
-    document.getElementById('maintenanceStatus').innerHTML = `推送后的维护：${show(status.completion)}；后台维护：${show(status.background)}`;
+    const summary = status.summary
+        ? `；最近一次维护结果：${escapeHtml(formatOutcomeCounts(status.summary))}`
+        : '；最近一次维护结果：尚无记录';
+    document.getElementById('maintenanceStatus').innerHTML = `推送后的维护：${show(status.completion)}；后台维护：${show(status.background)}${summary}`;
 }
 
 async function loadReviewQueue() {
@@ -544,19 +616,64 @@ async function submitManualDecision(tag, classification) {
 
 async function classifyWithGroundedJudge(tag) {
     const feedback = document.getElementById('reviewFeedback');
-    feedback.textContent = `正在使用已配置的 Grounded Judge 分类 ${tag}…`;
+    feedback.textContent = `正在使用「${CLASSIFICATION_BACKEND.backend_label || '已配置的后端'}」分类 ${tag}…`;
     setReviewItemPending(tag, true);
+    let response;
     try {
-        const response = await fetch(`/api/tag-reviews/${encodeURIComponent(tag)}/classify`, {method: 'POST'});
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.detail || '分类失败');
-        removeReviewItem(tag);
-        const usage = payload.usage || {};
-        feedback.textContent = `${tag} 已标为${tagCategoryLabels[payload.classification]}：${payload.explanation}（语言 ${payload.languages}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次）`;
+        response = await fetch(`/api/tag-reviews/${encodeURIComponent(tag)}/classify`, {method: 'POST'});
     } catch (error) {
+        // The request never completed: the server may or may not have
+        // committed, so the browser cannot claim the tag was left untouched.
         setReviewItemPending(tag, false);
-        feedback.textContent = `Grounded Judge 未能分类：${error.message}`;
+        feedback.textContent = `${tag} 分类结果未确认：${error.message || '请求未完成'}，请刷新核对标签状态。`;
+        return;
     }
+    let payload = null;
+    let parseError = null;
+    try {
+        payload = await response.json();
+    } catch (error) {
+        parseError = error;
+    }
+    if (!response.ok) {
+        const detail = payload && typeof payload.detail === 'string' ? payload.detail : '';
+        setReviewItemPending(tag, false);
+        if (response.status === 503) {
+            // An explicit refusal: the backend did not classify this tag. The
+            // server detail often already says the tag kept its state, so do
+            // not repeat that clause.
+            const alreadySaysKept = Boolean(detail) && detail.includes('保持原状态');
+            feedback.textContent = `${tag} 分类暂缓：${detail || '后端暂不可用'}；本次未改分类${alreadySaysKept ? '' : '（标签保持原状态）'}。`;
+            return;
+        }
+        feedback.textContent = detail
+            ? `${tag} 分类请求未成功：${detail}；结果未确认，请刷新核对标签状态。`
+            : `${tag} 分类请求未成功（HTTP ${response.status}）；结果未确认，请刷新核对标签状态。`;
+        return;
+    }
+    if (parseError || !payload) {
+        // A 2xx with an unreadable body is still an unknown outcome.
+        setReviewItemPending(tag, false);
+        feedback.textContent = `${tag} 分类结果未确认：服务器响应无法解析，请刷新核对标签状态。`;
+        return;
+    }
+    const usage = payload.usage || {};
+    const status = payload.status || 'accepted';
+    if (status === 'preserved') {
+        // The backend refused to overwrite an existing decision: report it as
+        // preserved instead of claiming a new classification.
+        await loadReviewQueue();
+        setReviewItemPending(tag, false);
+        feedback.textContent = `${tag} 保留了既有分类（${tagCategoryLabels[payload.preserved_classification] || payload.preserved_classification || '未提供'}，来源 ${payload.preserved_source || '既有记录'}）；本次未覆盖。`;
+        return;
+    }
+    if (status === 'deferred') {
+        setReviewItemPending(tag, false);
+        feedback.textContent = `${tag} 分类暂缓（${payload.reason || '后端条件不满足'}）；本次未改分类（标签保持原状态）。`;
+        return;
+    }
+    removeReviewItem(tag);
+    feedback.textContent = `${tag} ${OUTCOME_LABELS[status] || '已分类'}：${tagCategoryLabels[payload.classification] || payload.classification}（说明：${payload.explanation}；语言 ${payload.languages}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次）`;
 }
 
 async function classifyAllWithGroundedJudge() {
@@ -568,10 +685,10 @@ async function classifyAllWithGroundedJudge() {
     input.value = requested;
     if (!await PixivUI.confirm({
         title: '确认批量分类',
-        message: `最多处理 ${requested} 个高权重未分类标签，不会处理低于权重阈值的标签。`,
+        message: `最多处理 ${requested} 个高权重未分类标签（后端：${CLASSIFICATION_BACKEND.backend_label || '未设置'}），不会处理低于权重阈值的标签。`,
         confirmLabel: '开始处理',
     })) return;
-    feedback.textContent = `正在使用 AI 批量处理，最多 ${requested} 条…`;
+    feedback.textContent = `正在使用「${CLASSIFICATION_BACKEND.backend_label || '已配置的后端'}」批量处理，最多 ${requested} 条…`;
     button.disabled = true;
     try {
         const response = await fetch(`/api/tag-reviews/ai-process-all?limit=${requested}`, {method: 'POST'});
@@ -579,7 +696,8 @@ async function classifyAllWithGroundedJudge() {
         if (!response.ok) throw new Error(payload.detail || '批量分类失败');
         await loadReviewQueue();
         const usage = payload.usage || {};
-        feedback.textContent = `AI 批量处理完成（安全上限 ${payload.effective_limit} 条，权重阈值 ${payload.min_profile_weight}）：已尝试 ${payload.attempted}，接受 ${payload.accepted}，暂缓 ${payload.deferred || 0}，仍未解决 ${payload.unresolved}，失败 ${payload.failed}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次。`;
+        const outcomes = payload.outcome_text || formatOutcomeCounts(payload);
+        feedback.textContent = `AI 批量处理完成（后端：${payload.backend_label || CLASSIFICATION_BACKEND.backend_label || '未设置'}；安全上限 ${payload.effective_limit} 条，权重阈值 ${payload.min_profile_weight}）：${outcomes}；已尝试 ${payload.attempted}；API tokens ${usage.total || 0}，搜索查询约 ${usage.search_queries || 0} 次。`;
     } catch (error) {
         feedback.textContent = `AI 批量处理失败：${error.message}`;
     } finally {

@@ -232,6 +232,12 @@ python3 scripts/preview_native_jev.py --limit 5 --min-weight 1.0
 ## 12. 回滚
 
 - 将 `grounded_judge.backend` 改回 `search_first`（或 `gemini`）即可；`native_jev` 段可留空。
+  注意：`apply_settings_payload` 只接受**双动作**离开——同一次保存里既要提交
+  `grounded_judge.backend: search_first`（或 `gemini`），又要提交
+  `native_jev.enabled: false`；只改 `backend` 的保存（包括旧页面自动提交的
+  `search_first`）一律保留 `backend: native_jev` 与整棵 `native_jev` 子树。
+  其中 `native_jev.enabled: false` 表示“停用该后端”，`native_jev` 段本身仍留在配置里，
+  下次要恢复只需把 `enabled` 改回 `true`。
 - 新代码路径只在 `backend == "native_jev"` 时进入；`exa_search` Provider 与未使用的
   `native_jev` 段对旧行为无影响。
 - 生成的 `data/native_jev_state.json`、审计 JSONL 与账本中的 `native_jev:` 前缀条目可删除，

@@ -40,6 +40,12 @@ DEFAULT_MODULES = (
     "test_provider_model_graph",
     "test_tag_classifier",
     "test_database",
+    # Surfaces: settings/tags page rendering, save path, Web/Telegram parity.
+    "test_ui_backend_adaptation",
+    "test_ui_fixes_round2",
+    "test_surface_backend_parity",
+    "test_settings_editor",
+    "test_telegram_delivery",
 )
 
 

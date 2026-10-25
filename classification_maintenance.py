@@ -15,6 +15,10 @@ from grounded_judge import (
     validate_ai_classification_record,
 )
 from native_jev_judge import (
+    DEFAULT_JEV_ENDPOINT,
+    ENGINE_ENV_NAMES,
+    _join_endpoint,
+    describe_credential_source,
     error_code,
     native_task_lock_for_config,
     refresh_native_runtime_snapshot,
@@ -436,3 +440,350 @@ class ClassificationMaintenance:
         classifier = self.config.get("tag_classifier")
         classifier = classifier if isinstance(classifier, dict) else {}
         return _positive_int(classifier.get("ttl_days", 30), 30)
+
+
+# ---------------------------------------------------------------------------
+# Shared presentation helpers (Web settings, Web tags page, Telegram)
+#
+# Every operator-facing surface renders the backend facts and the outcome
+# counters from these functions, so the three surfaces cannot drift apart.
+# They only *read* an already normalized configuration: no gate, decision,
+# credential or database value is changed here, and no credential value is
+# ever returned (only which mechanism supplied it).
+# ---------------------------------------------------------------------------
+
+OUTCOME_STATUSES = (
+    "accepted", "unresolved", "deferred", "failed", "preserved", "human_override",
+)
+
+OUTCOME_LABELS = {
+    "accepted": "已接受",
+    "unresolved": "未解决",
+    "deferred": "暂缓",
+    "failed": "失败",
+    "preserved": "保留既有分类",
+    "human_override": "人工决定优先",
+}
+
+BACKEND_LABELS = {
+    "native_jev": "原生 Jev 后端（native_jev）",
+    "search_first": "Search-first 后端（search_first）",
+    "gemini": "旧版 Gemini Grounded Judge",
+    "": "未显式设置",
+}
+
+CREDENTIAL_SOURCE_LABELS = {
+    "provider": "Provider 凭据",
+    "env": "环境变量",
+    "env_file": "环境文件",
+    "missing": "缺少凭据",
+}
+
+SHORT_BACKEND_LABELS = {
+    "native_jev": "原生 Jev",
+    "search_first": "Search-first",
+    "gemini": "旧版 Judge",
+    "": "未设置后端",
+}
+
+AUTOMATIC_SEARCH_LABELS = {True: "已启用", False: "已关闭"}
+
+
+def outcome_counts(summary: dict | None) -> dict[str, int]:
+    """Return every outcome status, including ones the summary omits."""
+    source = summary if isinstance(summary, dict) else {}
+    counts: dict[str, int] = {}
+    for status in OUTCOME_STATUSES:
+        try:
+            counts[status] = max(0, int(source.get(status) or 0))
+        except (TypeError, ValueError):
+            counts[status] = 0
+    return counts
+
+
+def outcome_line(
+    summary: dict | None, *, include_zero: bool = False, separator: str = "、",
+) -> str:
+    """One neutral, complete line of outcome counters for Web and Telegram."""
+    counts = outcome_counts(summary)
+    parts = [
+        f"{OUTCOME_LABELS[status]} {counts[status]}"
+        for status in OUTCOME_STATUSES
+        if include_zero or counts[status]
+    ]
+    return separator.join(parts) or "未处理任何标签"
+
+
+def outcome_lines_behind(summary: dict | None) -> list[dict[str, int | str]]:
+    """Stable (label, count) pairs so a template can render them in order."""
+    counts = outcome_counts(summary)
+    return [
+        {"status": status, "label": OUTCOME_LABELS[status], "count": counts[status]}
+        for status in OUTCOME_STATUSES
+    ]
+
+
+def _reference_names(value) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _pool_facts(
+    providers: dict, engine: str, names: list[str], env_file: str,
+) -> list[dict]:
+    """Describe each configured pool account without exposing its credential."""
+    facts = []
+    for name in names:
+        provider = providers.get(name)
+        provider = provider if isinstance(provider, dict) else {}
+        source = describe_credential_source(
+            provider,
+            env_names=ENGINE_ENV_NAMES.get(engine, ()),
+            env_file=env_file,
+        )
+        credential = str(source.get("source") or "missing")
+        env_name = str(source.get("env") or "")
+        label = CREDENTIAL_SOURCE_LABELS.get(credential, credential)
+        facts.append({
+            "engine": engine,
+            "name": name,
+            "credential_source": credential,
+            "credential_label": f"{label} {env_name}".strip(),
+        })
+    return facts
+
+
+def _display_jev_endpoint(providers: dict, jev_provider: str) -> str:
+    """Return the endpoint the runtime would call, from configuration only.
+
+    This mirrors ``native_jev_judge``'s provider-base-url rule without reading
+    credentials, importing a client, or opening a connection: display code may
+    only restate what the stored configuration already determines.
+    """
+    provider = providers.get(jev_provider) if jev_provider else None
+    base_url = str(provider.get("base_url") or "") if isinstance(provider, dict) else ""
+    return _join_endpoint(base_url, "/systemone") or DEFAULT_JEV_ENDPOINT
+
+
+def classification_backend_view(config: dict | None) -> dict:
+    """Describe the effective classification backend for display only."""
+    config = config if isinstance(config, dict) else {}
+    classifier = config.get("tag_classifier")
+    classifier = classifier if isinstance(classifier, dict) else {}
+    grounded = classifier.get("grounded_judge")
+    grounded = grounded if isinstance(grounded, dict) else {}
+    maintenance = classifier.get("maintenance")
+    maintenance = maintenance if isinstance(maintenance, dict) else {}
+    providers = config.get("providers")
+    providers = providers if isinstance(providers, dict) else {}
+    native = grounded.get("native_jev")
+    native = native if isinstance(native, dict) else {}
+
+    backend = str(grounded.get("backend") or "").strip().lower()
+    if backend not in BACKEND_LABELS:
+        backend = ""
+    native_requested = backend == "native_jev"
+    native_enabled = native.get("enabled") is True
+    auto_search = maintenance.get("allow_automatic_external_search") is True
+
+    policy = MaintenancePolicy.from_config(config)
+    env_file = str(native.get("env_file") or grounded.get("env_file") or "").strip()
+    jev_provider = str(native.get("jev_provider") or "").strip()
+    jev_model = str(native.get("model") or "jev-1.13").strip() or "jev-1.13"
+    jev_endpoint = str(native.get("jev_endpoint") or "").strip() or _display_jev_endpoint(
+        providers, jev_provider
+    )
+    classifier_model = str(grounded.get("search_classifier_model") or "").strip()
+    deepseek_fallback = str(native.get("deepseek_search_provider") or "").strip()
+    # The runtime falls back to the shared Search-first pools when the Native
+    # section leaves its own pool empty; the display must not claim otherwise.
+    exa_names = _reference_names(
+        native.get("exa_providers") or grounded.get("exa_providers")
+    )
+    tavily_names = _reference_names(
+        native.get("tavily_providers") or grounded.get("tavily_providers")
+    )
+    brave_names = _reference_names(grounded.get("brave_providers"))
+
+    try:
+        min_confidence = float(native.get("min_confidence", 0.9))
+    except (TypeError, ValueError):
+        min_confidence = 0.9
+    try:
+        min_sources = max(2, int(native.get("min_agreeing_sources", 2)))
+    except (TypeError, ValueError):
+        min_sources = 2
+    quota = native.get("quota_estimates")
+    quota = quota if isinstance(quota, dict) else {}
+
+    pools: list[dict] = []
+    if native_requested:
+        pools.extend(_pool_facts(providers, "exa", exa_names, env_file))
+        pools.extend(_pool_facts(providers, "tavily", tavily_names, env_file))
+    elif backend == "search_first":
+        pools.extend(_pool_facts(providers, "brave", brave_names, env_file))
+        pools.extend(_pool_facts(providers, "tavily", tavily_names, env_file))
+
+    if native_requested:
+        order = []
+        order.append(f"Exa（{('、'.join(exa_names)) or '未选择'}）")
+        order.append(f"Tavily（{('、'.join(tavily_names)) or '未选择'}）")
+        order.append(
+            f"DeepSeek Search（{deepseek_fallback or '未选择'}）仅第三兜底"
+        )
+        search_order_text = " → ".join(order)
+        classifier_text = f"原生 Jev 模型 {jev_model}"
+        line = (
+            f"当前分类后端：{BACKEND_LABELS['native_jev']}"
+            f"{'，已启用' if native_enabled else '，未启用（维护任务暂缓）'}。"
+            f"检索顺序：Exa 与 Tavily 优先，DeepSeek Search 仅作第三兜底；"
+            f"分类由 {jev_model} 完成。自动外搜：{AUTOMATIC_SEARCH_LABELS[auto_search]}。"
+        )
+    elif backend == "search_first":
+        search_order_text = " → ".join([
+            f"Brave（{('、'.join(brave_names)) or '未选择'}）",
+            f"Tavily（{('、'.join(tavily_names)) or '未选择'}）仅 Brave 无可用证据时",
+            f"分类模型（{classifier_model or '未选择'}）",
+        ])
+        classifier_text = f"所选兼容模型 {classifier_model or '未选择'}"
+        line = (
+            f"当前分类后端：{BACKEND_LABELS['search_first']}。"
+            f"检索顺序：Brave 优先，Tavily 仅在 Brave 无可用证据时调用；"
+            f"分类由 {classifier_model or '未选择'} 完成。"
+            f"自动外搜：{AUTOMATIC_SEARCH_LABELS[auto_search]}。"
+        )
+    elif backend == "gemini":
+        search_order_text = "旧版 Gemini Google Search Grounding"
+        classifier_text = "旧版 Gemini Grounded Judge"
+        line = (
+            f"当前分类后端：{BACKEND_LABELS['gemini']}（旧版）。"
+            f"如需改用 Search-first 或原生 Jev，请在设置页显式选择并保存。"
+        )
+    else:
+        search_order_text = "未设置"
+        classifier_text = "未设置"
+        line = (
+            "当前未显式设置分类后端；普通保存会保持现状，"
+            "只有显式选择后端后才会改变。"
+        )
+
+    facts = [
+        {"label": "分类后端", "value": BACKEND_LABELS[backend]},
+        {"label": "检索顺序", "value": search_order_text},
+        {"label": "分类执行者", "value": classifier_text},
+        {
+            "label": "自动外搜",
+            "value": AUTOMATIC_SEARCH_LABELS[auto_search]
+            + ("；仅手动或明确确认的分类会发起检索" if not auto_search else "；画像维护可自动发起检索"),
+        },
+        {
+            "label": "维护上限",
+            "value": (
+                f"每次最多 {policy.max_tags_per_run} 条、并发 {policy.concurrency}、"
+                f"最低绝对画像权重 {policy.min_profile_weight:g}"
+            ),
+        },
+    ]
+    if native_requested:
+        facts.extend([
+            {
+                "label": "Jev 连接",
+                "value": (
+                    f"{jev_provider or '未选择 Provider'}"
+                    f"；端点 {jev_endpoint}"
+                ),
+            },
+            {
+                "label": "判定门槛",
+                "value": (
+                    f"置信度严格大于 {min_confidence:g} 且至少 {min_sources} 个不同搜索引擎一致，"
+                    "存在高置信冲突时不自动写入"
+                ),
+            },
+            {
+                "label": "本地额度估算",
+                "value": (
+                    f"Exa {int(quota.get('exa_monthly_requests', 1000))} / "
+                    f"Tavily {int(quota.get('tavily_monthly_requests', 500))} / "
+                    f"DeepSeek {int(quota.get('deepseek_search_monthly_requests', 200))}"
+                    " 次每月（仅本地估算，不代表上游剩余额度）"
+                ),
+            },
+        ])
+
+    notes: list[str] = []
+    if native_requested and not native_enabled:
+        notes.append("原生 Jev 未被启用：维护任务会记为暂缓，不会写入分类。")
+    if not classifier.get("enabled"):
+        notes.append("标签维护开关当前关闭；人工单条分类仍可执行。")
+    if native_requested:
+        notes.append("多个引擎给出同一类别并不等于独立网页证据；共享来源会记录在 provenance 中。")
+    notes.append("本地额度计数与滚动窗口预算都是软限额，不保证上游不再计费。")
+    if pools and any(pool["credential_source"] == "missing" for pool in pools):
+        notes.append("存在缺少凭据的搜索账号；请求该账号时会被跳过。")
+
+    return {
+        "backend": backend,
+        "backend_label": BACKEND_LABELS[backend],
+        "short_label": SHORT_BACKEND_LABELS[backend],
+        "configured": bool(backend),
+        "legacy": backend == "gemini",
+        "maintenance_enabled": classifier.get("enabled") is True,
+        "native_requested": native_requested,
+        "native_enabled": native_enabled,
+        "automatic_external_search": auto_search,
+        "search_order_text": search_order_text,
+        "jev": {
+            "model": jev_model,
+            "provider": jev_provider,
+            "endpoint": jev_endpoint,
+            "env_file": env_file,
+        },
+        "classifier_model": classifier_model,
+        "deepseek_search_provider": deepseek_fallback,
+        "pools": pools,
+        "thresholds": {
+            "min_confidence": min_confidence,
+            "min_agreeing_sources": min_sources,
+        },
+        "maintenance": {
+            "max_tags_per_run": policy.max_tags_per_run,
+            "concurrency": policy.concurrency,
+            "min_profile_weight": policy.min_profile_weight,
+            "prefer_unresolved_first": policy.prefer_unresolved_first,
+        },
+        "quota": {
+            "exa_monthly_requests": int(quota.get("exa_monthly_requests", 1000) or 1000),
+            "tavily_monthly_requests": int(quota.get("tavily_monthly_requests", 500) or 500),
+            "deepseek_search_monthly_requests": int(
+                quota.get("deepseek_search_monthly_requests", 200) or 200
+            ),
+        },
+        "facts": facts,
+        "notes": notes,
+        "line": line,
+    }
+
+
+def backend_views_for_settings(config: dict | None) -> dict:
+    """Describe both selectable backends once, so the settings page can swap text."""
+    base = config if isinstance(config, dict) else {}
+    views = {}
+    for backend in ("search_first", "native_jev"):
+        variant = json.loads(json.dumps(base, default=str))
+        classifier = variant.setdefault("tag_classifier", {})
+        classifier = classifier if isinstance(classifier, dict) else {}
+        variant["tag_classifier"] = classifier
+        grounded = classifier.setdefault("grounded_judge", {})
+        grounded = grounded if isinstance(grounded, dict) else {}
+        classifier["grounded_judge"] = grounded
+        grounded["backend"] = backend
+        if backend == "native_jev":
+            native = grounded.setdefault("native_jev", {})
+            if not isinstance(native, dict):
+                native = {}
+                grounded["native_jev"] = native
+            native.setdefault("enabled", True)
+        views[backend] = classification_backend_view(variant)
+    return views

@@ -13,7 +13,11 @@ from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler
 
 from .base import BaseNotifier, DeliveryBatchResult
-from classification_maintenance import ClassificationMaintenance
+from classification_maintenance import (
+    ClassificationMaintenance,
+    classification_backend_view,
+    outcome_line,
+)
 from config import load_config
 from delivery_reconciliation import (
     DatabaseDeliveryPersistence,
@@ -597,14 +601,24 @@ class TelegramNotifier(BaseNotifier):
     @staticmethod
     def _tag_review_overview_text(
         count: int, high_weight_count: int, max_tags: int = 40, minimum: float = 1.0,
+        backend_view: dict | None = None,
     ) -> str:
-        return (
-            "🏷️ *标签管理与审核*\n\n"
-            f"当前待人工决定标签：*{count}* 个\n"
+        view = backend_view if isinstance(backend_view, dict) else {}
+        backend_line = str(view.get("line") or "").strip()
+        lines = [
+            "🏷️ *标签管理与审核*",
+            "",
+        ]
+        if backend_line:
+            lines.extend([escape_telegram_markdown(backend_line), ""])
+        lines.extend([
+            f"当前待人工决定标签：*{count}* 个",
             f"符合 AI 批处理条件：*{high_weight_count}* 个"
-            f"（绝对权重 ≥ {minimum:.2f}；单次配置上限 {max_tags}）\n\n"
-            "使用“AI 批量处理”可先选择本次最大数量，再二次确认；不会处理低于权重阈值的标签。"
-        )
+            f"（绝对权重 ≥ {minimum:.2f}；单次配置上限 {max_tags}）",
+            "",
+            "使用“AI 批量处理”可先选择本次最大数量，再二次确认；不会处理低于权重阈值的标签。",
+        ])
+        return "\n".join(lines)
 
     def _build_high_weight_tag_confirmation_menu(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
@@ -857,6 +871,7 @@ class TelegramNotifier(BaseNotifier):
                 high_weight_candidates = await maintenance.preview()
                 text = self._tag_review_overview_text(
                     count, len(high_weight_candidates), limit, minimum,
+                    backend_view=classification_backend_view(config),
                 )
                 await query.edit_message_text(
                     text, reply_markup=self._build_tag_review_menu(limit), parse_mode="Markdown"
@@ -1006,6 +1021,7 @@ class TelegramNotifier(BaseNotifier):
                 chat_id = getattr(getattr(query, "message", None), "chat_id", 0)
                 config = load_config()
                 maintenance = ClassificationMaintenance(config)
+                backend_view = classification_backend_view(config)
                 limit = maintenance.policy.max_tags_per_run
                 minimum = maintenance.policy.min_profile_weight
                 if detail_action == "confirm":
@@ -1022,10 +1038,13 @@ class TelegramNotifier(BaseNotifier):
                     await query.edit_message_text(f"🤖 正在分类 {len(tags)} 个已确认的高权重候选…")
                     try:
                         summary = await maintenance.run_reviewed(tags)
+                        # parse_mode is omitted here: Telegram renders this as
+                        # plain text, so Markdown escaping would leak literal
+                        # backslashes (e.g. native\_jev, exa\_1).
                         await query.edit_message_text(
-                            f"🤖 高权重候选分类完成：已接受 {summary['accepted']}，"
-                            f"搜索暂缓 {summary.get('deferred', 0)}，"
-                            f"未解决 {summary['unresolved']}，失败 {summary['failed']}。",
+                            "🤖 高权重候选分类完成\n\n"
+                            f"后端：{backend_view['backend_label']}\n"
+                            f"{outcome_line(summary, include_zero=True)}",
                             reply_markup=self._build_tag_review_menu(),
                         )
                     except ValueError:
@@ -1059,7 +1078,13 @@ class TelegramNotifier(BaseNotifier):
                         f"{index}. {item['tag']} ({item['profile_weight']:.2f})"
                         for index, item in enumerate(candidates, 1)
                     )
-                    lines.extend(["", "请确认后才会发送这批标签给已配置的 Grounded Judge。"])
+                    lines.extend([
+                        "",
+                        # Plain-text message (no parse_mode): no Markdown escapes.
+                        f"后端：{backend_view['backend_label']}；"
+                        f"检索顺序：{backend_view['search_order_text']}。",
+                        "请确认后才会把这批标签交给该后端判定。",
+                    ])
                     await query.edit_message_text(
                         "\n".join(lines), reply_markup=self._build_high_weight_tag_confirmation_menu(),
                     )
@@ -1070,6 +1095,7 @@ class TelegramNotifier(BaseNotifier):
 
                 config = load_config()
                 maintenance = ClassificationMaintenance(config)
+                backend_view = classification_backend_view(config)
                 limit = maintenance.policy.max_tags_per_run
                 minimum = maintenance.policy.min_profile_weight
                 if not detail_action:
@@ -1092,7 +1118,9 @@ class TelegramNotifier(BaseNotifier):
                         "⚠️ *确认 AI 批量处理*\n\n"
                         f"本次最多处理 *{effective_limit}* 条，"
                         f"且只选择绝对画像权重 ≥ {minimum:.2f} 的未分类标签。\n"
-                        "将调用 Brave/Tavily 搜索与 DeepSeek 分类。",
+                        f"后端：{escape_telegram_markdown(backend_view['backend_label'])}\n"
+                        f"检索顺序：{escape_telegram_markdown(backend_view['search_order_text'])}\n"
+                        f"自动外搜：{escape_telegram_markdown('已启用' if backend_view['automatic_external_search'] else '已关闭')}",
                         reply_markup=self._build_tag_ai_batch_confirmation_menu(effective_limit),
                         parse_mode="Markdown",
                     )
@@ -1126,13 +1154,10 @@ class TelegramNotifier(BaseNotifier):
                     remaining = await db.get_tag_review_count()
                     text = (
                         "🤖 *AI 批量处理完成*\n\n"
+                        f"后端：{escape_telegram_markdown(backend_view['backend_label'])}\n"
                         f"本次安全上限：{effective_limit}\n"
                         f"已尝试：{summary['attempted']}\n"
-                        f"已接受：{summary['accepted']}\n"
-                        f"搜索暂缓：{summary.get('deferred', 0)}\n"
-                        f"仍未解决：{summary['unresolved']}\n"
-                        f"失败：{summary['failed']}\n"
-                        f"人工决定优先跳过：{summary['human_override']}\n"
+                        f"{escape_telegram_markdown(outcome_line(summary, include_zero=True))}\n"
                         f"当前待人工决定：*{remaining}*\n\n"
                         f"API tokens：{usage.get('total', 0)}；搜索查询约：{usage.get('search_queries', 0)} 次"
                     )
@@ -3639,6 +3664,7 @@ class TelegramNotifier(BaseNotifier):
             await update.message.reply_text(
                 self._tag_review_overview_text(
                     count, len(high_weight_candidates), limit, minimum,
+                    backend_view=classification_backend_view(config),
                 ),
                 reply_markup=self._build_tag_review_menu(limit),
                 parse_mode="Markdown",

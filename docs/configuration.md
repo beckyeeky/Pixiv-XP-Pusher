@@ -50,8 +50,11 @@ python scripts/refresh_config.py config.yaml --output config.new.yaml
 - `providers`：顶层 typed Provider 配置；Pixiv 与 Danbooru 各只能有一个，LLM Provider 可配置多个。自定义 OpenAI-compatible Provider 必须提供 `base_url`。
 - `models`：顶层 Model 配置，每项只引用一个 Provider，并填写该 Provider 可用的模型名称。
 - `judges`：旧版 Gemini / 多 Judge 证据路径。Search-first 模式会忽略并清空此列表，不需要配置。
-- `maintenance.max_tags_per_run`：每次只刷新高影响画像标签，Unresolved 可优先
-- `maintenance.concurrency`：后台 Grounded Judge 的最大并发请求数，默认 `10`
+- `maintenance.max_tags_per_run`：每次只刷新高影响画像标签，Unresolved 可优先；验收阶段建议 `5`
+- `maintenance.concurrency`：后台判定的最大并发请求数，默认 `10`；验收阶段建议 `1`
+- `maintenance.min_profile_weight`：进入维护的最小绝对画像权重，建议 `1.0`
+- `maintenance.allow_automatic_external_search`：画像维护是否可自动发起外搜；默认 `false`，此时只有手动单条与已明确确认的批量会检索。切换该开关**不会**改变 `grounded_judge.backend`
+- `grounded_judge.backend`：`search_first`、`native_jev` 或旧版 `gemini`。未显式设置时设置页显示“未显式设置”，保存会保持现有后端
 - `grounded_judge`：Search-first 搜索判定配置。分类温度固定为 `0`，不需要 Gemini Model 或 Gemini API Key。
 - `danbooru`：仅查询被选中的画像标签；证据会缓存，超时或错误时继续使用缓存和 Judge 投票。连接凭据与地址由 `type: danbooru` Provider 提供。
 - 机器 Tag Evidence 按 source 独立保鲜 60 天；缓存读取不会刷新时效，只有该 source 成功复核才会更新。人工审核永不过期。
@@ -108,10 +111,55 @@ WebUI 配置顺序：
 
 1. 在 Provider 页面分别创建 Brave Search、Tavily Search 和 DeepSeek/OpenAI-compatible Provider，并填写各自凭据。
 2. 在 Model 页面创建指向 DeepSeek Provider 的 `deepseek_flash` LLM Model。
-3. 在“AI 功能 → 搜索标签判定”中选择分类模型、Brave 账号池和 Tavily 账号池。
+3. 在“AI 功能 → 搜索标签判定”中把“分类后端”选为 Search-first，再选择分类模型、Brave 账号池和 Tavily 账号池。
 4. 保存后，可在 WebUI“标签管理 → AI 批量处理标签”预设本次最大数量；Telegram `/tags` 也会先选数量并二次确认。服务端始终以 `maintenance.max_tags_per_run` 为硬上限。
 
 Gemini Provider/Model 即使仍保留在通用 Provider/Model 列表中，也不会被标签判定调用；确认没有被其他功能引用后可自行删除。
+
+### 原生 Jev 后端
+
+`backend: native_jev` 且 `native_jev.enabled: true` 时，检索与分类改用原生 Jev：
+
+1. Exa 与 Tavily 属于同一优先层，各自按已用额度比例选择账号；
+2. 只有优先层无法提供足够相关来源时，才向 DeepSeek Search 补查**一次**（第三顺位兜底，不参与轮转，也不能单独激活分类）；
+3. 每个搜索引擎独立调用 `jev-1.13`（经 OpenRouter 的 System One 端点）给出 `choice`/`confidence`；
+4. 至少 `min_agreeing_sources`（下限 `2`）个**不同搜索引擎**给出同一非 unresolved 类别，且这些引擎的 `confidence` 都**严格大于** `min_confidence`（下限 `0.9`），才自动写入；
+5. 存在高置信的相反类别时直接 hold，不用第三票做多数覆盖；已有明确人工/AI 分类一律 `preserved`。
+
+设置页“AI 功能 → 搜索标签判定”在原生分支中提供：启用开关、Jev 连接（OpenAI-compatible Provider）、Jev 模型、System One 端点、凭据环境文件路径、Exa/Tavily 账号池、备用 `grounded_judge.exa_providers` 池、DeepSeek Search 第三顺位 Provider、最低置信度、最少一致来源数、“要求证据提及标签本体”、本地月度额度估算，以及维护上限/并发/最小权重与自动外搜开关。
+
+凭据处理：页面只显示凭据**来源**（Provider 字段 / 环境变量 / 环境文件 / 缺少凭据）与 `env_file` 路径，不回填也不显示任何明文；`env_file` 只接受路径，填写 `KEY=VALUE` 会被拒绝。
+
+```yaml
+providers:
+  exa_search_1: {type: exa_search, api_key_env: EXA_API_KEY}
+  tavily_search_1: {type: tavily_search, api_key_env: TAVILY_API_KEY}
+  openrouter: {type: openai_compatible, base_url: "https://openrouter.ai/api/v1"}
+  deepseek: {type: deepseek, base_url: "https://api.deepseek.com/v1"}
+tag_classifier:
+  maintenance: {max_tags_per_run: 5, concurrency: 1, min_profile_weight: 1.0,
+                allow_automatic_external_search: false}
+  grounded_judge:
+    backend: native_jev
+    native_jev:
+      enabled: true
+      model: jev-1.13
+      jev_provider: openrouter
+      exa_providers: [exa_search_1]
+      tavily_providers: [tavily_search_1]
+      deepseek_search_provider: deepseek
+      env_file: /etc/pixiv-xp-pusher/native-jev.env
+      min_confidence: 0.9
+      min_agreeing_sources: 2
+```
+
+离开原生后端需要**两个显式动作**同时出现：把“分类后端”改为 Search-first（或 gemini）并取消勾选“启用原生 Jev 后端”。只有一个动作时保存会保持原生后端，避免误点丢失整段配置。属于原生账号池、Jev 连接或 DeepSeek 第三顺位的 Provider 在仍被引用时无法删除。
+
+三个界面（设置页、标签管理页、Telegram）关于后端说明与结果计数的文案都由
+`classification_maintenance.classification_backend_view` / `outcome_line` 生成，因此不会各自漂移；
+结果计数固定覆盖 `accepted` / `unresolved` / `deferred` / `failed` / `preserved` / `human_override`。
+
+原生后端的边界（费用不保证、Exa REST 形状未实网验证等）见 `docs/native-jev-backend.md`。
 
 ### Search-first Shadow Evaluation
 

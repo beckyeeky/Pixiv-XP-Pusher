@@ -35,7 +35,13 @@ from proxy_utils import normalize_proxy_url
 from provider_model_graph import settings_rules as provider_model_settings_rules
 from push_schedule import DatabasePushScheduleState, PushScheduleModule
 from tag_categories import TAG_CATEGORY_UNRESOLVED, normalize_tag_category
-from classification_maintenance import ClassificationMaintenance
+from classification_maintenance import (
+    ClassificationMaintenance,
+    OUTCOME_LABELS,
+    backend_views_for_settings,
+    classification_backend_view,
+    outcome_line,
+)
 from grounded_judge import GroundedJudgeDeferredError
 from tag_mapping import AITagMappingCandidateGenerator
 from tag_relationship_judge import plan_ai_recommendation_staging
@@ -364,6 +370,8 @@ async def settings_page(request: Request):
 
     config = build_settings_view_config(_redact_sensitive_config(load_config()))
     push_schedule = await PushScheduleModule(DatabasePushScheduleState()).get()
+    backend_views = backend_views_for_settings(config)
+    backend_views["current"] = classification_backend_view(config)
     return render_template(request, "settings_v2.html", {
         "active_page": "settings",
         "config": config,
@@ -371,6 +379,8 @@ async def settings_page(request: Request):
         "known_llm_models": get_known_model_catalog("llm"),
         "known_embedding_models": get_known_model_catalog("embedding"),
         "provider_model_rules": provider_model_settings_rules(),
+        "classification_backend": backend_views["current"],
+        "classification_backend_views": backend_views,
     })
 
 
@@ -384,7 +394,11 @@ async def tags_page(request: Request):
     config = load_config()
     return render_template(request, "tags.html", {
         "active_page": "tags",
-        "config": config
+        "config": config,
+        # The backend facts and the outcome labels come from the same helpers
+        # the Web API and the Telegram notifier use, so no surface drifts.
+        "classification_backend": classification_backend_view(config),
+        "outcome_labels": OUTCOME_LABELS,
     })
 
 
@@ -1103,14 +1117,19 @@ async def classify_tag_review(tag: str, _=Depends(require_auth)):
     normalized_tag = normalize_tag(tag)
     if not normalized_tag:
         raise HTTPException(status_code=400, detail="必须提供有效标签")
+    runtime_config = load_config()
     try:
-        result = await ClassificationMaintenance(load_config()).classify_tag(
+        result = await ClassificationMaintenance(runtime_config).classify_tag(
             normalized_tag
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except GroundedJudgeDeferredError:
-        raise HTTPException(status_code=503, detail="分类服务暂不可用，标签保持原状态") from None
+        backend = classification_backend_view(runtime_config)["backend_label"]
+        raise HTTPException(
+            status_code=503,
+            detail=f"分类暂缓：{backend}当前不可用（额度预算、冷却或任务锁），标签保持原状态",
+        ) from None
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         logger.warning("Grounded Judge request failed for %s: %s", normalized_tag, exc)
         raise HTTPException(status_code=502, detail="Grounded Judge 请求失败，标签仍在审核队列") from exc
@@ -1126,7 +1145,17 @@ async def classify_all_tag_reviews(
 ):
     """Run one bounded high-impact Classification Maintenance batch."""
     runtime_config = load_config()
-    return await ClassificationMaintenance(runtime_config).run_eligible(limit)
+    summary = await ClassificationMaintenance(runtime_config).run_eligible(limit)
+    backend = classification_backend_view(runtime_config)
+    return {
+        **summary,
+        # The Web page renders the same counters and backend line as Telegram;
+        # both come from classification_maintenance so the wording cannot drift.
+        "backend": backend["backend"],
+        "backend_label": backend["backend_label"],
+        "backend_line": backend["line"],
+        "outcome_text": outcome_line(summary, include_zero=True),
+    }
 
 
 def _format_review_evidence(item: dict) -> str:

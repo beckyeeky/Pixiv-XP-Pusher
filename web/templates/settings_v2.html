@@ -688,13 +688,89 @@ textarea.form-control {
                     <div class="form-group"><label class="form-label">使用的 Model</label><select class="form-control" id="ai_scorer_model"></select></div>
                     <details class="feature-advanced"><summary>高级参数</summary><div class="form-grid"><div class="form-group"><label class="form-label">候选上限</label><input type="number" class="form-control" id="ai_scorer_max_candidates" value="{{ config.ai.scorer.max_candidates | default(50) }}"></div><div class="form-group"><label class="form-label">评分权重</label><input type="number" step="0.01" class="form-control" id="ai_scorer_score_weight" value="{{ config.ai.scorer.score_weight | default(0.3) }}"></div></div></details>
                 </section>
-                <section class="feature-card">
-                    <div class="feature-card-header"><div><h3 class="feature-card-title">搜索标签判定</h3><p class="feature-card-description">Brave 搜索证据 → 没有有效证据时改用 Tavily → DeepSeek 按证据分类。此流程不会调用 Gemini。</p></div><label class="toggle-switch"><input type="checkbox" id="tag_classifier_enabled" {% if config.tag_classifier.enabled %}checked{% endif %}><span>启用维护</span></label></div>
+                {% set classifier_cfg = (config.get('tag_classifier') or {}) %}
+                {% set maintenance_cfg = (classifier_cfg.get('maintenance') or {}) %}
+                {% set grounded_cfg = (classifier_cfg.get('grounded_judge') or {}) %}
+                {% set native_cfg = (grounded_cfg.get('native_jev') or {}) %}
+                {% set quota_cfg = (native_cfg.get('quota_estimates') or {}) %}
+                {% set backend_value = grounded_cfg.get('backend') or '' %}
+                <style>
+                    .backend-summary { border: 1px solid var(--border-color, #2a2f3a); border-radius: 10px; padding: 0.75rem 0.9rem; margin-bottom: 0.9rem; background: rgba(127, 127, 127, 0.06); }
+                    .backend-summary-line { margin: 0 0 0.5rem; font-weight: 600; line-height: 1.5; }
+                    .backend-facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; }
+                    .backend-facts li { font-size: 0.85rem; line-height: 1.5; color: var(--text-secondary, #b8bec9); }
+                    .backend-fact-label { display: inline-block; min-width: 6.5rem; color: var(--text-primary, #e6e9ef); }
+                    .backend-notes { margin: 0.5rem 0 0; padding-left: 1.1rem; font-size: 0.8rem; color: var(--text-secondary, #b8bec9); }
+                    .backend-branch { border-top: 1px dashed var(--border-color, #2a2f3a); padding-top: 0.75rem; margin-bottom: 0.5rem; }
+                    .backend-branch-title { margin: 0.9rem 0 0.5rem; font-size: 0.95rem; }
+                    .backend-branch[hidden] { display: none; }
+                </style>
+                <section class="feature-card" id="classificationBackendCard">
+                    <div class="feature-card-header"><div><h3 class="feature-card-title">搜索标签判定</h3><p class="feature-card-description">一次有界判定：检索 → 分类 → 两个不同来源一致且置信度严格大于阈值才自动写入。后端与控制项按实际配置显示。</p></div><label class="toggle-switch"><input type="checkbox" id="tag_classifier_enabled" {% if config.tag_classifier.enabled %}checked{% endif %}><span>启用维护</span></label></div>
                     <div class="help-text">只自动处理达到画像权重阈值的标签；新标签不会一出现就产生搜索费用。人工单条判定不受权重阈值限制。</div>
-                    <div class="form-group"><label class="form-label">分类模型（推荐 DeepSeek Flash）</label><select class="form-control" id="tag_classifier_search_model"></select><div class="help-text">模型只接收搜索结果并输出标签类别，温度固定为 0。Gemini Model 和 Gemini API Key 均不需要设置。</div></div>
-                    <div class="form-group"><label class="form-label">第一步：Brave Search 账号池</label><div id="brave_provider_selection" class="reference-list"></div><div class="help-text">优先使用已用月额度比例最低的账号；比例相同时轮询。</div></div>
-                    <div class="form-group"><label class="form-label">第二步：Tavily Search 账号池</label><div id="tavily_provider_selection" class="reference-list"></div><div class="help-text">只有 Brave 没有提供可用证据时才调用 Tavily；Tavily 账号同样按已用配额比例均衡。</div></div>
-                    <details class="feature-advanced"><summary>高级参数</summary><div class="form-grid"><div class="form-group"><label class="form-label">证据缓存天数</label><input type="number" min="1" class="form-control" id="tag_classifier_ttl_days" value="{{ config.tag_classifier.ttl_days | default(30) }}"></div><div class="form-group"><label class="form-label">批大小</label><input type="number" min="1" class="form-control" id="tag_classifier_batch_size" value="{{ config.tag_classifier.batch_size | default(50) }}"></div><div class="form-group"><label class="form-label">维护并发</label><input type="number" min="1" class="form-control" id="tag_classifier_concurrency" value="{{ config.tag_classifier.maintenance.concurrency | default(3) }}"></div><div class="form-group"><label class="form-label">每次维护标签上限</label><input type="number" min="1" class="form-control" id="tag_classifier_max_tags_per_run" value="{{ config.tag_classifier.maintenance.max_tags_per_run | default(40) }}"></div><div class="form-group"><label class="form-label">最小绝对画像权重</label><input type="number" min="0" step="0.1" class="form-control" id="tag_classifier_min_profile_weight" value="{{ config.tag_classifier.maintenance.min_profile_weight | default(1.0) }}"></div><div class="form-group"><label class="form-label">每个 Brave key 月请求上限</label><input type="number" min="1" class="form-control" id="tag_classifier_brave_request_limit" value="{{ config.tag_classifier.grounded_judge.brave_request_limit | default(1000) }}"></div><div class="form-group"><label class="form-label">每个 Tavily key 月请求上限</label><input type="number" min="1" class="form-control" id="tag_classifier_tavily_request_limit" value="{{ config.tag_classifier.grounded_judge.tavily_request_limit | default(500) }}"></div></div></details>
+
+                    <div class="backend-summary" id="classificationBackendSummary">
+                        <p class="backend-summary-line" id="classificationBackendLine">{{ classification_backend.line }}</p>
+                        <ul class="backend-facts">{% for fact in classification_backend.facts %}<li><span class="backend-fact-label">{{ fact.label }}</span>{{ fact.value }}</li>{% endfor %}</ul>
+                        {% if classification_backend.notes %}<ul class="backend-notes">{% for note in classification_backend.notes %}<li>{{ note }}</li>{% endfor %}</ul>{% endif %}
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="tag_classifier_backend">分类后端</label>
+                        <select class="form-control" id="tag_classifier_backend" onchange="toggleClassificationBackend()">
+                            <option value=""{% if not backend_value %} selected{% endif %}>未显式设置（保存时保持现有后端）</option>
+                            <option value="search_first"{% if backend_value == 'search_first' %} selected{% endif %}>Search-first：Brave → Tavily → 兼容分类模型</option>
+                            <option value="native_jev"{% if backend_value == 'native_jev' %} selected{% endif %}>原生 Jev：Exa/Tavily → DeepSeek 仅第三兜底 → Jev 分类</option>
+                            {% if backend_value and backend_value not in ('search_first', 'native_jev') %}<option value="{{ backend_value }}" selected>{{ backend_value }}（旧版，保持现状）</option>{% endif %}
+                        </select>
+                        <div class="help-text">保存后才生效。离开原生 Jev 需要同时把后端改为 Search-first 并取消勾选“启用原生 Jev 后端”。</div>
+                    </div>
+
+                    <div class="backend-branch" id="searchFirstBackendSettings">
+                        <h4 class="backend-branch-title">Search-first 设置</h4>
+                        <div class="form-group"><label class="form-label" for="tag_classifier_search_model">分类模型（OpenAI-compatible LLM）</label><select class="form-control" id="tag_classifier_search_model"></select><div class="help-text">模型只接收搜索结果并输出标签类别，温度固定为 0。Gemini Model 和 Gemini API Key 均不需要设置。</div></div>
+                        <div class="form-group"><label class="form-label">第一步：Brave Search 账号池</label><div id="brave_provider_selection" class="reference-list"></div><div class="help-text">优先使用已用月额度比例最低的账号；比例相同时轮询。</div></div>
+                        <div class="form-group"><label class="form-label">第二步：Tavily Search 账号池</label><div id="tavily_provider_selection" class="reference-list"></div><div class="help-text">只有 Brave 没有提供可用证据时才调用 Tavily；Tavily 账号同样按已用配额比例均衡。</div></div>
+                        <div class="form-grid">
+                            <div class="form-group"><label class="form-label">每个 Brave key 月请求上限</label><input type="number" min="1" class="form-control" id="tag_classifier_brave_request_limit" value="{{ grounded_cfg.get('brave_request_limit') or 1000 }}"></div>
+                            <div class="form-group"><label class="form-label">每个 Tavily key 月请求上限</label><input type="number" min="1" class="form-control" id="tag_classifier_tavily_request_limit" value="{{ grounded_cfg.get('tavily_request_limit') or 500 }}"></div>
+                        </div>
+                    </div>
+
+                    <div class="backend-branch" id="nativeJevBackendSettings">
+                        <h4 class="backend-branch-title">原生 Jev 设置</h4>
+                        <div class="form-group"><label class="toggle-switch"><input type="checkbox" id="native_jev_enabled" {% if native_cfg.get('enabled') is sameas true %}checked{% endif %}><span>启用原生 Jev 后端</span></label><div class="help-text">未启用时维护任务直接记为暂缓，不发起任何检索或模型请求。</div></div>
+                        <div class="form-grid">
+                            <div class="form-group"><label class="form-label" for="native_jev_provider">Jev 连接（OpenAI-compatible Provider）</label><select class="form-control" id="native_jev_provider"></select><div class="help-text">通常选择 OpenRouter Provider；token 由该 Provider 的凭据提供，页面不回填明文。</div></div>
+                            <div class="form-group"><label class="form-label" for="native_jev_model">Jev 模型</label><input class="form-control" id="native_jev_model" value="{{ native_cfg.get('model') or 'jev-1.13' }}"><div class="help-text">默认 jev-1.13；实际响应模型会记录在 provenance 中。</div></div>
+                            <div class="form-group"><label class="form-label" for="native_jev_endpoint">System One 端点（可留空）</label><input class="form-control" id="native_jev_endpoint" value="{{ native_cfg.get('jev_endpoint') or '' }}" placeholder="https://openrouter.ai/api/v1/systemone"></div>
+                            <div class="form-group"><label class="form-label" for="native_jev_env_file">凭据环境文件（只填路径）</label><input class="form-control" id="native_jev_env_file" value="{{ native_cfg.get('env_file') or '' }}" placeholder="/secure/native-jev.env"><div class="help-text">文件内写 EXA_API_KEY=… 等键值；页面只显示路径与来源，不显示、不回填任何密钥。</div></div>
+                        </div>
+                        <div class="form-group"><label class="form-label">Exa Search 账号池（优先层，与 Tavily 同层）</label><div id="native_jev_exa_selection" class="reference-list"></div><div class="help-text">按已用月额度比例选择账号；缺少凭据的账号会被跳过。</div></div>
+                        <div class="form-group"><label class="form-label">Tavily Search 账号池（优先层，与 Exa 同层）</label><div id="native_jev_tavily_selection" class="reference-list"></div><div class="help-text">原生列表为空时才回落到 Search-first 的 Tavily 列表。</div></div>
+                        <details class="feature-advanced"><summary>备用列表：grounded_judge.exa_providers</summary><div class="form-group"><label class="form-label">共享 Exa 账号池（仅当原生 Exa 列表为空时使用）</label><div id="exa_provider_selection" class="reference-list"></div><div class="help-text">Search-first 不读取此列表；这里只是原生 Jev 的备用来源。</div></div></details>
+                        <div class="form-group"><label class="form-label" for="native_jev_deepseek_provider">DeepSeek Search（仅第三顺位兜底）</label><select class="form-control" id="native_jev_deepseek_provider"></select><div class="help-text">只有优先层无法提供足够相关来源时才补查一次；它不参与常规轮转，也不能单独激活分类。</div></div>
+                        <div class="form-grid">
+                            <div class="form-group"><label class="form-label" for="native_jev_min_confidence">最低置信度（下限 0.9）</label><input type="number" min="0.9" max="1" step="0.01" class="form-control" id="native_jev_min_confidence" value="{{ native_cfg.get('min_confidence') or 0.9 }}"><div class="help-text">写入要求置信度严格大于该值，等于不算通过。</div></div>
+                            <div class="form-group"><label class="form-label" for="native_jev_min_agreeing_sources">最少一致来源数（下限 2）</label><input type="number" min="2" max="5" class="form-control" id="native_jev_min_agreeing_sources" value="{{ native_cfg.get('min_agreeing_sources') or 2 }}"><div class="help-text">必须是不同搜索引擎；引擎一致不等于独立网页证据。</div></div>
+                        </div>
+                        <div class="form-group"><label class="toggle-switch"><input type="checkbox" id="native_jev_require_tag_mention" {% if native_cfg.get('require_tag_mention') is not sameas false %}checked{% endif %}><span>要求证据提及标签本体</span></label><div class="help-text">关闭后仅凭搜索摘要即可调用 Jev，相关性风险更高。</div></div>
+                        <div class="form-grid">
+                            <div class="form-group"><label class="form-label">Exa 每月本地估算</label><input type="number" min="1" class="form-control" id="native_jev_quota_exa" value="{{ quota_cfg.get('exa_monthly_requests') or 1000 }}"></div>
+                            <div class="form-group"><label class="form-label">Tavily 每月本地估算</label><input type="number" min="1" class="form-control" id="native_jev_quota_tavily" value="{{ quota_cfg.get('tavily_monthly_requests') or 500 }}"></div>
+                            <div class="form-group"><label class="form-label">DeepSeek 每月本地估算</label><input type="number" min="1" class="form-control" id="native_jev_quota_deepseek" value="{{ quota_cfg.get('deepseek_search_monthly_requests') or 200 }}"><div class="help-text">仅用于本地额度账本，不代表已查询上游剩余额度。</div></div>
+                        </div>
+                    </div>
+
+                    <h4 class="backend-branch-title">维护与自动外搜</h4>
+                    <div class="form-group"><label class="toggle-switch"><input type="checkbox" id="tag_classifier_automatic_external_search" {% if maintenance_cfg.get('allow_automatic_external_search') is sameas true %}checked{% endif %}><span>允许画像维护自动发起外搜</span></label><div class="help-text">关闭时画像维护不会消耗检索额度；手动单条与已明确确认的批量仍按所选后端执行。切换此开关不会改变分类后端。</div></div>
+                    <div class="form-grid">
+                        <div class="form-group"><label class="form-label" for="tag_classifier_max_tags_per_run">每次维护标签上限</label><input type="number" min="1" class="form-control" id="tag_classifier_max_tags_per_run" value="{{ maintenance_cfg.get('max_tags_per_run') or 40 }}"><div class="help-text">建议从 5 条开始。</div></div>
+                        <div class="form-group"><label class="form-label" for="tag_classifier_concurrency">维护并发</label><input type="number" min="1" class="form-control" id="tag_classifier_concurrency" value="{{ maintenance_cfg.get('concurrency') or 10 }}"><div class="help-text">建议从 1 开始，确认额度与延迟后再提高。</div></div>
+                        <div class="form-group"><label class="form-label" for="tag_classifier_min_profile_weight">最小绝对画像权重</label><input type="number" min="0" step="0.01" class="form-control" id="tag_classifier_min_profile_weight" value="{{ maintenance_cfg.get('min_profile_weight') if maintenance_cfg.get('min_profile_weight') is not none else 1.0 }}"><div class="help-text">建议 1.0：新标签先积累影响再进入维护。</div></div>
+                        <div class="form-group"><label class="form-label" for="tag_classifier_ttl_days">证据缓存天数</label><input type="number" min="1" class="form-control" id="tag_classifier_ttl_days" value="{{ classifier_cfg.get('ttl_days') or 30 }}"></div>
+                        <div class="form-group"><label class="form-label" for="tag_classifier_batch_size">判定批大小</label><input type="number" min="1" class="form-control" id="tag_classifier_batch_size" value="{{ classifier_cfg.get('batch_size') or 50 }}"></div>
+                    </div>
                 </section>
             </div>
         </div>
@@ -1173,6 +1249,7 @@ const PROVIDER_MODEL_RULES = {{ provider_model_rules | tojson }};
 const SINGLETON_PROVIDER_TYPES = new Set(PROVIDER_MODEL_RULES.singleton_provider_types);
 const NON_MODEL_PROVIDER_TYPES = new Set(PROVIDER_MODEL_RULES.non_model_provider_types);
 const OPENAI_CHAT_PROVIDER_TYPES = new Set(PROVIDER_MODEL_RULES.openai_chat_provider_types);
+const CLASSIFICATION_BACKEND_VIEWS = {{ classification_backend_views | tojson }};
 let editingProviderCredential = null;
 
 function valueAtPath(root, path, fallback = undefined) {
@@ -1276,6 +1353,9 @@ function saveProviderDialog(event) {
         PixivUI.toast('Provider 名称不能为空且不能重复', 'error');
         return;
     }
+    // Capture unsaved connection selections before mutating Provider names.
+    // The subsequent rename must operate on the user's latest form state.
+    if (classificationBackendControlsReady) captureClassificationBackendControls();
     const previous = editingProviderName ? initialConfig.providers[editingProviderName] : {};
     const provider = {...previous, type: document.getElementById('provider_dialog_type').value, base_url: document.getElementById('provider_dialog_url').value.trim()};
     initialConfig.providers[name] = provider;
@@ -1286,9 +1366,27 @@ function saveProviderDialog(event) {
             const [owner, field] = parentAtPath(initialConfig, reference.path);
             owner[field] = ensureArray(owner, field).map(item => item === editingProviderName ? name : item);
         }
+        for (const reference of (PROVIDER_MODEL_RULES.native_search_provider_references || [])) {
+            if (!Array.isArray(valueAtPath(initialConfig, reference.path, null))) continue;
+            const [owner, field] = parentAtPath(initialConfig, reference.path);
+            owner[field] = ensureArray(owner, field).map(item => item === editingProviderName ? name : item);
+        }
+        for (const reference of (PROVIDER_MODEL_RULES.native_single_provider_references || [])) {
+            if (valueAtPath(initialConfig, reference.path, '') !== editingProviderName) continue;
+            const [owner, field] = parentAtPath(initialConfig, reference.path);
+            owner[field] = name;
+        }
     }
     document.getElementById('providerDialog').close();
-    renderLLMSettings();
+    // The native selects still show the pre-rename Provider while initialConfig
+    // already points at the new name. Capturing them during this render would
+    // write the deleted name back, so skip exactly this one capture.
+    skipBackendCapture = Boolean(editingProviderName && editingProviderName !== name);
+    try {
+        renderLLMSettings();
+    } finally {
+        skipBackendCapture = false;
+    }
     setSettingsDirty(true);
 }
 function openModelDialog(name = null) {
@@ -1360,18 +1458,127 @@ function modelReferenceLabels(name) {
         .map(reference => reference.label);
 }
 function renderSearchProviderSelection() {
+    if (classificationBackendControlsReady && !skipBackendCapture) captureClassificationBackendControls();
     for (const reference of PROVIDER_MODEL_RULES.search_provider_references) {
-        const [owner, field] = parentAtPath(initialConfig, reference.path);
-        const selected = ensureArray(owner, field);
-        const entries = Object.entries(ensureObject(initialConfig, 'providers')).filter(([, provider]) => provider?.type === reference.provider_type);
-        document.getElementById(reference.target_id).innerHTML = entries.length ? entries.map(([name]) => `<label class="toggle-switch"><input type="checkbox" ${selected.includes(name) ? 'checked' : ''} onchange="toggleSearchProvider('${field}', '${escapeJs(name)}', this.checked)"><span>${escapeHtml(name)}</span></label>`).join('') : '<span class="help-text">请先在 Provider 页面添加对应 Search Provider。</span>';
+        renderPoolSelection(reference.target_id, reference.path, reference.provider_type);
+    }
+    for (const reference of (PROVIDER_MODEL_RULES.native_search_provider_references || [])) {
+        renderPoolSelection(reference.target_id, reference.path, reference.provider_type);
+    }
+    renderNativeJevConnections();
+    toggleClassificationBackend({updateSummary: false});
+    classificationBackendControlsReady = true;
+}
+
+let classificationBackendControlsReady = false;
+// Set only while re-rendering after a Provider rename (see saveProviderDialog).
+let skipBackendCapture = false;
+
+function providerEntriesOfTypes(types) {
+    const allowed = new Set(types || []);
+    return Object.entries(ensureObject(initialConfig, 'providers'))
+        .filter(([, provider]) => provider && allowed.has(provider.type));
+}
+
+function renderPoolSelection(targetId, path, providerType) {
+    const node = document.getElementById(targetId);
+    if (!node) return;
+    const [owner, field] = parentAtPath(initialConfig, path);
+    const selected = ensureArray(owner, field);
+    const entries = providerEntriesOfTypes([providerType]);
+    // Build the rows with DOM APIs instead of composing inline handlers: a
+    // Provider name is free text (it may contain quotes) and must never be
+    // interpolated into an HTML attribute or a JS string literal.
+    node.textContent = '';
+    if (!entries.length) {
+        const hint = document.createElement('span');
+        hint.className = 'help-text';
+        hint.textContent = '请先在 AI Provider 中添加该类型的 Search Provider。';
+        node.append(hint);
+        return;
+    }
+    for (const [name] of entries) {
+        const label = document.createElement('label');
+        label.className = 'toggle-switch';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = selected.includes(name);
+        input.addEventListener('change', () => togglePoolProvider(path, name, input.checked));
+        const text = document.createElement('span');
+        text.textContent = name;
+        label.append(input, text);
+        node.append(label);
     }
 }
-function toggleSearchProvider(field, name, enabled) {
-    const grounded = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge');
-    const selected = ensureArray(grounded, field);
-    grounded[field] = enabled ? [...new Set([...selected, name])] : selected.filter(item => item !== name);
+
+function togglePoolProvider(path, name, enabled) {
+    const [owner, field] = parentAtPath(initialConfig, path);
+    const selected = ensureArray(owner, field);
+    owner[field] = enabled ? [...new Set([...selected, name])] : selected.filter(item => item !== name);
+    setSettingsDirty(true);
 }
+
+function renderNativeJevConnections() {
+    const native = ensureObject(ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge'), 'native_jev');
+    const connection = document.getElementById('native_jev_provider');
+    if (connection) {
+        const entries = providerEntriesOfTypes(PROVIDER_MODEL_RULES.native_connection_provider_types);
+        const selected = native.jev_provider || '';
+        connection.innerHTML = entries.length
+            ? entries.map(([name, provider]) => `<option value="${escapeHtml(name)}" ${name === selected ? 'selected' : ''}>${escapeHtml(name)} (${escapeHtml(provider.type || '')})</option>`).join('')
+            : '<option value="">请先添加 OpenAI-compatible Provider（例如 OpenRouter）</option>';
+    }
+    const deepseek = document.getElementById('native_jev_deepseek_provider');
+    if (deepseek) {
+        const entries = providerEntriesOfTypes(PROVIDER_MODEL_RULES.native_deepseek_provider_types);
+        const selected = native.deepseek_search_provider || '';
+        deepseek.innerHTML = '<option value="">不启用第三顺位兜底</option>' + entries
+            .map(([name, provider]) => `<option value="${escapeHtml(name)}" ${name === selected ? 'selected' : ''}>${escapeHtml(name)} (${escapeHtml(provider.type || '')})</option>`)
+            .join('');
+    }
+}
+
+function renderClassificationBackendSummary(backend) {
+    const node = document.getElementById('classificationBackendSummary');
+    if (!node) return;
+    const view = (CLASSIFICATION_BACKEND_VIEWS && (CLASSIFICATION_BACKEND_VIEWS[backend] || CLASSIFICATION_BACKEND_VIEWS.current)) || null;
+    if (!view) return;
+    const facts = (view.facts || []).map(fact => `<li><span class="backend-fact-label">${escapeHtml(fact.label)}</span>${escapeHtml(fact.value)}</li>`).join('');
+    const notes = (view.notes || []).map(note => `<li>${escapeHtml(note)}</li>`).join('');
+    node.innerHTML = `<p class="backend-summary-line" id="classificationBackendLine">${escapeHtml(view.line)}</p>`
+        + `<ul class="backend-facts">${facts}</ul>`
+        + (notes ? `<ul class="backend-notes">${notes}</ul>` : '');
+}
+
+function toggleClassificationBackend({updateSummary = true} = {}) {
+    const value = document.getElementById('tag_classifier_backend')?.value || '';
+    const searchFirst = document.getElementById('searchFirstBackendSettings');
+    const native = document.getElementById('nativeJevBackendSettings');
+    const effective = value || (groundedJudgeBackend() || '');
+    if (searchFirst) searchFirst.hidden = !(effective === 'search_first' || (!effective && CLASSIFICATION_BACKEND_VIEWS.current?.backend === 'search_first'));
+    if (native) native.hidden = !(effective === 'native_jev' || (!effective && CLASSIFICATION_BACKEND_VIEWS.current?.backend === 'native_jev'));
+    if (updateSummary) renderClassificationBackendSummary(value || (CLASSIFICATION_BACKEND_VIEWS.current || {}).backend || '');
+}
+
+function groundedJudgeBackend() {
+    const grounded = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge');
+    return String(grounded.backend || '');
+}
+
+// Keep the controls the operator already edited when the Provider/Model lists
+// re-render (adding a Provider must not silently reset a chosen pool).
+function captureClassificationBackendControls() {
+    const select = document.getElementById('tag_classifier_backend');
+    if (!select) return;
+    const grounded = ensureObject(ensureObject(initialConfig, 'tag_classifier'), 'grounded_judge');
+    const native = ensureObject(grounded, 'native_jev');
+    if (select.value) grounded.backend = select.value;
+    const connection = document.getElementById('native_jev_provider');
+    if (connection) native.jev_provider = connection.value || '';
+    const deepseek = document.getElementById('native_jev_deepseek_provider');
+    if (deepseek) native.deepseek_search_provider = deepseek.value || '';
+}
+
 async function removeModel(name) {
     const refs = modelReferenceLabels(name);
     if (refs.length) {
@@ -1598,15 +1805,60 @@ function collectConfig() {
         maintenance.max_tags_per_run || 40,
     );
     maintenance.min_profile_weight = Math.abs(asFloat(document.getElementById('tag_classifier_min_profile_weight').value, maintenance.min_profile_weight || 1));
-    // This page has no Native Jev controls, so an unrelated save must not
-    // downgrade a backend it cannot configure. Keep the loaded value.
-    if (typeof groundedJudge.backend !== 'string' || !groundedJudge.backend) {
-        groundedJudge.backend = 'search_first';
+    // Automatic external search is an independent opt-in: toggling it never
+    // moves the backend.
+    const automaticSearchField = document.getElementById('tag_classifier_automatic_external_search');
+    if (automaticSearchField) {
+        maintenance.allow_automatic_external_search = automaticSearchField.checked;
+    }
+    // The backend is written only when this page's select carries an explicit
+    // choice. An unset select keeps the stored value, and a backend whose
+    // controls this page does not render (or the inactive branch) is never
+    // rewritten from hidden inputs.
+    const backendSelect = document.getElementById('tag_classifier_backend');
+    const selectedBackend = backendSelect ? String(backendSelect.value || '').trim() : '';
+    const effectiveBackend = selectedBackend
+        || (typeof groundedJudge.backend === 'string' ? groundedJudge.backend : '');
+    if (selectedBackend) {
+        groundedJudge.backend = selectedBackend;
+    } else {
+        delete groundedJudge.backend;
     }
     tagClassifier.judges = [];
-    groundedJudge.search_classifier_model = document.getElementById('tag_classifier_search_model').value || '';
-    groundedJudge.brave_request_limit = asInt(document.getElementById('tag_classifier_brave_request_limit').value, groundedJudge.brave_request_limit || 1000);
-    groundedJudge.tavily_request_limit = asInt(document.getElementById('tag_classifier_tavily_request_limit').value, groundedJudge.tavily_request_limit || 500);
+    // An explicit "启用原生 Jev 后端" state is saved even when the operator is
+    // leaving native (two-key switch), but a config that never had a native
+    // section must not gain an empty one just because a hidden box is unchecked.
+    const nativeEnabledBox = document.getElementById('native_jev_enabled');
+    if (nativeEnabledBox) {
+        const existingNative = groundedJudge.native_jev;
+        if ((existingNative && typeof existingNative === 'object') || nativeEnabledBox.checked) {
+            ensureObject(groundedJudge, 'native_jev').enabled = nativeEnabledBox.checked;
+        }
+    }
+    if (effectiveBackend === 'search_first') {
+        groundedJudge.search_classifier_model = document.getElementById('tag_classifier_search_model').value || '';
+        groundedJudge.brave_request_limit = asInt(document.getElementById('tag_classifier_brave_request_limit').value, groundedJudge.brave_request_limit || 1000);
+        groundedJudge.tavily_request_limit = asInt(document.getElementById('tag_classifier_tavily_request_limit').value, groundedJudge.tavily_request_limit || 500);
+    } else if (effectiveBackend === 'native_jev') {
+        const native = ensureObject(groundedJudge, 'native_jev');
+        const connection = document.getElementById('native_jev_provider');
+        const deepseek = document.getElementById('native_jev_deepseek_provider');
+        const mention = document.getElementById('native_jev_require_tag_mention');
+        const enabledBox = document.getElementById('native_jev_enabled');
+        native.enabled = Boolean(enabledBox && enabledBox.checked);
+        native.jev_provider = (connection && connection.value) || native.jev_provider || '';
+        native.model = document.getElementById('native_jev_model').value.trim() || native.model || 'jev-1.13';
+        native.jev_endpoint = document.getElementById('native_jev_endpoint').value.trim();
+        native.env_file = document.getElementById('native_jev_env_file').value.trim();
+        native.deepseek_search_provider = (deepseek && deepseek.value) || '';
+        native.min_confidence = asFloat(document.getElementById('native_jev_min_confidence').value, native.min_confidence || 0.9);
+        native.min_agreeing_sources = asInt(document.getElementById('native_jev_min_agreeing_sources').value, native.min_agreeing_sources || 2);
+        native.require_tag_mention = Boolean(mention && mention.checked);
+        const quotaEstimates = ensureObject(native, 'quota_estimates');
+        quotaEstimates.exa_monthly_requests = asInt(document.getElementById('native_jev_quota_exa').value, quotaEstimates.exa_monthly_requests || 1000);
+        quotaEstimates.tavily_monthly_requests = asInt(document.getElementById('native_jev_quota_tavily').value, quotaEstimates.tavily_monthly_requests || 500);
+        quotaEstimates.deepseek_search_monthly_requests = asInt(document.getElementById('native_jev_quota_deepseek').value, quotaEstimates.deepseek_search_monthly_requests || 200);
+    }
 
     profiler.scan_limit = asInt(document.getElementById('profiler_scan_limit').value, profiler.scan_limit || 1000);
     profiler.discovery_rate = asFloat(document.getElementById('profiler_discovery_rate').value, profiler.discovery_rate || 0.1);

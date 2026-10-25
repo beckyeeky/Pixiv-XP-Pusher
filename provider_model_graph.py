@@ -72,6 +72,33 @@ SEARCH_PROVIDER_REFERENCES = (
 # Search-first keeps the historical Brave + Tavily requirement; Exa is only
 # consumed by the optional Native Jev backend.
 SEARCH_FIRST_PROVIDER_REFERENCES = SEARCH_PROVIDER_REFERENCES[:2]
+# Native Jev pools live under its own section so that a Search-first save can
+# never rewrite the pools the other backend depends on.
+NATIVE_SEARCH_PROVIDER_REFERENCES = (
+    (("tag_classifier", "grounded_judge", "native_jev", "exa_providers"),
+     "exa_search", "Exa Search", "native_jev_exa_selection"),
+    (("tag_classifier", "grounded_judge", "native_jev", "tavily_providers"),
+     "tavily_search", "Tavily Search", "native_jev_tavily_selection"),
+)
+NATIVE_DEEPSEEK_PROVIDER_TYPES = frozenset({"deepseek", "openai_compatible", "local"})
+# Single Provider references owned by the Native section.  A rename in the
+# settings dialog must rewrite them together with the pools, or the stored
+# configuration keeps pointing at the deleted name.
+NATIVE_SINGLE_PROVIDER_REFERENCES = (
+    (
+        ("tag_classifier", "grounded_judge", "native_jev", "jev_provider"),
+        "Jev 连接",
+    ),
+    (
+        (
+            "tag_classifier",
+            "grounded_judge",
+            "native_jev",
+            "deepseek_search_provider",
+        ),
+        "第三顺位 DeepSeek Search",
+    ),
+)
 
 
 def model_capabilities(model: dict) -> list[str]:
@@ -178,6 +205,29 @@ class ProviderModelGraph:
                 raise ValueError(
                     f"Provider {provider_name} 仍被 Model {model_name} 引用，无法删除"
                 )
+
+        grounded = _path_value(self.config, ("tag_classifier", "grounded_judge"), {})
+        if not isinstance(grounded, dict) or grounded.get("backend") != "native_jev":
+            return
+        native = grounded.get("native_jev")
+        native = native if isinstance(native, dict) else {}
+        for path, _provider_type, label, _target in NATIVE_SEARCH_PROVIDER_REFERENCES:
+            names = _path_value(self.config, path, [])
+            for name in names if isinstance(names, list) else ():
+                if isinstance(name, str) and name and name not in self.providers:
+                    raise ValueError(
+                        f"Provider {name} 仍被 Native Jev 的 {label} 账号池引用，无法删除"
+                    )
+        jev_provider = str(native.get("jev_provider") or "").strip()
+        if jev_provider and jev_provider not in self.providers:
+            raise ValueError(
+                f"Provider {jev_provider} 仍被 Native Jev 的 OpenRouter 连接引用，无法删除"
+            )
+        deepseek_provider = str(native.get("deepseek_search_provider") or "").strip()
+        if deepseek_provider and deepseek_provider not in self.providers:
+            raise ValueError(
+                f"Provider {deepseek_provider} 仍被 Native Jev 的第三顺位 DeepSeek Search 引用，无法删除"
+            )
 
     def validate(self) -> None:
         """Validate a normalized graph and all enabled function selections."""
@@ -337,4 +387,25 @@ def settings_rules() -> dict:
             }
             for path, provider_type, label in SEARCH_PROVIDER_REFERENCES
         ],
+        "native_search_provider_references": [
+            {
+                "path": list(path),
+                "provider_type": provider_type,
+                "label": label,
+                "target_id": target_id,
+            }
+            for path, provider_type, label, target_id in NATIVE_SEARCH_PROVIDER_REFERENCES
+        ],
+        "native_connection_provider_types": sorted(OPENAI_CHAT_PROVIDER_TYPES),
+        "native_single_provider_references": [
+            {"path": list(path), "label": label}
+            for path, label in NATIVE_SINGLE_PROVIDER_REFERENCES
+        ],
+        "native_deepseek_provider_types": sorted(NATIVE_DEEPSEEK_PROVIDER_TYPES),
+        "native_jev_defaults": {
+            "model": "jev-1.13",
+            "endpoint": "https://openrouter.ai/api/v1/systemone",
+            "min_confidence": 0.9,
+            "min_agreeing_sources": 2,
+        },
     }

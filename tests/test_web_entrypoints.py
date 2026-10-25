@@ -100,6 +100,10 @@ class WebEntrypointTests(unittest.TestCase):
                 '{"editable_provider_types":[],"search_provider_references":[],"model_references":[]}'
             ),
             "{{ 'true' if favorites_only else 'false' }}": "false",
+            # Rendered backend/outcome metadata now travels with the page.
+            "{{ classification_backend | tojson }}": "{}",
+            "{{ outcome_labels | tojson }}": "{}",
+            "{{ classification_backend_views | tojson }}": "{}",
         }
         for name in ("dashboard.html", "gallery.html", "tags.html", "settings_v2.html", "import_export.html"):
             template = (Path(web_app_module.TEMPLATES_DIR) / name).read_text(encoding="utf-8")
@@ -160,7 +164,11 @@ class WebEntrypointTests(unittest.TestCase):
             'id="brave_provider_selection"',
             'id="tavily_provider_selection"',
             'provider_model_rules.editable_provider_types',
-            '此流程不会调用 Gemini',
+            # The backend is now a real choice; the Search-first branch keeps
+            # saying plainly that no Gemini Model/Key is needed for it.
+            'id="tag_classifier_backend"',
+            'id="nativeJevBackendSettings"',
+            'id="searchFirstBackendSettings"',
             'Gemini Model 和 Gemini API Key 均不需要设置',
             '智能精排',
         ):
